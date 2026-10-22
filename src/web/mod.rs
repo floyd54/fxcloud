@@ -26,6 +26,7 @@ pub fn build_router(state: SharedState) -> Router {
         // Files
         .route("/files", get(routes::files::list))
         .route("/files/folder", post(routes::files::create_folder))
+        .route("/files/folder/ensure", post(routes::files::ensure_folder))
         .route("/files/upload", post(routes::files::upload))
         .route("/files/download", get(routes::files::download))
         .route("/files/rename", post(routes::files::rename))

@@ -418,3 +418,13 @@ tbody tr { cursor: pointer; }
 }
 .pick-row:hover { background: var(--row-hover); }
 .pick-name { flex: 1; }
+
+/* ---------- Upload progress ---------- */
+.upload-status {
+  margin-top: 9px;
+  font-size: 13px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

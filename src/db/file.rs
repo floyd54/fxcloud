@@ -140,6 +140,70 @@ impl Db {
         .await
     }
 
+    /// Get-or-create a directory by name (idempotent; used by folder uploads).
+    ///
+    /// Returns the existing folder when one is already there; otherwise creates
+    /// it. A foreign parent needs a covering share with CREATE (read-only
+    /// shares can only return an existing folder, never create one).
+    pub async fn ensure_dir(
+        &self,
+        user_id: i64,
+        parent_id: Option<i64>,
+        name: String,
+    ) -> Result<FileEntry, AppError> {
+        self.run(move |conn| {
+            validate_name(&name)?;
+
+            // Whose tree are we operating in, and may we create there?
+            let (tree_owner, can_create) = match parent_id {
+                None => (user_id, true),
+                Some(pid) => {
+                    let parent = get_entry_by_id(conn, pid)?;
+                    if !parent.is_dir {
+                        return Err(AppError::BadRequest("parent is not a folder".into()));
+                    }
+                    if parent.owner_id == user_id {
+                        (user_id, true)
+                    } else {
+                        let access =
+                            covering_share(conn, user_id, pid)?.ok_or(AppError::NotFound)?;
+                        if !access.can(crate::sharing::PERM_READ) {
+                            return Err(AppError::NotFound);
+                        }
+                        (parent.owner_id, access.can(crate::sharing::PERM_CREATE))
+                    }
+                }
+            };
+
+            // Already there? That's our answer (as long as it's a folder).
+            if let Some(existing) = find_child(conn, tree_owner, parent_id, &name)? {
+                if existing.is_dir {
+                    return Ok(existing);
+                }
+                return Err(AppError::Conflict(format!(
+                    "'{name}' already exists and is not a folder"
+                )));
+            }
+
+            if !can_create {
+                return Err(AppError::Forbidden);
+            }
+            if parent_id.is_none() && share_name_taken(conn, user_id, &name)? {
+                return Err(AppError::Conflict(format!("'{name}' already exists here")));
+            }
+
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO files (owner_id, parent_id, name, is_dir, size, mime, created_at, modified_at)
+                 VALUES (?1, ?2, ?3, 1, 0, NULL, ?4, ?4)",
+                params![tree_owner, parent_id, name, now],
+            )
+            .map_err(|e| map_constraint(e, &name))?;
+            get_entry_by_id(conn, conn.last_insert_rowid())
+        })
+        .await
+    }
+
     /// Rename an entry (or update a file's metadata after an overwrite).
     ///
     /// Foreign entries require the covering share to grant UPDATE.

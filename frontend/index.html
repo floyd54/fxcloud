@@ -20,13 +20,18 @@
     <div class="toolbar">
       <button class="btn" id="new-folder-btn">＋ New folder</button>
       <button class="btn" id="upload-btn">⬆ Upload file</button>
+      <button class="btn secondary" id="upload-folder-btn">📁 Upload folder</button>
       <input type="file" id="file-input" style="display:none" multiple />
+      <input type="file" id="folder-input" webkitdirectory multiple style="display:none" />
       <div class="grow"></div>
     </div>
 
     <div class="dropzone" id="dropzone">
-      Drop files here to upload, or click <strong>Upload file</strong>.
+      Drop files <strong>or whole folders</strong> here to upload, or use the
+      upload buttons above.
     </div>
+
+    <div class="upload-status" id="upload-status" style="display:none"></div>
 
     <div class="panel">
       <table>

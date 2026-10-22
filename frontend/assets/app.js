@@ -4,6 +4,7 @@
   const rowsEl = document.getElementById("file-rows");
   const breadcrumbEl = document.getElementById("breadcrumb");
   const fileInput = document.getElementById("file-input");
+  const folderInput = document.getElementById("folder-input");
   const dropzone = document.getElementById("dropzone");
 
   // Current folder id (null == root).
@@ -249,11 +250,11 @@
   // Show the create toolbar only where the viewer holds CREATE.
   function renderToolbar() {
     const canCreate = (currentPerms & PERM_CREATE) !== 0;
-    const folderBtn = document.getElementById("new-folder-btn");
-    const uploadBtn = document.getElementById("upload-btn");
-    folderBtn.style.display = canCreate ? "" : "none";
-    uploadBtn.style.display = canCreate ? "" : "none";
-    dropzone.style.display = canCreate ? "" : "none";
+    const show = canCreate ? "" : "none";
+    document.getElementById("new-folder-btn").style.display = show;
+    document.getElementById("upload-btn").style.display = show;
+    document.getElementById("upload-folder-btn").style.display = show;
+    dropzone.style.display = show;
   }
 
   async function loadMe() {
@@ -339,21 +340,160 @@
     a.remove();
   }
 
-  async function uploadFiles(fileList) {
-    const files = Array.from(fileList);
-    if (files.length === 0) return;
+  // ---------- upload (files, folders, drag & drop) ----------
+  const statusEl = document.getElementById("upload-status");
 
-    for (const file of files) {
-      const fd = new FormData();
-      fd.append("parent", currentParent == null ? "" : String(currentParent));
-      fd.append("file", file, file.name);
+  function setUploadStatus(text) {
+    if (text == null) {
+      statusEl.style.display = "none";
+      statusEl.textContent = "";
+    } else {
+      statusEl.style.display = "";
+      statusEl.textContent = text;
+    }
+  }
+
+  // Flatten a dropped FileSystemEntry tree into items:
+  //   {file, path} for files (path = "Top/Sub/name.txt"), and
+  //   {dir,  path} for folders — so empty folders get created too.
+  function flattenEntry(entry, prefix) {
+    return new Promise((resolve) => {
+      if (entry.isFile) {
+        entry.file(
+          (file) => resolve([{ file, path: prefix + entry.name }]),
+          () => resolve([])
+        );
+        return;
+      }
+      if (!entry.isDirectory) {
+        resolve([]);
+        return;
+      }
+      const path = prefix + entry.name;
+      const reader = entry.createReader();
+      // readEntries yields at most ~100 entries per call — loop until empty.
+      const readAll = () =>
+        new Promise((res) => reader.readEntries((batch) => res(batch), () => res([])));
+      (async () => {
+        const out = [{ dir: path }];
+        let batch;
+        do {
+          batch = await readAll();
+          for (const child of batch) {
+            out.push(...(await flattenEntry(child, path + "/")));
+          }
+        } while (batch.length > 0);
+        resolve(out);
+      })();
+    });
+  }
+
+  // Walk `dirPath` from the upload root, ensuring each level exists.
+  // Returns the folder id, `null` for the root itself, or `undefined` on
+  // failure (the message is pushed into `failures`; the subtree is skipped).
+  async function ensurePath(base, dirPath, cache, failures, failedDirs) {
+    const parts = dirPath.split("/").filter(Boolean);
+    let parentId = base;
+    let acc = "";
+    for (const seg of parts) {
+      acc = acc ? acc + "/" + seg : seg;
+      if (failedDirs.has(acc)) return undefined;
+      if (cache.has(acc)) {
+        parentId = cache.get(acc);
+        continue;
+      }
       try {
-        await api("/api/files/upload", { method: "POST", body: fd });
+        const res = await api("/api/files/folder/ensure", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parent_id: parentId, name: seg }),
+        });
+        const body = await res.json();
+        parentId = body.entry.id;
+        cache.set(acc, parentId);
       } catch (e) {
-        alert(`Failed to upload "${file.name}": ${e.message}`);
+        failedDirs.add(acc);
+        failures.push(`${acc}/ — ${e.message}`);
+        return undefined;
       }
     }
+    return parentId;
+  }
+
+  // Upload a prepared item list ({file,path} / {dir,path}), creating missing
+  // folders on the way. One failing item never aborts the rest.
+  async function uploadTree(items) {
+    const files = items.filter((i) => i.file);
+    if (items.length === 0) return;
+    const base = currentParent; // null = own root
+    const failures = [];
+    const failedDirs = new Set();
+    const cache = new Map([["", base]]);
+    let done = 0;
+
+    try {
+      // Folders first so empty ones exist before files land.
+      for (const item of items) {
+        if (!item.dir) continue;
+        await ensurePath(base, item.dir, cache, failures, failedDirs);
+      }
+      for (const item of files) {
+        const parts = item.path.split("/").filter(Boolean);
+        const fileName = parts.pop();
+        const parentId = await ensurePath(base, parts.join("/"), cache, failures, failedDirs);
+        if (parentId === undefined) continue; // reason already recorded
+        setUploadStatus(`Uploading ${done + 1}/${files.length} — ${item.path}`);
+        const fd = new FormData();
+        fd.append("parent", parentId == null ? "" : String(parentId));
+        fd.append("file", item.file, fileName);
+        try {
+          await api("/api/files/upload", { method: "POST", body: fd });
+        } catch (e) {
+          failures.push(`${item.path} — ${e.message}`);
+        }
+        done += 1;
+      }
+    } finally {
+      setUploadStatus(null);
+    }
+
+    if (failures.length) {
+      alert(
+        `${failures.length} of ${files.length} item(s) could not be uploaded:\n\n` +
+          failures.slice(0, 8).join("\n") +
+          (failures.length > 8 ? "\n…" : "")
+      );
+    }
     await loadFiles(currentParent);
+  }
+
+  // Plain file list (file input or simple drop): webkitRelativePath covers
+  // the folder-input case ("Top/Sub/name.txt"), plain files use file.name.
+  async function uploadFiles(fileList) {
+    const items = Array.from(fileList).map((f) => ({
+      file: f,
+      path: f.webkitRelativePath || f.name,
+    }));
+    await uploadTree(items);
+  }
+
+  // Drag & drop of files *and folders* into the dropzone.
+  async function uploadDropped(dt) {
+    // Snapshot entry handles synchronously — DataTransferItem accessors may
+    // be invalidated once we go async.
+    const entries = Array.from(dt.items || [])
+      .map((it) => (typeof it.webkitGetAsEntry === "function" ? it.webkitGetAsEntry() : null))
+      .filter(Boolean);
+    if (entries.length > 0) {
+      const flat = [];
+      for (const entry of entries) {
+        flat.push(...(await flattenEntry(entry, "")));
+      }
+      await uploadTree(flat);
+    } else if (dt.files && dt.files.length) {
+      // Browser without the entry API: plain files only.
+      await uploadFiles(dt.files);
+    }
   }
 
   // ---------- move / copy ----------
@@ -542,6 +682,9 @@
   // ---------- wire up ----------
   document.getElementById("new-folder-btn").addEventListener("click", newFolder);
   document.getElementById("upload-btn").addEventListener("click", () => fileInput.click());
+  document.getElementById("upload-folder-btn").addEventListener("click", () =>
+    folderInput.click()
+  );
   document.getElementById("logout-btn").addEventListener("click", logout);
   // Share dialog.
   document.getElementById("share-add-btn").addEventListener("click", shareAdd);
@@ -578,8 +721,10 @@
     })
   );
   dropzone.addEventListener("drop", (e) => {
-    if (e.dataTransfer && e.dataTransfer.files.length) {
-      uploadFiles(e.dataTransfer.files);
+    e.preventDefault();
+    dropzone.classList.remove("dragover");
+    if (e.dataTransfer) {
+      uploadDropped(e.dataTransfer).catch((err) => alert(err.message));
     }
   });
 

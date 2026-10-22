@@ -15,8 +15,13 @@ build step, no runtime dependencies.
 - **File explorer** – a Nextcloud-style web UI to:
   - browse a folder tree with breadcrumbs
   - create folders
-  - upload files (button or drag & drop)
-  - download, rename, and delete files/folders (folders delete recursively)
+  - upload files **or whole folders** (buttons, or drag & drop into the
+    dropzone — folder trees are recreated including empty subfolders)
+  - download, copy/move (destination picker), rename, and delete entries
+    via a per-row ⋮ menu (folders delete recursively)
+- **Sharing** – share files/folders with other users using a Nextcloud-style
+  permission bitmask; shares mount directly in the grantee's root tree and are
+  enforced everywhere (web UI and WebDAV). See [Sharing](#sharing).
 - **WebDAV** – mount your files with real sync clients (Nextcloud desktop,
   rclone, Cyberduck, Windows "Map network drive", etc.). See
   [WebDAV](#webdav) below.
@@ -155,6 +160,7 @@ All `/api/*` routes require a session cookie (except `register` / `login`).
 | GET    | `/api/files`            | `?parent=<id>` (omit for root)     | List folder contents        |
 | GET    | `/api/files/breadcrumb` | `?id=<folderId>`                   | Breadcrumb trail            |
 | POST   | `/api/files/folder`     | `{parent_id, name}`                | Create folder               |
+| POST   | `/api/files/folder/ensure` | `{parent_id, name}`             | Get-or-create folder (idempotent; powers folder uploads) |
 | POST   | `/api/files/upload`     | multipart: `parent`, `file`        | Upload file                 |
 | GET    | `/api/files/download`   | `?id=<fileId>`                     | Download file               |
 | GET    | `/api/files/info`       | `?id=<entryId>`                    | One entry + viewer rights   |

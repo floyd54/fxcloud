@@ -68,6 +68,22 @@ pub async fn create_folder(
     Ok(Json(json!({ "entry": entry })))
 }
 
+/// POST /api/files/folder/ensure – get-or-create a folder by name.
+///
+/// Folder uploads call this once per directory level, so re-uploading a tree
+/// reuses the folders that already exist instead of failing with 409.
+pub async fn ensure_folder(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<CreateFolderRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let entry = state
+        .db
+        .ensure_dir(user.id(), req.parent_id, req.name)
+        .await?;
+    Ok(Json(json!({ "entry": entry })))
+}
+
 /// POST /api/files/rename – rename an existing entry.
 pub async fn rename(
     State(state): State<SharedState>,
