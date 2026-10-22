@@ -157,8 +157,39 @@ All `/api/*` routes require a session cookie (except `register` / `login`).
 | POST   | `/api/files/folder`     | `{parent_id, name}`                | Create folder               |
 | POST   | `/api/files/upload`     | multipart: `parent`, `file`        | Upload file                 |
 | GET    | `/api/files/download`   | `?id=<fileId>`                     | Download file               |
+| GET    | `/api/files/info`       | `?id=<entryId>`                    | One entry + viewer rights   |
 | POST   | `/api/files/rename`     | `{id, name}`                       | Rename entry                |
 | POST   | `/api/files/delete`     | `{id}`                             | Delete (recursive for dirs) |
+| POST   | `/api/files/move`       | `{id, dest_parent}`                | Move entry (keeps name)     |
+| POST   | `/api/files/copy`       | `{id, dest_parent}`                | Copy entry/subtree + blobs  |
+| POST   | `/api/shares`           | `{file_id, username, permissions?}`| Share with a user           |
+| DELETE | `/api/shares/:id`       | –                                  | Revoke share (owner/grantee)|
+| GET    | `/api/shares/outgoing`  | `?file_id=<id>` (optional filter)  | Shares I created            |
+| GET    | `/api/shares/incoming`  | –                                  | Shares given to me          |
+
+`dest_parent: null` targets your own root. Moves keep the original name
+(collisions return `409`), refuse crossing owners, and enforce the permission
+bitmask (`2` update, `4` create, `8` delete) inherited from any covering share.
+
+## Sharing
+
+Sharing uses a Nextcloud-style permission bitmask:
+
+| Bit | Value | Meaning                                            |
+| --- | ----- | -------------------------------------------------- |
+| READ | 1 | View/download, list folder contents           |
+| UPDATE | 2 | Overwrite file content, rename/move            |
+| CREATE | 4 | Add files/folders inside a shared folder       |
+| DELETE | 8 | Delete the item (or children of a folder)      |
+| SHARE | 16 | Reserved for re-sharing (not wired up yet)     |
+
+A share appears directly in the grantee's **root file tree** under a unique
+display name (`Projekte` → `Projekte (alice) 2` on collision) and resolution
+crosses into the owner's subtree from there. Everything a grantee creates inside
+a shared folder lands in the *owner's* tree. Authorization always asks "do I own
+this, or does a covering share grant the required bit?" — so children of a
+shared folder inherit the folder's share. The same rules apply to the web UI and
+to WebDAV (`/dav/`).
 
 ## WebDAV
 

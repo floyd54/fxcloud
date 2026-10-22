@@ -536,7 +536,10 @@ async fn move_resource(
 // COPY
 // ---------------------------------------------------------------------------
 
-async fn copy_recursive(
+/// Copy `src` (file or whole subtree, including blob content) under
+/// `dst_parent` as `dst_name`. Shared with the WebDAV `COPY` handler and the
+/// web API so both go through the same permission-aware create path.
+pub(crate) async fn copy_recursive(
     state: &SharedState,
     owner_id: i64,
     src: &FileEntry,

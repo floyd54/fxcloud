@@ -7,7 +7,7 @@ use serde_json::json;
 
 use crate::auth::AuthUser;
 use crate::error::AppError;
-use crate::models::{CreateFolderRequest, RenameRequest};
+use crate::models::{CreateFolderRequest, RenameRequest, TransferRequest};
 use crate::web::state::SharedState;
 
 #[derive(Deserialize)]
@@ -91,6 +91,48 @@ pub async fn delete(
     let blob_ids = state.db.delete_entry(user.id(), id).await?;
     state.files.delete_blobs(&blob_ids).await;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// POST /api/files/move – move an entry into another folder (keeps its name).
+///
+/// Enforced by the DB layer: UPDATE on the source, CREATE at the destination,
+/// and no moving items across owners.
+pub async fn move_entry(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<TransferRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let entry = state
+        .db
+        .entry_for_read(user.id(), req.id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let moved = state
+        .db
+        .move_entry(user.id(), req.id, req.dest_parent, entry.name)
+        .await?;
+    Ok(Json(json!({ "entry": moved })))
+}
+
+/// POST /api/files/copy – copy an entry (subtree incl. content) elsewhere.
+///
+/// Requires READ on the source and CREATE at the destination; the copy lands
+/// in the destination owner's tree.
+pub async fn copy_entry(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<TransferRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let entry = state
+        .db
+        .entry_for_read(user.id(), req.id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let dst_name = entry.name.clone();
+    let copied =
+        crate::webdav::copy_recursive(&state, user.id(), &entry, req.dest_parent, dst_name)
+            .await?;
+    Ok(Json(json!({ "entry": copied })))
 }
 
 /// POST /api/files/upload – multipart upload of one file into `parent`.

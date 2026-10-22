@@ -119,3 +119,14 @@ pub struct CreateShareRequest {
     #[serde(default)]
     pub permissions: Option<i64>,
 }
+
+/// Payload to move or copy an entry into another folder.
+///
+/// `dest_parent: null` means the requester's own root. The entry keeps its
+/// name at the destination (the server rejects collisions with 409).
+#[derive(Debug, Deserialize)]
+pub struct TransferRequest {
+    pub id: i64,
+    #[serde(default)]
+    pub dest_parent: Option<i64>,
+}

@@ -188,6 +188,12 @@
       items.push(["Share", () => openShareDialog(entry)]);
     }
     if (perms & PERM_UPDATE) {
+      items.push(["Move to…", () => openTransferDialog("move", entry)]);
+    }
+    if (perms & PERM_READ) {
+      items.push(["Copy to…", () => openTransferDialog("copy", entry)]);
+    }
+    if (perms & PERM_UPDATE) {
       items.push(["Rename", () => renameEntry(entry.id, entry.name)]);
     }
     if (perms & PERM_DELETE) {
@@ -350,6 +356,104 @@
     await loadFiles(currentParent);
   }
 
+  // ---------- move / copy ----------
+  const transferModal = document.getElementById("transfer-modal");
+  let transfer = null; // { mode: "move"|"copy", id, name }
+  // Navigation stack inside the picker; starts at the user's root.
+  let pickStack = [{ id: null, name: "Home" }];
+
+  function openTransferDialog(mode, entry) {
+    transfer = { mode, id: entry.id, name: entry.name };
+    document.getElementById("transfer-title").textContent =
+      (mode === "move" ? "Move" : "Copy") + ` "${entry.name}" to…`;
+    document.getElementById("transfer-confirm").textContent =
+      mode === "move" ? "Move here" : "Copy here";
+    pickStack = [{ id: null, name: "Home" }];
+    transferModal.style.display = "flex";
+    renderPick().catch((e) => alert(e.message));
+  }
+
+  function closeTransferDialog() {
+    transferModal.style.display = "none";
+    transfer = null;
+  }
+
+  function pickAt(idx) {
+    pickStack = pickStack.slice(0, idx + 1);
+    renderPick().catch((e) => alert(e.message));
+  }
+
+  async function renderPick() {
+    const parent = pickStack[pickStack.length - 1].id;
+    const url = parent == null ? "/api/files" : `/api/files?parent=${parent}`;
+    const res = await api(url).then((r) => r.json());
+
+    // Path strip: clickable crumbs up to the current folder.
+    const crumbEl = document.getElementById("pick-crumb");
+    crumbEl.innerHTML = "";
+    pickStack.forEach((c, i) => {
+      if (i > 0) {
+        const sep = document.createElement("span");
+        sep.className = "sep";
+        sep.textContent = "›";
+        crumbEl.appendChild(sep);
+      }
+      if (i === pickStack.length - 1) {
+        const cur = document.createElement("span");
+        cur.className = "current";
+        cur.textContent = c.name;
+        crumbEl.appendChild(cur);
+      } else {
+        const a = document.createElement("a");
+        a.textContent = c.name;
+        a.addEventListener("click", () => pickAt(i));
+        crumbEl.appendChild(a);
+      }
+    });
+
+    // Folder list (files are not valid destinations).
+    const listEl = document.getElementById("pick-list");
+    listEl.innerHTML = "";
+    const dirs = res.entries.filter((e) => e.is_dir);
+    if (dirs.length === 0) {
+      listEl.innerHTML = '<div class="empty-small">No subfolders here.</div>';
+      return;
+    }
+    for (const d of dirs) {
+      const row = document.createElement("div");
+      row.className = "pick-row";
+      row.innerHTML =
+        '<span class="icon folder">📁</span><span class="pick-name">' +
+        escapeHtml(d.name) + "</span>" +
+        (d.owner_name
+          ? ' <span class="shared-badge">↔ ' + escapeHtml(d.owner_name) + "</span>"
+          : "");
+      row.addEventListener("click", () => {
+        pickStack.push({ id: d.id, name: d.name });
+        renderPick().catch((e) => alert(e.message));
+      });
+      listEl.appendChild(row);
+    }
+  }
+
+  async function transferConfirm() {
+    if (!transfer) return;
+    const dest = pickStack[pickStack.length - 1];
+    const endpoint = transfer.mode === "move" ? "/api/files/move" : "/api/files/copy";
+    try {
+      await api(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: transfer.id, dest_parent: dest.id }),
+      });
+      closeTransferDialog();
+      await loadFiles(currentParent);
+    } catch (e) {
+      // 409 (name exists), 403 (missing permission), 400 (into itself, …)
+      alert(e.message);
+    }
+  }
+
   // ---------- sharing ----------
   const shareModal = document.getElementById("share-modal");
   let shareTarget = null; // entry being shared
@@ -447,6 +551,12 @@
   });
   shareModal.addEventListener("click", (e) => {
     if (e.target === shareModal) closeShareDialog();
+  });
+  // Move/Copy destination picker.
+  document.getElementById("transfer-cancel").addEventListener("click", closeTransferDialog);
+  document.getElementById("transfer-confirm").addEventListener("click", transferConfirm);
+  transferModal.addEventListener("click", (e) => {
+    if (e.target === transferModal) closeTransferDialog();
   });
   fileInput.addEventListener("change", () => {
     uploadFiles(fileInput.files);

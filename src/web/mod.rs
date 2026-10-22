@@ -30,6 +30,8 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/files/download", get(routes::files::download))
         .route("/files/rename", post(routes::files::rename))
         .route("/files/delete", post(routes::files::delete))
+        .route("/files/move", post(routes::files::move_entry))
+        .route("/files/copy", post(routes::files::copy_entry))
         .route("/files/breadcrumb", get(routes::files::breadcrumb))
         .route("/files/info", get(routes::files::info));
     // Sharing

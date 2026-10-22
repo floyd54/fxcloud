@@ -382,3 +382,39 @@ tbody tr { cursor: pointer; }
 }
 .perm-checks { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
 .perm-checks label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+
+/* ---------- Move/Copy destination picker ---------- */
+.pick-modal { width: min(500px, calc(100vw - 32px)); }
+.pick-crumb {
+  font-size: 13px;
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.pick-crumb a { color: var(--accent); text-decoration: none; cursor: pointer; }
+.pick-crumb a:hover { text-decoration: underline; }
+.pick-crumb .sep { color: var(--muted); margin: 0 6px; }
+.pick-crumb .current { font-weight: 600; }
+
+.pick-list {
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+}
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.pick-row:hover { background: var(--row-hover); }
+.pick-name { flex: 1; }
