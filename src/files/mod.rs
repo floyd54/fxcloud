@@ -36,11 +36,11 @@ impl FileService {
         Ok(())
     }
 
-    /// Read a file's content, ensuring it belongs to `owner_id`.
-    pub async fn read_blob(&self, owner_id: i64, file_id: i64) -> Result<(FileEntry, Vec<u8>), AppError> {
+    /// Read a file's content for a user who owns it or holds a READ share.
+    pub async fn read_blob(&self, user_id: i64, file_id: i64) -> Result<(FileEntry, Vec<u8>), AppError> {
         let entry = self
             .db
-            .get_entry(owner_id, file_id)
+            .entry_for_read(user_id, file_id)
             .await?
             .ok_or(AppError::NotFound)?;
         if entry.is_dir {

@@ -1,5 +1,6 @@
 pub mod file;
 pub mod session;
+pub mod share;
 pub mod user;
 
 use std::path::Path;
@@ -57,11 +58,20 @@ impl Db {
         .map_err(|_| AppError::Join)?
     }
 
-    /// Apply any pending schema migrations.
+    /// Apply any pending schema migrations, in order.
+    ///
+    /// Each migration must be idempotent (`IF NOT EXISTS` / guarded DDL) so it
+    /// is safe to re-run on every startup.
     fn migrate(&self) -> anyhow::Result<()> {
+        const MIGRATIONS: &[(&str, &str)] = &[
+            ("001_init", include_str!("../../migrations/001_init.sql")),
+            ("002_shares", include_str!("../../migrations/002_shares.sql")),
+        ];
         let conn = self.pool.get()?;
-        conn.execute_batch(include_str!("../../migrations/001_init.sql"))
-            .map_err(|e| anyhow::anyhow!("migration failed: {e}"))?;
+        for (name, sql) in MIGRATIONS {
+            conn.execute_batch(sql)
+                .map_err(|e| anyhow::anyhow!("migration {name} failed: {e}"))?;
+        }
         Ok(())
     }
 }

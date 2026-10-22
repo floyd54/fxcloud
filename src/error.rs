@@ -21,6 +21,9 @@ pub enum AppError {
     #[error("unauthorized")]
     Unauthorized,
 
+    #[error("forbidden: missing permission")]
+    Forbidden,
+
     #[error("bad request: {0}")]
     BadRequest(String),
 
@@ -42,6 +45,7 @@ impl AppError {
             }
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
+            AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
         }

@@ -4,6 +4,7 @@ mod db;
 mod error;
 mod files;
 mod models;
+mod sharing;
 mod web;
 mod webdav;
 

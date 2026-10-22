@@ -31,6 +31,12 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/files/rename", post(routes::files::rename))
         .route("/files/delete", post(routes::files::delete))
         .route("/files/breadcrumb", get(routes::files::breadcrumb));
+    // Sharing
+    let api = api
+        .route("/shares", post(routes::shares::create))
+        .route("/shares/outgoing", get(routes::shares::outgoing))
+        .route("/shares/incoming", get(routes::shares::incoming))
+        .route("/shares/{id}", axum::routing::delete(routes::shares::revoke));
 
     Router::new()
         // UI pages & embedded assets

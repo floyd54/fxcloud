@@ -89,9 +89,30 @@ fn build_href(segments: &[String], is_dir: bool) -> String {
 }
 
 /// A resolved request target: either the user's virtual root or a real entry.
+///
+/// Entries carry the viewer's permission mask, so every operation can check
+/// its required bit before acting.
 enum Target {
     Root,
     Entry(FileEntry),
+}
+
+impl Target {
+    fn permissions(&self) -> i64 {
+        match self {
+            Target::Root => crate::sharing::PERM_ALL, // the root is always yours
+            Target::Entry(e) => e.permissions,
+        }
+    }
+}
+
+/// Enforce that a target grants `required` (permission bitmask).
+fn require(target: &Target, required: i64) -> Result<(), Response> {
+    if crate::sharing::grants(target.permissions(), required) {
+        Ok(())
+    } else {
+        Err(forbidden())
+    }
 }
 
 async fn resolve(
@@ -109,6 +130,13 @@ async fn resolve(
     }
 }
 
+/// A resolved *parent* directory for a create/move/copy operation: the virtual
+/// root (no id) or a collection entry carrying the viewer's permissions.
+struct ParentTarget {
+    id: Option<i64>,
+    permissions: i64,
+}
+
 /// Resolve a *parent* directory path for a create/move/copy operation.
 ///
 /// Unlike [`resolve`], a missing intermediate returns `409 Conflict` (per
@@ -117,14 +145,15 @@ async fn resolve_parent(
     state: &SharedState,
     owner_id: i64,
     segments: &[String],
-) -> Result<Option<i64>, Response> {
+) -> Result<ParentTarget, Response> {
     if segments.is_empty() {
-        return Ok(None); // the virtual root
+        // The virtual root belongs to the requester.
+        return Ok(ParentTarget { id: None, permissions: crate::sharing::PERM_ALL });
     }
     match state.db.resolve_path(owner_id, segments.to_vec()).await {
         Ok(Some(e)) => {
             if e.is_dir {
-                Ok(Some(e.id))
+                Ok(ParentTarget { id: Some(e.id), permissions: e.permissions })
             } else {
                 Err(conflict())
             }
@@ -162,6 +191,9 @@ async fn propfind(
         Ok(t) => t,
         Err(r) => return r,
     };
+    if let Err(r) = require(&target, crate::sharing::PERM_READ) {
+        return r;
+    }
     let depth = parse_depth(headers);
 
     let mut resources: Vec<Resource> = Vec::new();
@@ -236,6 +268,9 @@ async fn serve_file(
     if entry.is_dir {
         return method_not_allowed();
     }
+    if !crate::sharing::grants(entry.permissions, crate::sharing::PERM_READ) {
+        return forbidden();
+    }
 
     match state.files.read_blob(owner_id, entry.id).await {
         Ok((e, data)) => {
@@ -285,7 +320,7 @@ async fn put_file(
     let parent_segments = &segments[..segments.len() - 1];
 
     // Parent must be a directory (root is allowed); a missing one is 409.
-    let parent_id = match resolve_parent(state, owner_id, parent_segments).await {
+    let parent = match resolve_parent(state, owner_id, parent_segments).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -312,6 +347,9 @@ async fn put_file(
             if !overwrite {
                 return precondition();
             }
+            if !crate::sharing::grants(old.permissions, crate::sharing::PERM_UPDATE) {
+                return forbidden();
+            }
             if let Err(e) = state.db.update_file_meta(owner_id, old.id, size, mime).await {
                 return e.into_response();
             }
@@ -321,9 +359,13 @@ async fn put_file(
             StatusCode::NO_CONTENT.into_response()
         }
         None => {
+            // New file: the parent must grant CREATE (always true for own root).
+            if !crate::sharing::grants(parent.permissions, crate::sharing::PERM_CREATE) {
+                return forbidden();
+            }
             match state
                 .db
-                .create_file(owner_id, parent_id, name, size, mime)
+                .create_file(owner_id, parent.id, name, size, mime)
                 .await
             {
                 Ok(entry) => {
@@ -355,6 +397,9 @@ async fn delete_resource(state: &SharedState, owner_id: i64, segments: &[String]
         Ok(t) => t,
         Err(r) => return r,
     };
+    if let Err(r) = require(&target, crate::sharing::PERM_DELETE) {
+        return r;
+    }
     let entry = match target {
         Target::Root => return forbidden(),
         Target::Entry(e) => e,
@@ -380,17 +425,21 @@ async fn mkcol(state: &SharedState, owner_id: i64, segments: &[String]) -> Respo
     let parent_segments = &segments[..segments.len() - 1];
 
     // Missing/invalid parent -> 409 Conflict (RFC 4918).
-    let parent_id = match resolve_parent(state, owner_id, parent_segments).await {
+    let parent = match resolve_parent(state, owner_id, parent_segments).await {
         Ok(p) => p,
         Err(r) => return r,
     };
+    // New collection: the parent must grant CREATE.
+    if !crate::sharing::grants(parent.permissions, crate::sharing::PERM_CREATE) {
+        return forbidden();
+    }
 
     // 405 if the collection already exists.
     if let Ok(Some(_)) = state.db.resolve_path(owner_id, segments.to_vec()).await {
         return method_not_allowed();
     }
 
-    match state.db.create_dir(owner_id, parent_id, name).await {
+    match state.db.create_dir(owner_id, parent.id, name).await {
         Ok(_) => StatusCode::CREATED.into_response(),
         Err(e) => e.into_response(),
     }
@@ -430,6 +479,9 @@ async fn move_resource(
         Ok(Target::Entry(e)) => e,
         Err(r) => return r,
     };
+    if !crate::sharing::grants(src_entry.permissions, crate::sharing::PERM_UPDATE) {
+        return forbidden();
+    }
 
     let dest = match destination_segments(headers) {
         Some(s) if !s.is_empty() => s,
@@ -445,6 +497,9 @@ async fn move_resource(
         Ok(p) => p,
         Err(r) => return r,
     };
+    if !crate::sharing::grants(dest_parent.permissions, crate::sharing::PERM_CREATE) {
+        return forbidden();
+    }
 
     let existing = match state.db.resolve_path(owner_id, dest.clone()).await {
         Ok(e) => e,
@@ -463,7 +518,7 @@ async fn move_resource(
 
     match state
         .db
-        .move_entry(owner_id, src_entry.id, dest_parent, dest_name)
+        .move_entry(owner_id, src_entry.id, dest_parent.id, dest_name)
         .await
     {
         Ok(_) => {
@@ -528,6 +583,10 @@ async fn copy_resource(
         Ok(Target::Entry(e)) => e,
         Err(r) => return r,
     };
+    // Copying out of a share only needs READ on the source.
+    if !crate::sharing::grants(src_entry.permissions, crate::sharing::PERM_READ) {
+        return forbidden();
+    }
 
     let dest = match destination_segments(headers) {
         Some(s) if !s.is_empty() => s,
@@ -540,6 +599,9 @@ async fn copy_resource(
         Ok(p) => p,
         Err(r) => return r,
     };
+    if !crate::sharing::grants(dest_parent.permissions, crate::sharing::PERM_CREATE) {
+        return forbidden();
+    }
 
     if let Ok(Some(_)) = state.db.resolve_path(owner_id, dest.clone()).await {
         if !overwrite_allowed(headers) {
@@ -556,7 +618,7 @@ async fn copy_resource(
         }
     }
 
-    match copy_recursive(state, owner_id, &src_entry, dest_parent, dest_name).await {
+    match copy_recursive(state, owner_id, &src_entry, dest_parent.id, dest_name).await {
         Ok(_) => StatusCode::CREATED.into_response(),
         Err(e) => e.into_response(),
     }
