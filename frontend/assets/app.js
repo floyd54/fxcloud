@@ -705,6 +705,10 @@
     uploadFiles(fileInput.files);
     fileInput.value = "";
   });
+  folderInput.addEventListener("change", () => {
+    uploadFiles(folderInput.files);
+    folderInput.value = "";
+  });
 
   // Drag & drop upload.
   dropzone.addEventListener("click", () => fileInput.click());
