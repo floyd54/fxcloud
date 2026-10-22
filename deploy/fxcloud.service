@@ -1,0 +1,35 @@
+[Unit]
+Description=fxcloud – personal cloud (single-binary Nextcloud alternative)
+After=network.target
+
+[Service]
+Type=simple
+User=fxcloud
+Group=fxcloud
+WorkingDirectory=/opt/fxcloud
+ExecStart=/opt/fxcloud/fxcloud
+Restart=on-failure
+RestartSec=3
+
+# --- Environment configuration ---------------------------------------------
+Environment=FXCLOUD_BIND=0.0.0.0
+Environment=FXCLOUD_PORT=8080
+Environment=FXCLOUD_DATA=/opt/fxcloud/data
+Environment=RUST_LOG=fxcloud=info
+# Enable when serving over HTTPS behind a TLS-terminating reverse proxy:
+# Environment=FXCLOUD_SECURE_COOKIE=1
+
+# --- Security hardening ----------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/fxcloud/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

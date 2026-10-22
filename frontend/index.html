@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>fxcloud</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">fx<span>cloud</span></div>
+    <div class="spacer"></div>
+    <span class="user" id="user-label"></span>
+    <button id="logout-btn" type="button">Sign out</button>
+  </header>
+
+  <main class="container">
+    <div class="breadcrumb" id="breadcrumb"></div>
+
+    <div class="toolbar">
+      <button class="btn" id="new-folder-btn">＋ New folder</button>
+      <button class="btn" id="upload-btn">⬆ Upload file</button>
+      <input type="file" id="file-input" style="display:none" multiple />
+      <div class="grow"></div>
+    </div>
+
+    <div class="dropzone" id="dropzone">
+      Drop files here to upload, or click <strong>Upload file</strong>.
+    </div>
+
+    <div class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th class="size-col">Size</th>
+            <th class="date-col">Modified</th>
+            <th class="actions-col"></th>
+          </tr>
+        </thead>
+        <tbody id="file-rows">
+          <tr><td colspan="4"><div class="empty">Loading…</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

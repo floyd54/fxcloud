@@ -1,0 +1,48 @@
+[package]
+name = "fxcloud"
+version = "0.1.0"
+edition = "2021"
+description = "fxcloud – a Nextcloud-inspired personal cloud in a single Rust binary"
+license = "MIT"
+
+[dependencies]
+# Web framework
+axum = { version = "0.8", features = ["multipart", "macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "compression-gzip"] }
+
+# Database (bundled SQLite -> no system dependency, stays a single binary)
+rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+
+# Auth
+argon2 = "0.5"
+rand = "0.8"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Frontend embedding
+rust-embed = "8"
+mime_guess = "2"
+
+# WebDAV support
+base64 = "0.22"
+percent-encoding = "2"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Errors & logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in · fxcloud</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="logo">fx<span style="color:#22242a">cloud</span></div>
+      <div class="tagline">Your files, synced and in one place.</div>
+
+      <div class="auth-tabs">
+        <button id="tab-login" class="active" type="button">Sign in</button>
+        <button id="tab-register" type="button">Create account</button>
+      </div>
+
+      <div id="error" class="error-msg"></div>
+
+      <form id="auth-form" autocomplete="on">
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" name="username" type="text" required minlength="3" autocomplete="username" />
+        </div>
+
+        <div class="field" id="display-field" style="display:none">
+          <label for="display_name">Display name</label>
+          <input id="display_name" name="display_name" type="text" autocomplete="name" />
+        </div>
+
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" required minlength="8" autocomplete="current-password" />
+        </div>
+
+        <button class="btn" id="submit-btn" type="submit">Sign in</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/assets/login.js"></script>
+</body>
+</html>
