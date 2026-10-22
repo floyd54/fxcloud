@@ -1,5 +1,6 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth::AuthUser;
@@ -7,6 +8,12 @@ use crate::error::AppError;
 use crate::models::CreateShareRequest;
 use crate::sharing::{perm_names, PERM_ALL};
 use crate::web::state::SharedState;
+
+/// Optional filter for the outgoing-shares listing.
+#[derive(Deserialize, Default)]
+pub struct OutgoingQuery {
+    pub file_id: Option<i64>,
+}
 
 /// POST /api/shares – share a file/folder with another user.
 pub async fn create(
@@ -43,14 +50,15 @@ pub async fn revoke(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// GET /api/shares/outgoing – shares I created.
+/// GET /api/shares/outgoing[?file_id=N] – shares I created, optionally for one item.
 pub async fn outgoing(
     State(state): State<SharedState>,
     user: AuthUser,
+    Query(q): Query<OutgoingQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let shares = state.db.list_outgoing(user.id()).await?;
     Ok(Json(json!({
-        "shares": shares.iter().map(|s| json!({
+        "shares": shares.iter().filter(|s| q.file_id.is_none_or(|f| s.source_id == f)).map(|s| json!({
             "id": s.id,
             "file_id": s.source_id,
             "source_name": s.source_name,

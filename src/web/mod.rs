@@ -30,7 +30,8 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/files/download", get(routes::files::download))
         .route("/files/rename", post(routes::files::rename))
         .route("/files/delete", post(routes::files::delete))
-        .route("/files/breadcrumb", get(routes::files::breadcrumb));
+        .route("/files/breadcrumb", get(routes::files::breadcrumb))
+        .route("/files/info", get(routes::files::info));
     // Sharing
     let api = api
         .route("/shares", post(routes::shares::create))

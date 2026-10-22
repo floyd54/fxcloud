@@ -40,6 +40,21 @@ pub async fn breadcrumb(
     Ok(Json(json!({ "breadcrumbs": trail })))
 }
 
+/// GET /api/files/info?id=<id> – one entry's metadata including the viewer's
+/// permission mask (full set for own entries, the share's for shared ones).
+pub async fn info(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Query(q): Query<IdQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let entry = state
+        .db
+        .entry_for_read(user.id(), q.id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(json!({ "entry": entry })))
+}
+
 /// POST /api/files/folder – create a new folder.
 pub async fn create_folder(
     State(state): State<SharedState>,
