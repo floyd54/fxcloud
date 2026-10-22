@@ -42,6 +42,24 @@ Then open <http://127.0.0.1:8080>, create an account, and start uploading.
 > The first account you register is just a normal user; there is no separate
 > admin concept yet.
 
+## Prebuilt binaries
+
+Every tagged release on [GitHub Releases](https://github.com/floyd54/fxcloud/releases)
+ships a prebuilt binary:
+
+- `fxcloud-<tag>-x86_64-unknown-linux-musl` – a **fully static** Linux x86_64
+  build (~5 MB) with no runtime dependencies: download, `chmod +x fxcloud`,
+  run.
+
+Why only one build? There is exactly **one development environment** behind
+this project – my Linux x86_64 machine – and I don't maintain a zoo of build
+environments for other platforms. On macOS, ARM64, Windows, … just build from
+source (see [Quick start](#quick-start)); it's a plain
+`cargo build --release` with no extra tooling.
+
+New tags get their binary attached automatically by GitHub Actions
+(`.github/workflows/release.yml`).
+
 ## Configuration
 
 Everything is configurable via environment variables:

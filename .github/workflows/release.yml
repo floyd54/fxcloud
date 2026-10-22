@@ -1,0 +1,39 @@
+name: release
+
+# Attach a prebuilt, fully static Linux x86_64 binary to every v* release.
+# One build on purpose: it matches the development architecture (see README,
+# "Prebuilt binaries").
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build static binary
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Prepare asset
+        run: >
+          cp target/x86_64-unknown-linux-musl/release/fxcloud
+          "fxcloud-${GITHUB_REF_NAME}-x86_64-unknown-linux-musl"
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: fxcloud-*-x86_64-unknown-linux-musl
+          fail_on_unmatched_files: true
