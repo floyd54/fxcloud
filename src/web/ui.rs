@@ -59,8 +59,9 @@ fn serve_asset(path: &str) -> Result<Response, AppError> {
     let cache = if path == "index.html" || path == "login.html" {
         "no-cache"
     } else {
-        // Hashed-ish long cache for CSS/JS; adjust when adding asset fingerprinting.
-        "public, max-age=3600"
+        // No fingerprinting yet, so never let browsers sit on stale JS/CSS:
+        // `no-cache` forces a revalidation on every load (the assets are tiny).
+        "no-cache"
     };
 
     Ok((

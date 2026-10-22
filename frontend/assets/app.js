@@ -125,56 +125,20 @@
       const actionsTd = document.createElement("td");
       actionsTd.className = "actions-col";
 
-      const actions = document.createElement("div");
-      actions.className = "actions";
-
       const perms = entry.permissions == null ? PERM_ALL : entry.permissions;
       const isOwner = entry.owner_id === meId;
 
-      if (!entry.is_dir && (perms & PERM_READ)) {
-        const dl = document.createElement("button");
-        dl.textContent = "Download";
-        dl.addEventListener("click", (e) => {
-          e.stopPropagation();
-          downloadFile(entry.id, entry.name);
-        });
-        actions.appendChild(dl);
-      }
-
-      // Re-sharing (PERM_SHARE bit) needs cascading shares on the backend;
-      // for now only the owner manages an item's shares.
-      if (isOwner) {
-        const sh = document.createElement("button");
-        sh.textContent = "Share";
-        sh.addEventListener("click", (e) => {
-          e.stopPropagation();
-          openShareDialog(entry);
-        });
-        actions.appendChild(sh);
-      }
-
-      if (perms & PERM_UPDATE) {
-        const ren = document.createElement("button");
-        ren.textContent = "Rename";
-        ren.addEventListener("click", (e) => {
-          e.stopPropagation();
-          renameEntry(entry.id, entry.name);
-        });
-        actions.appendChild(ren);
-      }
-
-      if (perms & PERM_DELETE) {
-        const del = document.createElement("button");
-        del.className = "danger";
-        del.textContent = "Delete";
-        del.addEventListener("click", (e) => {
-          e.stopPropagation();
-          deleteEntry(entry.id, entry.is_dir, entry.name);
-        });
-        actions.appendChild(del);
-      }
-
-      actionsTd.appendChild(actions);
+      // Single "⋮" button; all actions live in a popup menu.
+      const kebab = document.createElement("button");
+      kebab.type = "button";
+      kebab.className = "kebab";
+      kebab.title = "Actions";
+      kebab.textContent = "⋮";
+      kebab.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleRowMenu(kebab, entry, perms, isOwner);
+      });
+      actionsTd.appendChild(kebab);
 
       tr.appendChild(nameTd);
       tr.appendChild(sizeTd);
@@ -188,6 +152,77 @@
       rowsEl.appendChild(tr);
     }
   }
+
+  // ---------- row action menu ----------
+  let openMenu = null; // currently shown popup (with an ._owner button)
+
+  function closeRowMenu() {
+    if (openMenu) {
+      openMenu.remove();
+      openMenu = null;
+    }
+  }
+
+  function toggleRowMenu(btn, entry, perms, isOwner) {
+    if (openMenu && openMenu._owner === btn) {
+      closeRowMenu();
+      return;
+    }
+    closeRowMenu();
+
+    const menu = document.createElement("div");
+    menu.className = "row-menu";
+    menu._owner = btn;
+
+    // Context-sensitive items, gated by the viewer's permission mask.
+    // Re-sharing (PERM_SHARE bit) needs cascading shares on the backend;
+    // for now only the owner manages an item's shares.
+    const items = [];
+    if (entry.is_dir) {
+      items.push(["Open", () => openFolder(entry.id, perms)]);
+    }
+    if (!entry.is_dir && (perms & PERM_READ)) {
+      items.push(["Download", () => downloadFile(entry.id, entry.name)]);
+    }
+    if (isOwner) {
+      items.push(["Share", () => openShareDialog(entry)]);
+    }
+    if (perms & PERM_UPDATE) {
+      items.push(["Rename", () => renameEntry(entry.id, entry.name)]);
+    }
+    if (perms & PERM_DELETE) {
+      items.push(["Delete", () => deleteEntry(entry.id, entry.is_dir, entry.name), true]);
+    }
+
+    for (const [label, fn, danger] of items) {
+      const it = document.createElement("button");
+      it.type = "button";
+      it.className = "row-menu-item" + (danger ? " danger" : "");
+      it.textContent = label;
+      it.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeRowMenu();
+        fn();
+      });
+      menu.appendChild(it);
+    }
+
+    document.body.appendChild(menu);
+    // Anchor to the kebab, kept inside the viewport.
+    const r = btn.getBoundingClientRect();
+    menu.style.top = Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 8) + "px";
+    const left = Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8);
+    menu.style.left = Math.max(8, left) + "px";
+    openMenu = menu;
+  }
+
+  // Close the popup on outside clicks, Escape, and layout changes.
+  document.addEventListener("click", closeRowMenu);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeRowMenu();
+  });
+  window.addEventListener("resize", closeRowMenu);
+  window.addEventListener("scroll", closeRowMenu, true);
 
   // ---------- data loading ----------
   async function loadFiles(parent) {
