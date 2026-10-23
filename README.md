@@ -22,6 +22,10 @@ build step, no runtime dependencies.
     dropzone — folder trees are recreated including empty subfolders)
   - download, copy/move (destination picker), rename, and delete entries
     via a per-row ⋮ menu (folders delete recursively)
+  - **multi-select** rows (checkbox per row, header checkbox = all,
+    Shift+click = a range) and process them together: delete, move/copy,
+    share, or download the whole selection as **one ZIP** (folders keep
+    their structure)
 - **Sharing** – share files/folders with other users using a Nextcloud-style
   permission bitmask; shares mount directly in the grantee's root tree and are
   enforced everywhere (web UI and WebDAV). See [Sharing](#sharing).
@@ -252,7 +256,13 @@ All `/api/*` routes require a session cookie (except `register` / `login`).
 | POST   | `/api/files/delete`     | `{id}`                             | Delete (recursive for dirs) |
 | POST   | `/api/files/move`       | `{id, dest_parent}`                | Move entry (keeps name)     |
 | POST   | `/api/files/copy`       | `{id, dest_parent}`                | Copy entry/subtree + blobs  |
+| POST   | `/api/files/batch/delete` | `{ids}`                         | Delete a selection (per-item outcome) |
+| POST   | `/api/files/batch/move` | `{ids, dest_parent}`               | Move a selection            |
+| POST   | `/api/files/batch/copy` | `{ids, dest_parent}`               | Copy a selection            |
+| POST   | `/api/files/zip`        | `{ids}`                            | Prepare a ZIP download → `{token}` |
+| GET    | `/api/files/zip`        | `?token=<token>`                   | Stream the prepared ZIP (single use, 5 min) |
 | POST   | `/api/shares`           | `{file_id, username, permissions?}`| Share with a user           |
+| POST   | `/api/shares/batch`     | `{file_ids, username, permissions?}` | Share a selection with one user |
 | DELETE | `/api/shares/:id`       | –                                  | Revoke share (owner/grantee)|
 | GET    | `/api/shares/outgoing`  | `?file_id=<id>` (optional filter)  | Shares I created            |
 | GET    | `/api/shares/incoming`  | –                                  | Shares given to me          |
@@ -260,6 +270,22 @@ All `/api/*` routes require a session cookie (except `register` / `login`).
 `dest_parent: null` targets your own root. Moves keep the original name
 (collisions return `409`), refuse crossing owners, and enforce the permission
 bitmask (`2` update, `4` create, `8` delete) inherited from any covering share.
+
+The `batch/*` endpoints answer with `{ok: [ids], failed: [{id, name, error}]}`.
+Items are processed **independently** on purpose: an entry the caller may not
+touch (or whose name already exists at the destination) is reported in
+`failed`, while the rest of the selection still goes through — nothing is
+rolled back. The single-item `delete` / `move` / `copy` / `shares` routes stay
+for API compatibility and take a one-element list in the UI.
+
+ZIP downloads are split into two steps so the URL stays short regardless of how
+many ids are selected (proxies cap request lines around 8 KB): the `POST`
+hands out a single-use token valid for five minutes, the `GET` builds the
+archive on a background thread and streams it. The archive is assembled in
+memory, so one download is capped at **1 GiB uncompressed** — the error tells
+you to take fewer items. Folders are packed with their structure and the
+modification times of the entries; content that disappeared in the meantime is
+skipped and listed in `fxcloud-skipped.txt` inside the archive.
 
 ## Sharing
 

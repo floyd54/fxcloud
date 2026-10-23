@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::auth::AuthUser;
 use crate::error::AppError;
-use crate::models::CreateShareRequest;
+use crate::models::{BatchOutcome, BatchShareRequest, CreateShareRequest};
 use crate::sharing::{perm_names, PERM_ALL};
 use crate::web::state::SharedState;
 
@@ -38,6 +38,44 @@ pub async fn create(
             "created_at": share.created_at,
         }
     })))
+}
+
+/// POST /api/shares/batch – share several items with the same user at once.
+///
+/// Independent per item, like the other batch operations: an item that is
+/// already shared with that user (or that the caller may not share) is
+/// reported in `failed`, the rest of the selection still goes through.
+pub async fn create_batch(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<BatchShareRequest>,
+) -> Result<Json<BatchOutcome>, AppError> {
+    if req.file_ids.is_empty() {
+        return Err(AppError::BadRequest("nothing is selected".into()));
+    }
+    let perms = req.permissions.unwrap_or(PERM_ALL);
+    let mut out = BatchOutcome::default();
+
+    for file_id in req.file_ids {
+        match state
+            .db
+            .create_share(user.id(), file_id, req.username.clone(), perms)
+            .await
+        {
+            Ok(_) => out.success(file_id),
+            Err(e) => {
+                let name = state
+                    .db
+                    .entry_for_read(user.id(), file_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|entry| entry.name);
+                out.failure(file_id, name, e.user_message());
+            }
+        }
+    }
+    Ok(Json(out))
 }
 
 /// DELETE /api/shares/:id – revoke a share (owner or grantee).

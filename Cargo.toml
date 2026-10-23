@@ -33,6 +33,9 @@ mime_guess = "2"
 base64 = "0.22"
 percent-encoding = "2"
 
+# ZIP download of a multi-selection (deflate only — keeps the single binary lean)
+zip = { version = "9", default-features = false, features = ["deflate", "chrono"] }
+
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
 

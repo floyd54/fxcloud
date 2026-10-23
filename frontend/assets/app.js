@@ -16,6 +16,13 @@
   // The signed-in user's id (to tell own items from shared ones).
   let meId = null;
 
+  // Multi-selection: id -> entry, as shown in the current listing.
+  const selected = new Map();
+  // The current listing (for "select all" and shift-click ranges) and the
+  // position of the last checkbox the user toggled.
+  let currentEntries = [];
+  let lastCheckIndex = null;
+
   // Nextcloud-style permission bits.
   const PERM_READ = 1, PERM_UPDATE = 2, PERM_CREATE = 4, PERM_DELETE = 8,
         PERM_SHARE = 16, PERM_ALL = 31;
@@ -94,15 +101,31 @@
 
   function renderRows(entries) {
     rowsEl.innerHTML = "";
+    currentEntries = entries;
     if (entries.length === 0) {
       rowsEl.innerHTML =
-        '<tr><td colspan="4"><div class="empty"><div class="big">📂</div>' +
+        '<tr><td colspan="5"><div class="empty"><div class="big">📂</div>' +
         "This folder is empty.<br/>Upload a file or create a folder to get started.</div></td></tr>";
       return;
     }
 
-    for (const entry of entries) {
+    entries.forEach((entry, index) => {
       const tr = document.createElement("tr");
+      tr.dataset.id = String(entry.id);
+      if (selected.has(entry.id)) tr.classList.add("selected");
+
+      // Selection checkbox; Shift+click extends over a range of rows.
+      const checkTd = document.createElement("td");
+      checkTd.className = "check-col";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = selected.has(entry.id);
+      box.title = "Select";
+      box.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleRowSelection(entry, index, box.checked, e.shiftKey);
+      });
+      checkTd.appendChild(box);
 
       const nameTd = document.createElement("td");
       nameTd.innerHTML =
@@ -126,7 +149,7 @@
       const actionsTd = document.createElement("td");
       actionsTd.className = "actions-col";
 
-      const perms = entry.permissions == null ? PERM_ALL : entry.permissions;
+      const perms = permsOf(entry);
       const isOwner = entry.owner_id === meId;
 
       // Single "⋮" button; all actions live in a popup menu.
@@ -141,6 +164,7 @@
       });
       actionsTd.appendChild(kebab);
 
+      tr.appendChild(checkTd);
       tr.appendChild(nameTd);
       tr.appendChild(sizeTd);
       tr.appendChild(dateTd);
@@ -151,7 +175,97 @@
       }
 
       rowsEl.appendChild(tr);
+    });
+  }
+
+  // ---------- selection (multi-select) ----------
+  function permsOf(entry) {
+    return entry.permissions == null ? PERM_ALL : entry.permissions;
+  }
+
+  function setSelected(entry, on) {
+    if (on) selected.set(entry.id, entry);
+    else selected.delete(entry.id);
+  }
+
+  function toggleRowSelection(entry, index, checked, shift) {
+    if (shift && lastCheckIndex != null) {
+      // Shift+click: apply the new state to everything between the two rows.
+      const from = Math.min(lastCheckIndex, index);
+      const to = Math.max(lastCheckIndex, index);
+      for (let i = from; i <= to; i++) setSelected(currentEntries[i], checked);
+    } else {
+      setSelected(entry, checked);
     }
+    lastCheckIndex = index;
+    syncSelectionUi();
+  }
+
+  function clearSelection() {
+    selected.clear();
+    lastCheckIndex = null;
+    syncSelectionUi();
+  }
+
+  // Selected items an action is allowed to touch (per-entry permission bits).
+  function eligible(pred) {
+    return [...selected.values()].filter(pred);
+  }
+
+  function syncSelectionUi() {
+    for (const tr of rowsEl.querySelectorAll("tr[data-id]")) {
+      const on = selected.has(Number(tr.dataset.id));
+      tr.classList.toggle("selected", on);
+      const box = tr.querySelector(".check-col input");
+      if (box) box.checked = on;
+    }
+
+    // Header checkbox: checked when all rows are in, indeterminate when some.
+    const all = document.getElementById("select-all");
+    const count = currentEntries.filter((e) => selected.has(e.id)).length;
+    all.checked = currentEntries.length > 0 && count === currentEntries.length;
+    all.indeterminate = count > 0 && count < currentEntries.length;
+
+    updateBulkBar();
+  }
+
+  function updateBulkBar() {
+    const bar = document.getElementById("bulkbar");
+    bar.style.display = selected.size === 0 ? "none" : "";
+    if (selected.size === 0) return;
+
+    document.getElementById("bulk-count").textContent =
+      selected.size === 1 ? "1 item selected" : `${selected.size} items selected`;
+
+    const enable = (id, can) => {
+      document.getElementById(id).disabled = !can;
+    };
+    enable("bulk-download", eligible((e) => permsOf(e) & PERM_READ).length > 0);
+    enable("bulk-move", eligible((e) => permsOf(e) & PERM_UPDATE).length > 0);
+    enable("bulk-copy", eligible((e) => permsOf(e) & PERM_READ).length > 0);
+    enable("bulk-share", eligible((e) => e.owner_id === meId).length > 0);
+    enable("bulk-delete", eligible((e) => permsOf(e) & PERM_DELETE).length > 0);
+  }
+
+  // Show which items a batch skipped because the caller lacks the permission.
+  function skippedNote(done) {
+    const missing = selected.size - done;
+    return missing > 0
+      ? `\n\n${missing} of ${selected.size} selected item(s) skipped — missing permission.`
+      : "";
+  }
+
+  // Turn one batch response into user feedback (partial failures are normal).
+  function reportOutcome(out) {
+    if (!out || !out.failed || out.failed.length === 0) return;
+    const lines = out.failed
+      .slice(0, 8)
+      .map((f) => `${f.name || "#" + f.id}: ${f.error}`);
+    alert(
+      `${out.failed.length} of ${out.failed.length + out.ok.length} item(s) failed:\n\n` +
+        lines.join("\n") +
+        (out.failed.length > 8 ? "\n…" : "")
+    );
   }
 
   // ---------- row action menu ----------
@@ -186,13 +300,13 @@
       items.push(["Download", () => downloadFile(entry.id, entry.name)]);
     }
     if (isOwner) {
-      items.push(["Share", () => openShareDialog(entry)]);
+      items.push(["Share", () => openShareDialog([entry])]);
     }
     if (perms & PERM_UPDATE) {
-      items.push(["Move to…", () => openTransferDialog("move", entry)]);
+      items.push(["Move to…", () => openTransferDialog("move", [entry])]);
     }
     if (perms & PERM_READ) {
-      items.push(["Copy to…", () => openTransferDialog("copy", entry)]);
+      items.push(["Copy to…", () => openTransferDialog("copy", [entry])]);
     }
     if (perms & PERM_UPDATE) {
       items.push(["Rename", () => renameEntry(entry.id, entry.name)]);
@@ -241,10 +355,14 @@
         : api(`/api/files/breadcrumb?id=${parent}`).then((r) => r.json()),
     ]);
     renderBreadcrumb(crumbRes.breadcrumbs);
+    // Navigating starts a fresh selection — the old one described another folder.
+    selected.clear();
+    lastCheckIndex = null;
     renderRows(listRes.entries);
     currentPerms =
       parent == null || folderPerms[parent] == null ? PERM_ALL : folderPerms[parent];
     renderToolbar();
+    syncSelectionUi();
   }
 
   // Show the create toolbar only where the viewer holds CREATE.
@@ -319,11 +437,13 @@
       : `Delete file "${name}"?`;
     if (!confirm(promptText)) return;
     try {
-      await api("/api/files/delete", {
+      // Same endpoint as the bulk bar — a single item is a batch of one.
+      const res = await api("/api/files/batch/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify({ ids: [id] }),
       });
+      reportOutcome(await res.json());
       await loadFiles(currentParent);
     } catch (e) {
       alert(e.message);
@@ -498,14 +618,18 @@
 
   // ---------- move / copy ----------
   const transferModal = document.getElementById("transfer-modal");
-  let transfer = null; // { mode: "move"|"copy", id, name }
+  let transfer = null; // { mode: "move"|"copy", entries: [...] }
   // Navigation stack inside the picker; starts at the user's root.
   let pickStack = [{ id: null, name: "Home" }];
 
-  function openTransferDialog(mode, entry) {
-    transfer = { mode, id: entry.id, name: entry.name };
+  // Open the destination picker for one entry (row menu) or the whole
+  // selection (bulk bar) — both go through the batch endpoints.
+  function openTransferDialog(mode, entries) {
+    transfer = { mode, entries };
+    const what =
+      entries.length === 1 ? `"${entries[0].name}"` : `${entries.length} items`;
     document.getElementById("transfer-title").textContent =
-      (mode === "move" ? "Move" : "Copy") + ` "${entry.name}" to…`;
+      (mode === "move" ? "Move " : "Copy ") + what + " to…";
     document.getElementById("transfer-confirm").textContent =
       mode === "move" ? "Move here" : "Copy here";
     pickStack = [{ id: null, name: "Home" }];
@@ -579,43 +703,134 @@
   async function transferConfirm() {
     if (!transfer) return;
     const dest = pickStack[pickStack.length - 1];
-    const endpoint = transfer.mode === "move" ? "/api/files/move" : "/api/files/copy";
+    const endpoint =
+      transfer.mode === "move" ? "/api/files/batch/move" : "/api/files/batch/copy";
     try {
-      await api(endpoint, {
+      const res = await api(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: transfer.id, dest_parent: dest.id }),
+        body: JSON.stringify({
+          ids: transfer.entries.map((e) => e.id),
+          dest_parent: dest.id,
+        }),
       });
+      const out = await res.json();
       closeTransferDialog();
+      // 409 (name exists), 403 (missing permission), 400 (into itself, …)
+      reportOutcome(out);
       await loadFiles(currentParent);
     } catch (e) {
-      // 409 (name exists), 403 (missing permission), 400 (into itself, …)
       alert(e.message);
     }
   }
 
+  // ---------- bulk actions (operating on the selection) ----------
+  function bulkTransfer(mode) {
+    const entries = eligible((e) =>
+      mode === "move" ? permsOf(e) & PERM_UPDATE : permsOf(e) & PERM_READ
+    );
+    if (entries.length === 0) {
+      alert(
+        `None of the selected items may be ${mode === "move" ? "moved" : "copied"}.`
+      );
+      return;
+    }
+    openTransferDialog(mode, entries);
+  }
+
+  function bulkDelete() {
+    const entries = eligible((e) => permsOf(e) & PERM_DELETE);
+    if (entries.length === 0) return;
+
+    const files = entries.filter((e) => !e.is_dir);
+    const dirs = entries.filter((e) => e.is_dir);
+    let msg = `Delete ${entries.length} of ${selected.size} selected item(s)?`;
+    if (files.length) {
+      msg += `\n\n${files.length} file(s) · ${formatSize(
+        files.reduce((sum, e) => sum + (e.size || 0), 0)
+      )}`;
+    }
+    if (dirs.length) {
+      msg += `\n${dirs.length} folder(s) · with everything inside them`;
+    }
+    msg += skippedNote(entries.length);
+    if (!confirm(msg)) return;
+
+    (async () => {
+      try {
+        const res = await api("/api/files/batch/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: entries.map((e) => e.id) }),
+        });
+        reportOutcome(await res.json());
+        await loadFiles(currentParent);
+      } catch (e) {
+        alert(e.message);
+      }
+    })();
+  }
+
+  // Pack the readable part of the selection into one ZIP on the server and
+  // hand the download over to the browser.
+  function bulkDownload() {
+    const entries = eligible((e) => permsOf(e) & PERM_READ);
+    if (entries.length === 0) return;
+
+    (async () => {
+      try {
+        const res = await api("/api/files/zip", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: entries.map((e) => e.id) }),
+        });
+        const body = await res.json();
+        // Top-level navigation: the response is an attachment, not a page.
+        window.location.href = `/api/files/zip?token=${encodeURIComponent(body.token)}`;
+      } catch (e) {
+        alert(e.message);
+      }
+    })();
+  }
+
+  function bulkShare() {
+    const entries = eligible((e) => e.owner_id === meId);
+    if (entries.length === 0) return;
+    openShareDialog(entries);
+  }
+
   // ---------- sharing ----------
   const shareModal = document.getElementById("share-modal");
-  let shareTarget = null; // entry being shared
+  let shareEntries = []; // one entry (row menu) or the whole selection (bulk bar)
 
-  function openShareDialog(entry) {
-    shareTarget = entry;
-    document.getElementById("share-title").textContent = `Share "${entry.name}"`;
+  function openShareDialog(entries) {
+    shareEntries = entries;
+    document.getElementById("share-title").textContent =
+      entries.length === 1
+        ? `Share "${entries[0].name}"`
+        : `Share ${entries.length} items`;
     document.getElementById("share-username").value = "";
     document
       .querySelectorAll("#perm-checks input")
       .forEach((cb) => (cb.checked = true));
     shareModal.style.display = "flex";
-    loadShareList().catch((e) => alert(e.message));
+
+    if (entries.length === 1) {
+      // Existing shares only make sense item by item.
+      loadShareList().catch((e) => alert(e.message));
+    } else {
+      document.getElementById("share-list").innerHTML =
+        '<div class="empty-small">Every selected item gets the same share and permissions.</div>';
+    }
   }
 
   function closeShareDialog() {
     shareModal.style.display = "none";
-    shareTarget = null;
+    shareEntries = [];
   }
 
   async function loadShareList() {
-    const res = await api(`/api/shares/outgoing?file_id=${shareTarget.id}`).then(
+    const res = await api(`/api/shares/outgoing?file_id=${shareEntries[0].id}`).then(
       (r) => r.json()
     );
     const listEl = document.getElementById("share-list");
@@ -650,7 +865,7 @@
   }
 
   async function shareAdd() {
-    if (!shareTarget) return;
+    if (shareEntries.length === 0) return;
     const username = document.getElementById("share-username").value.trim();
     if (!username) return;
     let mask = 0;
@@ -660,13 +875,28 @@
         if (cb.checked) mask |= Number(cb.value);
       });
     try {
-      await api("/api/shares", {
+      // One request for the whole selection (a single item is just an array
+      // of one, so both paths stay identical).
+      const res = await api("/api/shares/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ file_id: shareTarget.id, username, permissions: mask }),
+        body: JSON.stringify({
+          file_ids: shareEntries.map((e) => e.id),
+          username,
+          permissions: mask,
+        }),
       });
+      const out = await res.json();
       document.getElementById("share-username").value = "";
-      await loadShareList();
+      if (shareEntries.length === 1) {
+        await loadShareList();
+      } else {
+        document.getElementById("share-list").innerHTML =
+          out.ok.length > 0
+            ? `<div class="empty-small">${out.ok.length} of ${shareEntries.length} item(s) shared with ${escapeHtml(username)}.</div>`
+            : '<div class="empty-small">Nothing was shared.</div>';
+      }
+      reportOutcome(out);
     } catch (e) {
       alert(e.message);
     }
@@ -701,6 +931,21 @@
   transferModal.addEventListener("click", (e) => {
     if (e.target === transferModal) closeTransferDialog();
   });
+  // Multi-selection: header checkbox selects the whole listing (deselecting
+  // it clears everything, including a partial selection).
+  document.getElementById("select-all").addEventListener("change", (e) => {
+    const on = e.target.checked;
+    currentEntries.forEach((entry) => setSelected(entry, on));
+    lastCheckIndex = null;
+    syncSelectionUi();
+  });
+  // Bulk action bar (shown while anything is selected).
+  document.getElementById("bulk-download").addEventListener("click", bulkDownload);
+  document.getElementById("bulk-move").addEventListener("click", () => bulkTransfer("move"));
+  document.getElementById("bulk-copy").addEventListener("click", () => bulkTransfer("copy"));
+  document.getElementById("bulk-share").addEventListener("click", bulkShare);
+  document.getElementById("bulk-delete").addEventListener("click", bulkDelete);
+  document.getElementById("bulk-clear").addEventListener("click", clearSelection);
   fileInput.addEventListener("change", () => {
     uploadFiles(fileInput.files);
     fileInput.value = "";

@@ -136,3 +136,71 @@ pub struct TransferRequest {
     #[serde(default)]
     pub dest_parent: Option<i64>,
 }
+
+// ---------------------------------------------------------------------------
+// Batch operations (multi-selection in the file list)
+// ---------------------------------------------------------------------------
+
+/// Payload for a batch operation on a list of entries (e.g. delete).
+#[derive(Debug, Deserialize)]
+pub struct BatchIdsRequest {
+    pub ids: Vec<i64>,
+}
+
+/// Payload to move or copy several entries into the same destination folder.
+#[derive(Debug, Deserialize)]
+pub struct BatchTransferRequest {
+    pub ids: Vec<i64>,
+    #[serde(default)]
+    pub dest_parent: Option<i64>,
+}
+
+/// Payload to share several entries with one user in a single step.
+#[derive(Debug, Deserialize)]
+pub struct BatchShareRequest {
+    pub file_ids: Vec<i64>,
+    pub username: String,
+    /// Optional permission mask; defaults to all permissions.
+    #[serde(default)]
+    pub permissions: Option<i64>,
+}
+
+/// Payload to prepare a ZIP download of a selection.
+#[derive(Debug, Deserialize)]
+pub struct ZipRequest {
+    pub ids: Vec<i64>,
+}
+
+/// One entry a batch operation could not process.
+#[derive(Debug, Serialize)]
+pub struct BatchFailure {
+    pub id: i64,
+    /// Entry name when it could still be looked up, `None` otherwise.
+    pub name: Option<String>,
+    pub error: String,
+}
+
+/// Result of a batch operation: what went through, and what didn't.
+///
+/// Batch items are independent on purpose — one forbidden or colliding entry
+/// must not roll back the rest of the selection.
+#[derive(Debug, Default, Serialize)]
+pub struct BatchOutcome {
+    pub ok: Vec<i64>,
+    pub failed: Vec<BatchFailure>,
+}
+
+impl BatchOutcome {
+    /// Record a successful item.
+    pub fn success(&mut self, id: i64) {
+        self.ok.push(id);
+    }
+
+    /// Record a failed item, keeping the entry's name for the error message.
+    ///
+    /// The caller passes [`crate::error::AppError::user_message`] so internal
+    /// 5xx details never reach the client.
+    pub fn failure(&mut self, id: i64, name: Option<String>, error: String) {
+        self.failed.push(BatchFailure { id, name, error });
+    }
+}

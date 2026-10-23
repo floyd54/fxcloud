@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::io::{Read, Write};
+
 use axum::extract::{Multipart, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -7,7 +10,11 @@ use serde_json::json;
 
 use crate::auth::AuthUser;
 use crate::error::AppError;
-use crate::models::{CreateFolderRequest, RenameRequest, TransferRequest};
+use crate::files::FileService;
+use crate::models::{
+    BatchIdsRequest, BatchOutcome, BatchTransferRequest, CreateFolderRequest, FileEntry,
+    RenameRequest, TransferRequest, ZipRequest,
+};
 use crate::web::state::SharedState;
 
 #[derive(Deserialize)]
@@ -239,6 +246,408 @@ pub async fn download(
     ];
 
     Ok((StatusCode::OK, headers, data).into_response())
+}
+
+// ---------------------------------------------------------------------------
+// Batch operations (multi-selection)
+// ---------------------------------------------------------------------------
+
+/// POST /api/files/batch/delete – delete several entries in one request.
+///
+/// Items are processed independently: an entry the caller may not delete is
+/// reported in `failed`, while the rest of the selection still goes through.
+pub async fn batch_delete(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<BatchIdsRequest>,
+) -> Result<Json<BatchOutcome>, AppError> {
+    if req.ids.is_empty() {
+        return Err(AppError::BadRequest("nothing is selected".into()));
+    }
+    let mut out = BatchOutcome::default();
+    let mut blob_ids = Vec::new();
+
+    for id in req.ids {
+        match state.db.delete_entry(user.id(), id).await {
+            Ok(blobs) => {
+                blob_ids.extend(blobs);
+                out.success(id);
+            }
+            Err(e) => {
+                let name = entry_name(&state, user.id(), id).await;
+                out.failure(id, name, e.user_message());
+            }
+        }
+    }
+
+    state.files.delete_blobs(&blob_ids).await;
+    Ok(Json(out))
+}
+
+/// POST /api/files/batch/move – move several entries into one folder.
+///
+/// Same rules as the single-item move (permissions, owner crossing, cycle and
+/// name-collision guards), applied per item.
+pub async fn batch_move(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<BatchTransferRequest>,
+) -> Result<Json<BatchOutcome>, AppError> {
+    if req.ids.is_empty() {
+        return Err(AppError::BadRequest("nothing is selected".into()));
+    }
+    let mut out = BatchOutcome::default();
+
+    for id in req.ids {
+        let result = async {
+            let entry = state
+                .db
+                .entry_for_read(user.id(), id)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            state
+                .db
+                .move_entry(user.id(), id, req.dest_parent, entry.name)
+                .await?;
+            Ok::<(), AppError>(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => out.success(id),
+            Err(e) => {
+                let name = entry_name(&state, user.id(), id).await;
+                out.failure(id, name, e.user_message());
+            }
+        }
+    }
+    Ok(Json(out))
+}
+
+/// POST /api/files/batch/copy – copy several entries (subtrees incl. content)
+/// into one folder.
+pub async fn batch_copy(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<BatchTransferRequest>,
+) -> Result<Json<BatchOutcome>, AppError> {
+    if req.ids.is_empty() {
+        return Err(AppError::BadRequest("nothing is selected".into()));
+    }
+    let mut out = BatchOutcome::default();
+
+    for id in req.ids {
+        let result = async {
+            let entry = state
+                .db
+                .entry_for_read(user.id(), id)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            let name = entry.name.clone();
+            crate::webdav::copy_recursive(&state, user.id(), &entry, req.dest_parent, name).await?;
+            Ok::<(), AppError>(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => out.success(id),
+            Err(e) => {
+                let name = entry_name(&state, user.id(), id).await;
+                out.failure(id, name, e.user_message());
+            }
+        }
+    }
+    Ok(Json(out))
+}
+
+/// Look an entry's name up for a failure report (best effort — the entry may
+/// already be gone by then).
+async fn entry_name(state: &SharedState, user_id: i64, id: i64) -> Option<String> {
+    state
+        .db
+        .entry_for_read(user_id, id)
+        .await
+        .ok()
+        .flatten()
+        .map(|entry| entry.name)
+}
+
+// ---------------------------------------------------------------------------
+// ZIP download of a selection
+// ---------------------------------------------------------------------------
+
+/// Largest uncompressed selection a single ZIP download may contain.
+///
+/// The archive is assembled in memory before it is streamed, so the cap keeps
+/// a huge "select all" from taking the process down; the error message tells
+/// the user to download in several runs.
+const MAX_ZIP_BYTES: i64 = 1024 * 1024 * 1024; // 1 GiB
+
+#[derive(Deserialize)]
+pub struct ZipQuery {
+    pub token: String,
+}
+
+/// POST /api/files/zip – prepare a ZIP download, returning `{token}`.
+///
+/// The browser then opens `GET /api/files/zip?token=…`, which builds the
+/// archive. Two steps keep the URL short no matter how many items are
+/// selected (proxies cap request lines around 8 KB).
+pub async fn prepare_zip(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<ZipRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if req.ids.is_empty() {
+        return Err(AppError::BadRequest("nothing is selected".into()));
+    }
+
+    // Walk the selection once to size it: folders count with everything
+    // inside them, and unreadable/deleted items fail early with a clear error.
+    let mut total: i64 = 0;
+    for id in &req.ids {
+        for (_, entry) in state.db.readable_subtree(user.id(), *id).await? {
+            if !entry.is_dir {
+                total += entry.size;
+            }
+        }
+        if total > MAX_ZIP_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "the selection is too large for a single download ({}) — download fewer items at a time",
+                human_size(total)
+            )));
+        }
+    }
+
+    let token = state.new_zip_job(user.id(), req.ids);
+    Ok(Json(json!({ "token": token })))
+}
+
+/// GET /api/files/zip?token=… – build the archive and stream it as an
+/// attachment.
+pub async fn zip_download(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Query(q): Query<ZipQuery>,
+) -> Result<Response, AppError> {
+    // Single-use token: unknown, expired or prepared by someone else — plain
+    // text, because this request comes from a browser navigation.
+    let Some(job) = state.take_zip_job(&q.token, user.id()) else {
+        return Ok(text_error(
+            StatusCode::GONE,
+            "This download link has expired or was already used.\nSelect the items again to start a new download.",
+        ));
+    };
+
+    // Re-read the selection: items may have been deleted or unshared since
+    // the token was created. Those are skipped (and noted in the archive);
+    // only a real database error aborts.
+    let mut trees = Vec::with_capacity(job.ids.len());
+    for id in job.ids {
+        match state.db.readable_subtree(user.id(), id).await {
+            Ok(tree) => trees.push(tree),
+            Err(AppError::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    if trees.is_empty() {
+        return Ok(text_error(
+            StatusCode::NOT_FOUND,
+            "Nothing to download: the selected items are gone or no longer readable.",
+        ));
+    }
+
+    let filename = zip_filename(&trees);
+    let builder_state = state.clone();
+    let data = tokio::task::spawn_blocking(move || build_zip(&builder_state, trees))
+        .await
+        .map_err(|_| AppError::Join)??;
+
+    // RFC 5987 encoding so non-ASCII names survive the header.
+    let encoded_name = encode_rfc5987(&filename);
+    let disposition = format!("attachment; filename*=UTF-8''{encoded_name}");
+    let headers = [
+        (
+            header::CONTENT_TYPE,
+            "application/zip".parse::<header::HeaderValue>().unwrap(),
+        ),
+        (
+            header::CONTENT_DISPOSITION,
+            disposition.parse::<header::HeaderValue>().unwrap(),
+        ),
+        (
+            header::CONTENT_LENGTH,
+            data.len()
+                .to_string()
+                .parse::<header::HeaderValue>()
+                .unwrap(),
+        ),
+    ];
+    Ok((StatusCode::OK, headers, data).into_response())
+}
+
+/// Download name: the single item's own name, or a generic count for more.
+fn zip_filename(trees: &[Vec<(String, FileEntry)>]) -> String {
+    if trees.len() == 1 {
+        let name = trees[0]
+            .first()
+            .map(|(path, _)| path.as_str())
+            .unwrap_or("download");
+        format!("{name}.zip")
+    } else {
+        format!("{} items.zip", trees.len())
+    }
+}
+
+/// Assemble the archive.
+///
+/// Runs on the blocking pool: the zip crate writes synchronously and blobs are
+/// read off disk in 64 KiB chunks, so only the compressed output is held in
+/// memory (bounded by [`MAX_ZIP_BYTES`]). Content that disappeared mid-download
+/// is skipped and listed in `fxcloud-skipped.txt` inside the archive instead
+/// of failing the whole selection.
+fn build_zip(
+    state: &SharedState,
+    trees: Vec<Vec<(String, FileEntry)>>,
+) -> Result<Vec<u8>, AppError> {
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut used: HashSet<String> = HashSet::new();
+    let mut skipped: Vec<String> = Vec::new();
+
+    for tree in trees {
+        // Two selected items may carry the same path (the API takes ids from
+        // anywhere, not just one folder), so the *root* of each tree gets the
+        // " (2)" suffix — its descendants follow it and stay together.
+        let root_path = match tree.first() {
+            Some((path, _)) => path.clone(),
+            None => continue,
+        };
+        let root = unique_path(&mut used, &root_path);
+        let prefix = format!("{root_path}/");
+
+        for (path, entry) in tree {
+            let path = if path == root_path {
+                root.clone()
+            } else if let Some(rest) = path.strip_prefix(&prefix) {
+                format!("{root}/{rest}")
+            } else {
+                path
+            };
+            // Carry the item's real modification time into the archive.
+            let opts = match entry.modified_at.naive_utc().try_into() {
+                Ok(time) => opts.last_modified_time(time),
+                Err(_) => opts,
+            };
+
+            if entry.is_dir {
+                writer
+                    .add_directory(format!("{path}/"), opts)
+                    .map_err(zip_error)?;
+                continue;
+            }
+
+            writer.start_file(&path, opts).map_err(zip_error)?;
+            if let Err(e) = copy_blob(&state.files, entry.id, &mut writer) {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    skipped.push(format!("{path} (content missing)"));
+                } else {
+                    return Err(AppError::Internal(anyhow::anyhow!(
+                        "reading content of '{path}': {e}"
+                    )));
+                }
+            }
+        }
+    }
+
+    if !skipped.is_empty() {
+        tracing::warn!(
+            count = skipped.len(),
+            "zip download: entries without content"
+        );
+        writer
+            .start_file("fxcloud-skipped.txt", opts)
+            .map_err(zip_error)?;
+        let note = format!(
+            "The following entries could not be included:\n{}\n",
+            skipped.join("\n")
+        );
+        writer
+            .write_all(note.as_bytes())
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("writing zip note: {e}")))?;
+    }
+
+    let cursor = writer.finish().map_err(zip_error)?;
+    Ok(cursor.into_inner())
+}
+
+/// Stream one blob into the archive without loading it whole.
+fn copy_blob(
+    files: &FileService,
+    id: i64,
+    writer: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    let mut file = std::fs::File::open(files.blob_path(id))?;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n])?;
+    }
+    Ok(())
+}
+
+/// Keep an archive's top-level name unique: two selected items can be named the
+/// same ("report.txt" in different folders) and a zip may not contain a path
+/// twice. The second occurrence becomes "report (2).txt".
+fn unique_path(used: &mut HashSet<String>, path: &str) -> String {
+    if used.insert(path.to_string()) {
+        return path.to_string();
+    }
+    let (dir, file) = match path.rfind('/') {
+        Some(i) => (&path[..=i], &path[i + 1..]),
+        None => ("", path),
+    };
+    let (stem, ext) = match file.rfind('.') {
+        Some(i) if i > 0 => (&file[..i], &file[i..]),
+        _ => (file, ""),
+    };
+    for n in 2..10_000 {
+        let candidate = format!("{dir}{stem} ({n}){ext}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    path.to_string()
+}
+
+fn zip_error(e: zip::result::ZipError) -> AppError {
+    AppError::Internal(anyhow::anyhow!("building zip: {e}"))
+}
+
+/// Human-readable size for user-facing messages (the UI has its own formatter).
+fn human_size(bytes: i64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// Plain-text body for downloads the browser opened as a top-level request.
+fn text_error(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        message.to_string(),
+    )
+        .into_response()
 }
 
 /// Percent-encode a string for use in an RFC 5987 `filename*` parameter.

@@ -86,6 +86,12 @@ body {
   border: 1px solid var(--border);
 }
 .btn.secondary:hover { background: var(--row-hover); }
+.btn.danger { background: var(--danger); }
+.btn.danger:hover { background: #bf3131; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn:disabled:hover { background: var(--accent); }
+.btn.secondary:disabled:hover { background: var(--panel); }
+.btn.danger:disabled:hover { background: var(--danger); }
 
 /* ---------- Breadcrumb ---------- */
 .breadcrumb {
@@ -191,6 +197,35 @@ tbody tr { cursor: pointer; }
 .size-col { width: 110px; color: var(--muted); font-size: 14px; }
 .date-col { width: 170px; color: var(--muted); font-size: 14px; }
 .actions-col { width: 60px; text-align: right; }
+
+/* ---------- Multi-selection (bulk operations) ---------- */
+.check-col { width: 36px; text-align: center; padding-right: 0 !important; }
+.check-col input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  vertical-align: middle;
+}
+tbody tr.selected,
+tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
+
+.bulkbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.bulkbar .grow { flex: 1; }
+.bulkbar .btn { padding: 7px 13px; font-size: 13.5px; }
+.bulk-count { font-size: 14px; font-weight: 600; }
 
 .empty {
   text-align: center;

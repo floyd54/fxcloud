@@ -33,10 +33,25 @@
 
     <div class="upload-status" id="upload-status" style="display:none"></div>
 
+    <!-- Actions for the current multi-selection (hidden while nothing is selected) -->
+    <div class="bulkbar" id="bulkbar" style="display:none">
+      <span class="bulk-count" id="bulk-count">0 selected</span>
+      <div class="grow"></div>
+      <button class="btn" id="bulk-download" type="button">⬇ Download</button>
+      <button class="btn secondary" id="bulk-move" type="button">Move to…</button>
+      <button class="btn secondary" id="bulk-copy" type="button">Copy to…</button>
+      <button class="btn secondary" id="bulk-share" type="button">Share</button>
+      <button class="btn danger" id="bulk-delete" type="button">Delete</button>
+      <button class="btn secondary" id="bulk-clear" type="button">Clear</button>
+    </div>
+
     <div class="panel">
       <table>
         <thead>
           <tr>
+            <th class="check-col">
+              <input type="checkbox" id="select-all" title="Select all items in this folder" />
+            </th>
             <th>Name</th>
             <th class="size-col">Size</th>
             <th class="date-col">Modified</th>
@@ -44,7 +59,7 @@
           </tr>
         </thead>
         <tbody id="file-rows">
-          <tr><td colspan="4"><div class="empty">Loading…</div></td></tr>
+          <tr><td colspan="5"><div class="empty">Loading…</div></td></tr>
         </tbody>
       </table>
     </div>

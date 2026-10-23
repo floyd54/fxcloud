@@ -53,6 +53,18 @@ impl AppError {
             AppError::Conflict(_) => StatusCode::CONFLICT,
         }
     }
+
+    /// Message that may be shown to the client.
+    ///
+    /// 5xx details stay internal — same rule as the JSON body of a plain error
+    /// response — which matters for batch operations that report one message
+    /// per failed item.
+    pub fn user_message(&self) -> String {
+        match self.status() {
+            StatusCode::INTERNAL_SERVER_ERROR => "internal error".to_string(),
+            _ => self.to_string(),
+        }
+    }
 }
 
 impl IntoResponse for AppError {

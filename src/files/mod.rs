@@ -23,7 +23,10 @@ impl FileService {
         }
     }
 
-    fn blob_path(&self, file_id: i64) -> PathBuf {
+    /// On-disk location of a file's content (see the module docs for why the
+    /// id is used as the name). Public so the ZIP builder can stream blobs
+    /// without loading whole files into memory first.
+    pub fn blob_path(&self, file_id: i64) -> PathBuf {
         self.blob_dir.join(file_id.to_string())
     }
 

@@ -33,11 +33,19 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/files/delete", post(routes::files::delete))
         .route("/files/move", post(routes::files::move_entry))
         .route("/files/copy", post(routes::files::copy_entry))
+        // Batch operations over a multi-selection
+        .route("/files/batch/delete", post(routes::files::batch_delete))
+        .route("/files/batch/move", post(routes::files::batch_move))
+        .route("/files/batch/copy", post(routes::files::batch_copy))
+        // ZIP download of a selection (prepare, then fetch with the token)
+        .route("/files/zip", post(routes::files::prepare_zip))
+        .route("/files/zip", get(routes::files::zip_download))
         .route("/files/breadcrumb", get(routes::files::breadcrumb))
         .route("/files/info", get(routes::files::info));
     // Sharing
     let api = api
         .route("/shares", post(routes::shares::create))
+        .route("/shares/batch", post(routes::shares::create_batch))
         .route("/shares/outgoing", get(routes::shares::outgoing))
         .route("/shares/incoming", get(routes::shares::incoming))
         .route("/shares/{id}", axum::routing::delete(routes::shares::revoke));

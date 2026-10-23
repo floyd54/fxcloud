@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -447,25 +449,69 @@ impl Db {
         user_id: i64,
         id: i64,
     ) -> Result<Option<FileEntry>, AppError> {
+        self.run(move |conn| readable_entry(conn, user_id, id))
+            .await
+    }
+
+    /// One entry plus every descendant the user may read, as `(path, entry)`
+    /// pairs where `path` is relative to the entry itself (`Sub/file.txt`).
+    ///
+    /// This is the read side of a multi-selection download: one round trip per
+    /// selected item, permission-checked at the top (children inherit access
+    /// through the covering share or through the owner's own tree). The root
+    /// comes first, folders and files are depth-first afterwards.
+    pub async fn readable_subtree(
+        &self,
+        user_id: i64,
+        id: i64,
+    ) -> Result<Vec<(String, FileEntry)>, AppError> {
         self.run(move |conn| {
-            let entry = match get_entry_by_id(conn, id) {
-                Ok(e) => e,
-                Err(AppError::NotFound) => return Ok(None),
-                Err(e) => return Err(e),
-            };
-            if entry.owner_id == user_id {
-                return Ok(Some(entry));
+            let root = readable_entry(conn, user_id, id)?.ok_or(AppError::NotFound)?;
+
+            // Everything below the root, whatever the owner (a folder shared
+            // with me contains the owner's files; mine contain what I created
+            // inside shares).
+            let mut stmt = conn.prepare(&format!(
+                "WITH RECURSIVE subtree(id) AS (
+                     SELECT id FROM files WHERE id = ?1
+                     UNION ALL
+                     SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+                 )
+                 SELECT {ENTRY_COLS} FROM files
+                 WHERE id != ?1 AND id IN (SELECT id FROM subtree)"
+            ))?;
+            let descendants = stmt
+                .query_map(params![id], row_to_entry)?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // Group children by parent, then walk down to build the paths.
+            let mut children: HashMap<i64, Vec<FileEntry>> = HashMap::new();
+            for entry in descendants {
+                if let Some(parent) = entry.parent_id {
+                    children.entry(parent).or_default().push(entry);
+                }
             }
-            let Some(access) = covering_share(conn, user_id, id)? else {
-                return Ok(None);
-            };
-            if !access.can(crate::sharing::PERM_READ) {
-                return Ok(None);
+
+            let mut out = Vec::new();
+            let mut stack: Vec<(String, FileEntry)> = vec![(String::new(), root)];
+            while let Some((prefix, entry)) = stack.pop() {
+                let path = if prefix.is_empty() {
+                    entry.name.clone()
+                } else {
+                    format!("{prefix}/{}", entry.name)
+                };
+                if entry.is_dir {
+                    // Reversed push keeps the natural (folders first, by name)
+                    // order of the listing as they are popped.
+                    if let Some(kids) = children.remove(&entry.id) {
+                        for kid in kids.into_iter().rev() {
+                            stack.push((path.clone(), kid));
+                        }
+                    }
+                }
+                out.push((path, entry));
             }
-            let mut entry = entry;
-            entry.permissions = access.permissions;
-            entry.owner_name = Some(username_by_id(conn, entry.owner_id)?);
-            Ok(Some(entry))
+            Ok(out)
         })
         .await
     }
@@ -476,6 +522,30 @@ fn get_entry_by_id(conn: &Connection, id: i64) -> Result<FileEntry, AppError> {
         conn.prepare(&format!("SELECT {ENTRY_COLS} FROM files WHERE id = ?1"))?;
     let entry = stmt.query_row(params![id], row_to_entry).optional()?;
     entry.ok_or(AppError::NotFound)
+}
+
+/// The same lookup as [`Db::entry_for_read`], for use inside another
+/// connection closure (one round trip shared by permission checks and subtree
+/// walks). `Ok(None)` means "no read access".
+fn readable_entry(conn: &Connection, user_id: i64, id: i64) -> Result<Option<FileEntry>, AppError> {
+    let entry = match get_entry_by_id(conn, id) {
+        Ok(e) => e,
+        Err(AppError::NotFound) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if entry.owner_id == user_id {
+        return Ok(Some(entry));
+    }
+    let Some(access) = covering_share(conn, user_id, id)? else {
+        return Ok(None);
+    };
+    if !access.can(crate::sharing::PERM_READ) {
+        return Ok(None);
+    }
+    let mut entry = entry;
+    entry.permissions = access.permissions;
+    entry.owner_name = Some(username_by_id(conn, entry.owner_id)?);
+    Ok(Some(entry))
 }
 
 /// Which user's tree a create operation lands in: the requester's own tree, or
