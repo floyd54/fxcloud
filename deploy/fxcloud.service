@@ -6,15 +6,15 @@ After=network.target
 Type=simple
 User=fxcloud
 Group=fxcloud
-WorkingDirectory=/opt/fxcloud
-ExecStart=/opt/fxcloud/fxcloud
+WorkingDirectory=/home/fxcloud
+ExecStart=/home/fxcloud/fxcloud
 Restart=on-failure
 RestartSec=3
 
 # --- Environment configuration ---------------------------------------------
 Environment=FXCLOUD_BIND=0.0.0.0
 Environment=FXCLOUD_PORT=8080
-Environment=FXCLOUD_DATA=/opt/fxcloud/data
+Environment=FXCLOUD_DATA=/home/fxcloud/data
 Environment=RUST_LOG=fxcloud=info
 # Enable when serving over HTTPS behind a TLS-terminating reverse proxy:
 # Environment=FXCLOUD_SECURE_COOKIE=1
@@ -23,8 +23,11 @@ Environment=RUST_LOG=fxcloud=info
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/fxcloud/data
+# The binary and the data partition both live in the service user's own home,
+# so hiding /home would break the unit; the home directory is 750 and owned by
+# fxcloud:fxcloud, which is the actual access control here.
+ProtectHome=false
+ReadWritePaths=/home/fxcloud/data
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

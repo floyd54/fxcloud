@@ -56,17 +56,20 @@ WebDAV mounts that are already open, because the flag is checked on every
 request.
 
 There is no user-administration UI yet, so the switch is flipped directly in
-the database (no restart required):
+the database (no restart required). The path below is the development layout
+(`./data`); on a systemd deployment the file is `/home/fxcloud/data/fxcloud.db`:
 
 ```bash
+DB=data/fxcloud.db                      # systemd: /home/fxcloud/data/fxcloud.db
+
 # overview
-sqlite3 data/fxcloud.db "SELECT id, username, is_active, created_at FROM users ORDER BY id;"
+sqlite3 "$DB" "SELECT id, username, is_active, created_at FROM users ORDER BY id;"
 
 # activate -> the owner can sign in from now on
-sqlite3 data/fxcloud.db "UPDATE users SET is_active = 1 WHERE username = 'max';"
+sqlite3 "$DB" "UPDATE users SET is_active = 1 WHERE username = 'max';"
 
 # deactivate -> session cookie and WebDAV credentials stop working right away
-sqlite3 data/fxcloud.db "UPDATE users SET is_active = 0 WHERE username = 'max';"
+sqlite3 "$DB" "UPDATE users SET is_active = 0 WHERE username = 'max';"
 ```
 
 What users see:
@@ -151,24 +154,45 @@ location / {
 
 ### systemd
 
-A hardened unit file is provided in [`deploy/fxcloud.service`](deploy/fxcloud.service).
+The service runs as an unprivileged system user `fxcloud` (group `fxcloud`,
+shell `nologin`) — never as root. Its home directory holds both the binary
+and the data partition:
+
+```
+/home/fxcloud/fxcloud    # executable (ExecStart)
+/home/fxcloud/data/      # FXCLOUD_DATA: SQLite DB + file blobs
+```
+
+A hardened unit file is provided in [`deploy/fxcloud.service`](deploy/fxcloud.service)
+(`NoNewPrivileges`, `ProtectSystem=strict`, `ReadWritePaths` limited to the
+data directory, …).
 
 ```bash
-# 1. Install the binary and a dedicated user
-sudo useradd --system --home /opt/fxcloud --shell /usr/sbin/nologin fxcloud
-sudo mkdir -p /opt/fxcloud/data
-sudo install -m755 target/release/fxcloud /opt/fxcloud/fxcloud
-sudo chown -R fxcloud:fxcloud /opt/fxcloud
+# 1. Create the user and install the binary
+sudo useradd --system --user-group --create-home --home-dir /home/fxcloud \
+     --shell /usr/sbin/nologin fxcloud
+sudo install -m755 target/release/fxcloud /home/fxcloud/fxcloud
+sudo mkdir -p /home/fxcloud/data      # or move an existing ./data here
+sudo chown -R fxcloud:fxcloud /home/fxcloud
+sudo chmod 750 /home/fxcloud
 
 # 2. Install & start the service
 sudo cp deploy/fxcloud.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now fxcloud
 
-# 3. Check status / logs
+# 3. Check status / logs (journald, no log files on disk)
 sudo systemctl status fxcloud
 sudo journalctl -u fxcloud -f
+
+# 4. Later: roll out a new build
+sudo systemctl stop fxcloud
+sudo install -m755 target/release/fxcloud /home/fxcloud/fxcloud
+sudo systemctl start fxcloud
 ```
+
+The repo checkout itself is *not* used at runtime — the source tree can stay
+wherever development happens (e.g. `/root/fxcloud`).
 
 ## Architecture
 
