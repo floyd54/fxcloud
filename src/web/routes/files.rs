@@ -12,7 +12,7 @@ use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::files::FileService;
 use crate::models::{
-    BatchIdsRequest, BatchOutcome, BatchTransferRequest, CreateFolderRequest, FileEntry,
+    BatchIdsRequest, BatchOutcome, BatchTransferRequest, BlobRef, CreateFolderRequest, FileEntry,
     RenameRequest, TransferRequest, ZipRequest,
 };
 use crate::web::state::SharedState;
@@ -111,8 +111,8 @@ pub async fn delete(
         .get("id")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| AppError::BadRequest("missing 'id'".into()))?;
-    let blob_ids = state.db.delete_entry(user.id(), id).await?;
-    state.files.delete_blobs(&blob_ids).await;
+    let blobs = state.db.delete_entry(user.id(), id).await?;
+    state.files.delete_blobs(&blobs).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -208,7 +208,7 @@ pub async fn upload(
         .db
         .create_file(user.id(), parent_id, filename, size, mime)
         .await?;
-    if let Err(e) = state.files.write_blob(entry.id, data).await {
+    if let Err(e) = state.files.write_blob(&entry, data).await {
         // Roll back the orphaned metadata row.
         let _ = state.db.delete_entry(user.id(), entry.id).await;
         return Err(e);
@@ -265,12 +265,12 @@ pub async fn batch_delete(
         return Err(AppError::BadRequest("nothing is selected".into()));
     }
     let mut out = BatchOutcome::default();
-    let mut blob_ids = Vec::new();
+    let mut blobs = Vec::new();
 
     for id in req.ids {
         match state.db.delete_entry(user.id(), id).await {
-            Ok(blobs) => {
-                blob_ids.extend(blobs);
+            Ok(b) => {
+                blobs.extend(b);
                 out.success(id);
             }
             Err(e) => {
@@ -280,7 +280,7 @@ pub async fn batch_delete(
         }
     }
 
-    state.files.delete_blobs(&blob_ids).await;
+    state.files.delete_blobs(&blobs).await;
     Ok(Json(out))
 }
 
@@ -549,7 +549,7 @@ fn build_zip(
             }
 
             writer.start_file(&path, opts).map_err(zip_error)?;
-            if let Err(e) = copy_blob(&state.files, entry.id, &mut writer) {
+            if let Err(e) = copy_blob(&state.files, &entry, &mut writer) {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     skipped.push(format!("{path} (content missing)"));
                 } else {
@@ -585,10 +585,19 @@ fn build_zip(
 /// Stream one blob into the archive without loading it whole.
 fn copy_blob(
     files: &FileService,
-    id: i64,
+    entry: &FileEntry,
     writer: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
-    let mut file = std::fs::File::open(files.blob_path(id))?;
+    let path = files.blob_path(BlobRef::from(entry));
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        // Fall back to the flat layout for blobs the startup migration left
+        // behind (see the `files` module docs).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::File::open(files.legacy_blob_path(entry.id))?
+        }
+        Err(e) => return Err(e),
+    };
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = file.read(&mut buf)?;

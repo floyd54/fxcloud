@@ -66,7 +66,8 @@ impl Config {
         self.data_dir.join("fxcloud.db")
     }
 
-    /// Directory holding file content blobs (one file per file-id).
+    /// Directory holding file content blobs (laid out as
+    /// `<owner>/<year>/<h1>/<h2>/<file-id>`, see the `files` module).
     pub fn blob_dir(&self) -> PathBuf {
         self.data_dir.join("blobs")
     }

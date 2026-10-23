@@ -47,6 +47,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let state = Arc::new(AppState::new(db, config.clone()));
+    // Move blobs from the legacy flat layout into <owner>/<year>/<h1>/<h2>.
+    state.files.migrate_flat_blobs().await;
     let app = web::build_router(state);
 
     let addr = format!("{}:{}", config.bind, config.port);

@@ -226,9 +226,18 @@ migrations/          # SQL schema (idempotent or guarded, applied at startup)
 
 ### Design notes
 
-- **Storage**: each file's content is stored at `<data>/blobs/<file-id>`, keyed
-  by its database row id. This is unique by construction and immune to
-  path-traversal, since ids are integers we control.
+- **Storage**: each file's content is stored at
+  `<data>/blobs/<owner-id>/<year>/<h1>/<h2>/<file-id>` — the owner's tree and
+  the creation year first (convenient for per-user and per-year backups), then
+  two id levels (`h1` covers 65 536 ids, `h2` covers 256), so no directory
+  ever holds more than 256 blobs. The leaf name is the plain database row id:
+  unique by construction and immune to path-traversal, and the path stays
+  recomputable from a row without extra state. Blobs from installations that
+  predate this layout are moved into place automatically at startup (idempotent,
+  logged); reads and deletes fall back to the old flat `<data>/blobs/<file-id>`
+  path, so nothing goes missing even if a move fails. Rollback note: builds
+  older than this do not know the structure — roll back from a backup or move
+  the blobs flat again first.
 - **Blocking SQLite**: rusqlite is synchronous, so every DB call is transparently
   routed through `tokio::task::spawn_blocking` inside the `Db` wrapper. Handlers
   simply `await`.

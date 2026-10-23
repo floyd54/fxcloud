@@ -346,7 +346,8 @@ async fn put_file(
     match existing {
         Some(old) if old.is_dir => method_not_allowed(),
         Some(old) => {
-            // Overwrite in place (blob path is keyed by id, so it is replaced).
+            // Overwrite in place (the blob path is derived from the id, so it
+            // is replaced).
             if !overwrite {
                 return precondition();
             }
@@ -356,7 +357,7 @@ async fn put_file(
             if let Err(e) = state.db.update_file_meta(owner_id, old.id, size, mime).await {
                 return e.into_response();
             }
-            if let Err(e) = state.files.write_blob(old.id, body.to_vec()).await {
+            if let Err(e) = state.files.write_blob(&old, body.to_vec()).await {
                 return e.into_response();
             }
             StatusCode::NO_CONTENT.into_response()
@@ -372,7 +373,7 @@ async fn put_file(
                 .await
             {
                 Ok(entry) => {
-                    if let Err(e) = state.files.write_blob(entry.id, body.to_vec()).await {
+                    if let Err(e) = state.files.write_blob(&entry, body.to_vec()).await {
                         let _ = state.db.delete_entry(owner_id, entry.id).await;
                         return e.into_response();
                     }
@@ -570,7 +571,7 @@ pub(crate) async fn copy_recursive(
             .create_file(owner_id, dst_parent, dst_name, src.size, src.mime.clone())
             .await?;
         let (_e, data) = state.files.read_blob(owner_id, src.id).await?;
-        state.files.write_blob(new_file.id, data).await?;
+        state.files.write_blob(&new_file, data).await?;
         Ok(new_file)
     }
 }

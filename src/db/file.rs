@@ -4,7 +4,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::AppError;
-use crate::models::{Breadcrumb, FileEntry};
+use crate::models::{BlobRef, Breadcrumb, FileEntry};
 use crate::sharing::PERM_ALL;
 
 use super::share::{covering_share, share_name_taken};
@@ -26,6 +26,15 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
         modified_at: parse_ts(&modified_at, 8)?,
         permissions: PERM_ALL,
         owner_name: None,
+    })
+}
+
+/// Build a [`BlobRef`] from `(id, owner_id, created_at)` row values.
+fn blob_ref(id: i64, owner_id: i64, created_at: &str) -> rusqlite::Result<BlobRef> {
+    Ok(BlobRef {
+        file_id: id,
+        owner_id,
+        created_at: parse_ts(created_at, 2)?,
     })
 }
 
@@ -233,31 +242,59 @@ impl Db {
     }
 
     /// Delete an entry and, for directories, all descendants (cascade).
-    /// Returns the file ids of any deleted non-directory blobs for cleanup.
+    /// Returns the [`BlobRef`]s of any deleted non-directory blobs for
+    /// cleanup, captured while the rows still exist.
     ///
     /// Foreign entries require the covering share to grant DELETE.
-    pub async fn delete_entry(&self, user_id: i64, id: i64) -> Result<Vec<i64>, AppError> {
+    pub async fn delete_entry(&self, user_id: i64, id: i64) -> Result<Vec<BlobRef>, AppError> {
         self.run(move |conn| {
             let tree_owner = update_target(conn, user_id, id, crate::sharing::PERM_DELETE)?;
 
-            // Collect file (non-dir) ids in the subtree before cascade removes them.
+            // Collect the blobs in the subtree before cascade removes the rows.
             let mut stmt = conn.prepare(
                 "WITH RECURSIVE subtree(id) AS (
                      SELECT id FROM files WHERE id = ?1
                      UNION ALL
                      SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
                  )
-                 SELECT id FROM subtree WHERE id IN (SELECT id FROM files WHERE is_dir = 0)",
+                 SELECT id, owner_id, created_at FROM files
+                  WHERE is_dir = 0 AND id IN (SELECT id FROM subtree)",
             )?;
-            let blob_ids = stmt
-                .query_map(params![id], |r| r.get::<_, i64>(0))?
+            let blobs = stmt
+                .query_map(params![id], |r| {
+                    let id: i64 = r.get(0)?;
+                    let owner_id: i64 = r.get(1)?;
+                    let created_at: String = r.get(2)?;
+                    blob_ref(id, owner_id, &created_at)
+                })?
                 .collect::<Result<Vec<_>, _>>()?;
 
             conn.execute(
                 "DELETE FROM files WHERE id = ?1 AND owner_id = ?2",
                 params![id, tree_owner],
             )?;
-            Ok(blob_ids)
+            Ok(blobs)
+        })
+        .await
+    }
+
+    /// Owner and creation time of every file row — one query feeding the
+    /// startup blob migration, instead of one lookup per blob.
+    pub async fn blob_origins(&self) -> Result<HashMap<i64, BlobRef>, AppError> {
+        self.run(move |conn| {
+            let mut stmt = conn.prepare("SELECT id, owner_id, created_at FROM files")?;
+            let mut rows = stmt.query_map([], |r| {
+                let id: i64 = r.get(0)?;
+                let owner_id: i64 = r.get(1)?;
+                let created_at: String = r.get(2)?;
+                Ok((id, blob_ref(id, owner_id, &created_at)?))
+            })?;
+            let mut out = HashMap::new();
+            while let Some(row) = rows.next() {
+                let (id, blob) = row?;
+                out.insert(id, blob);
+            }
+            Ok(out)
         })
         .await
     }

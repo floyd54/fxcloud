@@ -41,6 +41,29 @@ pub struct FileEntry {
     pub owner_name: Option<String>,
 }
 
+/// Where a file's content blob lives on disk.
+///
+/// The blob path is derived from these three values (see the `files` module
+/// docs for the layout), so a blob can be located without a database row —
+/// which is exactly what deletions need: the rows are gone by the time the
+/// content is removed, therefore they are captured before.
+#[derive(Debug, Clone, Copy)]
+pub struct BlobRef {
+    pub file_id: i64,
+    pub owner_id: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<&FileEntry> for BlobRef {
+    fn from(entry: &FileEntry) -> Self {
+        Self {
+            file_id: entry.id,
+            owner_id: entry.owner_id,
+            created_at: entry.created_at,
+        }
+    }
+}
+
 /// One step in a breadcrumb trail used by the file explorer UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Breadcrumb {
