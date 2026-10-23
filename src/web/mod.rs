@@ -2,9 +2,13 @@ pub mod routes;
 pub mod state;
 pub mod ui;
 
+use std::time::Duration;
+
 use axum::extract::DefaultBodyLimit;
+use axum::http::StatusCode;
 use axum::routing::{any, get, post};
 use axum::Router;
+use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 
@@ -62,6 +66,25 @@ pub fn build_router(state: SharedState) -> Router {
         .nest("/api", api)
         .layer(DefaultBodyLimit::max(max_upload))
         .layer(CompressionLayer::new())
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().on_failure(
+            |failure: ServerErrorsFailureClass, latency: Duration, _span: &tracing::Span| {
+                // A full storage quota is a client-side condition — the
+                // uploader simply ran out of room — so its 507 is reported at
+                // warn instead of error; a journal full of rejections stays
+                // readable. Genuine server faults (including the bare 500s
+                // from webdav.rs::internal(), which log nothing of their own)
+                // keep the default error level.
+                let quota_rejected = matches!(
+                    &failure,
+                    ServerErrorsFailureClass::StatusCode(code)
+                        if *code == StatusCode::INSUFFICIENT_STORAGE
+                );
+                if quota_rejected {
+                    tracing::warn!(classification = %failure, ?latency, "response rejected");
+                } else {
+                    tracing::error!(classification = %failure, ?latency, "response failed");
+                }
+            },
+        ))
         .with_state(state)
 }

@@ -28,6 +28,7 @@ fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         display_name: row.get("display_name")?,
         is_active: row.get("is_active")?,
         created_at: parse_ts(&created_at, 0)?,
+        quota_bytes: row.get("quota_bytes")?,
     })
 }
 
@@ -39,7 +40,7 @@ impl Db {
     ) -> Result<Option<UserWithHash>, AppError> {
         self.run(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, username, display_name, is_active, created_at, password_hash
+                "SELECT id, username, display_name, is_active, created_at, quota_bytes, password_hash
                  FROM users WHERE username = ?1",
             )?;
             let found = stmt
@@ -59,7 +60,7 @@ impl Db {
     pub async fn find_user_by_id(&self, id: i64) -> Result<Option<User>, AppError> {
         self.run(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, username, display_name, is_active, created_at FROM users WHERE id = ?1",
+                "SELECT id, username, display_name, is_active, created_at, quota_bytes FROM users WHERE id = ?1",
             )?;
             let found = stmt.query_row(params![id], row_to_user).optional()?;
             Ok(found)
@@ -93,6 +94,10 @@ impl Db {
 /// administration UI yet. The single exception is bootstrap: when the instance
 /// has no users at all, the account being created is the operator's own first
 /// login, so it is activated right away.
+///
+/// The storage quota is *not* passed in: the schema default (1 GiB, migration
+/// `004_user_quota`) decides what a new account gets, and it is read back
+/// after the insert so there is exactly one source of truth for it.
 pub fn insert_user(
     conn: &mut Connection,
     username: &str,
@@ -117,11 +122,17 @@ pub fn insert_user(
     })?;
 
     let id = conn.last_insert_rowid();
+    let quota_bytes: i64 = conn.query_row(
+        "SELECT quota_bytes FROM users WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
     Ok(User {
         id,
         username: username.to_string(),
         display_name: display_name.to_string(),
         is_active,
         created_at: now.parse().map_err(|_| AppError::Internal(anyhow::anyhow!("bad timestamp")))?,
+        quota_bytes,
     })
 }

@@ -543,7 +543,25 @@ async fn move_resource(
 /// Copy `src` (file or whole subtree, including blob content) under
 /// `dst_parent` as `dst_name`. Shared with the WebDAV `COPY` handler and the
 /// web API so both go through the same permission-aware create path.
+///
+/// The destination owner's quota is checked once for the whole subtree before
+/// anything is written (`507` otherwise), so a full quota never leaves a
+/// partial copy behind.
 pub(crate) async fn copy_recursive(
+    state: &SharedState,
+    owner_id: i64,
+    src: &FileEntry,
+    dst_parent: Option<i64>,
+    dst_name: String,
+) -> Result<FileEntry, AppError> {
+    let total = state.db.subtree_size(src.id).await?;
+    state.db.check_quota(owner_id, total).await?;
+    copy_node(state, owner_id, src, dst_parent, dst_name).await
+}
+
+/// Create one node of a copy and recurse into its children (see
+/// [`copy_recursive`], which gates the whole subtree up front).
+async fn copy_node(
     state: &SharedState,
     owner_id: i64,
     src: &FileEntry,
@@ -555,7 +573,7 @@ pub(crate) async fn copy_recursive(
         let children = state.db.list_children(owner_id, Some(src.id)).await?;
         for child in children {
             // Box::pin to allow this async fn to recurse.
-            Box::pin(copy_recursive(
+            Box::pin(copy_node(
                 state,
                 owner_id,
                 &child,

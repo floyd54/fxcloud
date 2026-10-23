@@ -78,6 +78,15 @@ impl Db {
                      WHERE name = 'is_active'",
                 ),
             ),
+            (
+                "004_user_quota",
+                include_str!("../../migrations/004_user_quota.sql"),
+                // Skip once `users.quota_bytes` exists.
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('users')
+                     WHERE name = 'quota_bytes'",
+                ),
+            ),
         ];
         let conn = self.pool.get()?;
         for (name, sql, guard) in MIGRATIONS {

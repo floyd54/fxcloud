@@ -14,6 +14,11 @@ pub struct User {
     #[serde(default)]
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
+    /// Storage quota in bytes. Content beyond it is rejected with
+    /// `507 Insufficient Storage`. The schema default (1 GiB, see migration
+    /// `004_user_quota`) applies to every account; raise or lower it with
+    /// `UPDATE users SET quota_bytes = …` until an admin UI exists.
+    pub quota_bytes: i64,
 }
 
 /// A file-system entry (file or directory) owned by a user.

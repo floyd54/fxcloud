@@ -27,6 +27,14 @@ pub enum AppError {
     #[error("account is not activated yet – ask an administrator to activate it")]
     InactiveAccount,
 
+    /// The account's storage quota would be exceeded by `additional` bytes.
+    ///
+    /// 507 is the WebDAV status for "insufficient storage", so sync clients
+    /// such as rclone and Cyberduck report it as a full quota rather than a
+    /// generic failure.
+    #[error("storage quota exceeded: {} of {} used", fmt_bytes(*used), fmt_bytes(*quota))]
+    QuotaExceeded { used: i64, quota: i64 },
+
     #[error("bad request: {0}")]
     BadRequest(String),
 
@@ -51,6 +59,7 @@ impl AppError {
             AppError::Forbidden | AppError::InactiveAccount => StatusCode::FORBIDDEN,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::QuotaExceeded { .. } => StatusCode::INSUFFICIENT_STORAGE,
         }
     }
 
@@ -79,5 +88,23 @@ impl IntoResponse for AppError {
             _ => self.to_string(),
         };
         (status, Json(json!({ "error": message }))).into_response()
+    }
+}
+
+/// Human-readable byte count for user-facing messages.
+///
+/// Binary units (1024-based), matching how the default quota of 1 GiB is
+/// expressed — so "1.0 GB" always means exactly the quota a fresh account gets.
+fn fmt_bytes(n: i64) -> String {
+    const UNIT: f64 = 1024.0;
+    let n = n.max(0) as f64;
+    if n >= UNIT.powi(3) {
+        format!("{:.1} GB", n / UNIT.powi(3))
+    } else if n >= UNIT.powi(2) {
+        format!("{:.1} MB", n / UNIT.powi(2))
+    } else if n >= UNIT {
+        format!("{:.0} KB", n / UNIT)
+    } else {
+        format!("{n:.0} B")
     }
 }

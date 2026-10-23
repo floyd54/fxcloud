@@ -32,6 +32,9 @@ build step, no runtime dependencies.
 - **WebDAV** – mount your files with real sync clients (Nextcloud desktop,
   rclone, Cyberduck, Windows "Map network drive", etc.). See
   [WebDAV](#webdav) below.
+- **Storage quotas** – every account gets **1 GiB** by default; content beyond
+  it is refused with `507 Insufficient Storage` and the topbar shows current
+  usage. See [Storage quotas](#storage-quotas).
 - **Clean, modular architecture** – see below.
 
 ## Quick start
@@ -90,6 +93,35 @@ What users see:
 
 Sharing still works both ways for inactive accounts — shares simply become
 visible to the grantee once their account is activated.
+
+## Storage quotas
+
+Every account carries a per-owner storage quota in `users.quota_bytes`
+(migration `004_user_quota`):
+
+- **Default 1 GiB** — the column's `DEFAULT` fills new accounts automatically
+  *and* backfills every account that existed when the migration ran, so an
+  upgrade gives everyone the same starting quota.
+- **What counts** is the summed `size` of the entries the account owns.
+  Content shared *to* them is served from the owner's quota; files uploaded
+  into someone else's shared folder count against that owner, because the
+  owner's disk space is being used.
+- **Enforcement sits in the database layer, next to the write itself**:
+  creating a file, overwriting one (only the growth counts) and copying a
+  subtree (checked up front for the whole tree, so a full quota never leaves a
+  partial copy behind). Beyond the quota the API answers
+  `507 Insufficient Storage` with a message such as
+  `storage quota exceeded: 973 MB of 1.0 GB used`; batch operations report it
+  per item, and WebDAV clients see the standard 507 status.
+- **The web UI** shows `used of quota` in the topbar, refreshed with every
+  list reload.
+- **Changing one quota** works like account activation — a single statement in
+  bytes (`1073741824` = 1 GiB):
+
+  ```sh
+  sqlite3 /home/fxcloud/data/fxcloud.db \
+    "UPDATE users SET quota_bytes = 2147483648 WHERE username = 'alice';"
+  ```
 
 ## Prebuilt binaries
 
@@ -253,7 +285,7 @@ All `/api/*` routes require a session cookie (except `register` / `login`).
 | POST   | `/api/register`         | `{username, password, display_name?}` | Create account (202 `pending_activation` while inactive; the first account signs in) |
 | POST   | `/api/login`            | `{username, password}`             | Sign in (`403` when the account is inactive) |
 | POST   | `/api/logout`           | –                                  | Sign out                    |
-| GET    | `/api/me`               | –                                  | Current user                |
+| GET    | `/api/me`               | –                                  | Current user + `quota_bytes` / `used_bytes` |
 | GET    | `/api/files`            | `?parent=<id>` (omit for root)     | List folder contents        |
 | GET    | `/api/files/breadcrumb` | `?id=<folderId>`                   | Breadcrumb trail            |
 | POST   | `/api/files/folder`     | `{parent_id, name}`                | Create folder               |

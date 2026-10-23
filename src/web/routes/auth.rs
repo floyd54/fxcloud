@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::auth::{hash_password, verify_password, AuthUser, SESSION_COOKIE};
 use crate::error::AppError;
-use crate::models::{LoginRequest, RegisterRequest, User};
+use crate::models::{LoginRequest, RegisterRequest};
 use crate::web::state::SharedState;
 
 /// Build the session cookie set on successful login/registration.
@@ -123,9 +123,17 @@ pub async fn logout(
     Ok(([(header::SET_COOKIE, clear_cookie())], Json(json!({ "ok": true }))).into_response())
 }
 
-/// GET /api/me – return the currently logged-in user.
-pub async fn me(user: AuthUser) -> Json<User> {
-    Json(user.0)
+/// GET /api/me – return the currently logged-in user, plus how many bytes of
+/// the storage quota are used (the topbar shows `used_bytes of quota_bytes`).
+pub async fn me(
+    State(state): State<SharedState>,
+    user: AuthUser,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let used_bytes = state.db.owner_usage(user.id()).await?;
+    let mut me = serde_json::to_value(&user.0)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("serializing user: {e}")))?;
+    me["used_bytes"] = json!(used_bytes);
+    Ok(Json(me))
 }
 
 /// Helper so handlers can return `204` with no body where needed.

@@ -38,6 +38,30 @@ fn blob_ref(id: i64, owner_id: i64, created_at: &str) -> rusqlite::Result<BlobRe
     })
 }
 
+/// Whether `additional` more bytes still fit into `owner_id`'s quota.
+///
+/// Every path that adds content funnels through here — `create_file` and
+/// `update_file_meta` run this in the same statement block as their write, so
+/// content only ever appears when it fits. Bulk copies pre-check the whole
+/// subtree via [`Db::check_quota`] before they start.
+fn ensure_quota(conn: &Connection, owner_id: i64, additional: i64) -> Result<(), AppError> {
+    if additional <= 0 {
+        return Ok(());
+    }
+    let (quota, used): (i64, i64) = conn.query_row(
+        "SELECT u.quota_bytes,
+                COALESCE((SELECT SUM(f.size) FROM files f
+                           WHERE f.owner_id = u.id AND f.is_dir = 0), 0)
+           FROM users u WHERE u.id = ?1",
+        params![owner_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if used + additional > quota {
+        return Err(AppError::QuotaExceeded { used, quota });
+    }
+    Ok(())
+}
+
 const ENTRY_COLS: &str =
     "id, owner_id, parent_id, name, is_dir, size, mime, created_at, modified_at";
 
@@ -137,6 +161,10 @@ impl Db {
         self.run(move |conn| {
             validate_name(&name)?;
             let tree_owner = create_target(conn, user_id, parent_id, &name)?;
+            // Quota gate sits before the INSERT: content is never tracked that
+            // the owner has no space for (shared uploads count against the
+            // sharer, because the tree owner stores the bytes).
+            ensure_quota(conn, tree_owner, size)?;
             let now = Utc::now().to_rfc3339();
             conn.execute(
                 "INSERT INTO files (owner_id, parent_id, name, is_dir, size, mime, created_at, modified_at)
@@ -466,6 +494,18 @@ impl Db {
     ) -> Result<(), AppError> {
         self.run(move |conn| {
             let tree_owner = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
+            // Overwriting replaces content in place: only the *growth* has to
+            // fit into the quota (shrinking passes with a negative delta).
+            let old_size: Option<i64> = conn
+                .query_row(
+                    "SELECT size FROM files WHERE id = ?1 AND owner_id = ?2 AND is_dir = 0",
+                    params![id, tree_owner],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(old_size) = old_size {
+                ensure_quota(conn, tree_owner, size - old_size)?;
+            }
             let changed = conn.execute(
                 "UPDATE files SET size = ?1, mime = ?2, modified_at = ?3
                  WHERE id = ?4 AND owner_id = ?5 AND is_dir = 0",
@@ -475,6 +515,48 @@ impl Db {
                 return Err(AppError::NotFound);
             }
             Ok(())
+        })
+        .await
+    }
+
+    /// Bytes of content owned by `owner_id` — what counts against the quota
+    /// and what `GET /api/me` reports as `used_bytes`.
+    pub async fn owner_usage(&self, owner_id: i64) -> Result<i64, AppError> {
+        self.run(move |conn| {
+            let used: i64 = conn.query_row(
+                "SELECT COALESCE(SUM(size), 0) FROM files WHERE owner_id = ?1 AND is_dir = 0",
+                params![owner_id],
+                |r| r.get(0),
+            )?;
+            Ok(used)
+        })
+        .await
+    }
+
+    /// Up-front quota gate for bulk writes: fails with
+    /// [`AppError::QuotaExceeded`] when `additional` more bytes would not fit
+    /// into `owner_id`'s quota. Called before copying a subtree so a full
+    /// quota never leaves a partial copy behind.
+    pub async fn check_quota(&self, owner_id: i64, additional: i64) -> Result<(), AppError> {
+        self.run(move |conn| ensure_quota(conn, owner_id, additional))
+            .await
+    }
+
+    /// Total bytes of the non-directory entries at and below `id`.
+    pub async fn subtree_size(&self, id: i64) -> Result<i64, AppError> {
+        self.run(move |conn| {
+            let total: i64 = conn.query_row(
+                "WITH RECURSIVE subtree(id) AS (
+                     SELECT id FROM files WHERE id = ?1
+                     UNION ALL
+                     SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+                 )
+                 SELECT COALESCE(SUM(size), 0) FROM files
+                  WHERE is_dir = 0 AND id IN (SELECT id FROM subtree)",
+                params![id],
+                |r| r.get(0),
+            )?;
+            Ok(total)
         })
         .await
     }

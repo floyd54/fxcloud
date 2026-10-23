@@ -363,6 +363,9 @@
       parent == null || folderPerms[parent] == null ? PERM_ALL : folderPerms[parent];
     renderToolbar();
     syncSelectionUi();
+    // Every mutation (upload, delete, copy, rename, …) ends with a list
+    // reload, so refreshing the quota readout here keeps it always current.
+    loadMe().catch(() => {});
   }
 
   // Show the create toolbar only where the viewer holds CREATE.
@@ -375,11 +378,25 @@
     dropzone.style.display = show;
   }
 
+  // Binary units (1024-based), matching the server's quota messages, so the
+  // topbar and a 507 error always describe the same numbers.
+  function fmtBytes(n) {
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " GB";
+    if (n >= 1048576) return Math.round(n / 1048576) + " MB";
+    if (n >= 1024) return Math.round(n / 1024) + " KB";
+    return n + " B";
+  }
+
   async function loadMe() {
     const res = await api("/api/me").then((r) => r.json());
     meId = res.id;
     document.getElementById("user-label").textContent =
       res.display_name || res.username;
+    const storage = document.getElementById("storage-label");
+    if (storage && res.used_bytes != null && res.quota_bytes != null) {
+      storage.textContent = `${fmtBytes(res.used_bytes)} of ${fmtBytes(res.quota_bytes)}`;
+      storage.title = "storage used of quota";
+    }
   }
 
   // ---------- actions ----------
