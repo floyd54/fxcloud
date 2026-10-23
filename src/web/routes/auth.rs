@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::auth::{hash_password, verify_password, AuthUser, SESSION_COOKIE};
 use crate::error::AppError;
-use crate::models::{LoginRequest, RegisterRequest};
+use crate::models::{LoginRequest, RegisterRequest, UserOption};
 use crate::web::state::SharedState;
 
 /// Build the session cookie set on successful login/registration.
@@ -134,6 +134,20 @@ pub async fn me(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("serializing user: {e}")))?;
     me["used_bytes"] = json!(used_bytes);
     Ok(Json(me))
+}
+
+/// GET /api/users – every account but the caller's own, so the share dialog
+/// can offer the possible grantees as a dropdown instead of requiring the
+/// username to be typed from memory.
+///
+/// Returns only what a grantee picker needs: `username`, `display_name` and
+/// `is_active` (inactive accounts are still shareable — the share simply
+/// becomes visible once the account is activated, see README).
+pub async fn list_users(
+    State(state): State<SharedState>,
+    user: AuthUser,
+) -> Result<Json<Vec<UserOption>>, AppError> {
+    Ok(Json(state.db.list_share_targets(user.id()).await?))
 }
 
 /// Helper so handlers can return `204` with no body where needed.

@@ -826,11 +826,18 @@
       entries.length === 1
         ? `Share "${entries[0].name}"`
         : `Share ${entries.length} items`;
-    document.getElementById("share-username").value = "";
     document
       .querySelectorAll("#perm-checks input")
       .forEach((cb) => (cb.checked = true));
     shareModal.style.display = "flex";
+
+    // The grantee is picked from a dropdown of accounts — refetch every time
+    // the dialog opens so freshly registered users show up immediately.
+    loadShareTargets().catch(() => {
+      const sel = document.getElementById("share-username");
+      sel.innerHTML = "<option disabled>Cannot load users</option>";
+      sel.disabled = true;
+    });
 
     if (entries.length === 1) {
       // Existing shares only make sense item by item.
@@ -881,6 +888,33 @@
     }
   }
 
+  // Fill the grantee dropdown from the account list: sharing must not depend
+  // on knowing the other user's name by heart. Only other accounts appear,
+  // and ones that cannot sign in yet are marked as such.
+  async function loadShareTargets() {
+    const sel = document.getElementById("share-username");
+    const users = await api("/api/users").then((r) => r.json());
+    sel.innerHTML = "";
+    if (users.length === 0) {
+      const opt = document.createElement("option");
+      opt.textContent = "No other users yet";
+      opt.disabled = true;
+      sel.appendChild(opt);
+      sel.disabled = true;
+      return;
+    }
+    sel.disabled = false;
+    for (const u of users) {
+      const opt = document.createElement("option");
+      opt.value = u.username;
+      const named = u.display_name && u.display_name !== u.username;
+      opt.textContent =
+        (named ? `${u.username} (${u.display_name})` : u.username) +
+        (u.is_active ? "" : " — inactive");
+      sel.appendChild(opt);
+    }
+  }
+
   async function shareAdd() {
     if (shareEntries.length === 0) return;
     const username = document.getElementById("share-username").value.trim();
@@ -904,7 +938,6 @@
         }),
       });
       const out = await res.json();
-      document.getElementById("share-username").value = "";
       if (shareEntries.length === 1) {
         await loadShareList();
       } else {

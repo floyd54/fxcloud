@@ -27,6 +27,8 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/login", post(routes::auth::login))
         .route("/logout", post(routes::auth::logout))
         .route("/me", get(routes::auth::me))
+        // Account discovery for the share dialog
+        .route("/users", get(routes::auth::list_users))
         // Files
         .route("/files", get(routes::files::list))
         .route("/files/folder", post(routes::files::create_folder))

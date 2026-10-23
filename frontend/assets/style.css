@@ -421,7 +421,8 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
 .share-perms { font-size: 12px; color: var(--muted); }
 
 .share-form { margin-top: 14px; display: flex; flex-direction: column; gap: 9px; }
-.share-form input[type="text"] {
+.share-form input[type="text"],
+.share-form select {
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;

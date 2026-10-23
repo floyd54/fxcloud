@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::AppError;
-use crate::models::User;
+use crate::models::{User, UserOption};
 
 use super::Db;
 
@@ -64,6 +64,29 @@ impl Db {
             )?;
             let found = stmt.query_row(params![id], row_to_user).optional()?;
             Ok(found)
+        })
+        .await
+    }
+
+    /// Every account except `exclude_id`, for the share dialog's dropdown:
+    /// username and display name for the label, plus `is_active` so accounts
+    /// that cannot sign in yet can be marked as such.
+    pub async fn list_share_targets(&self, exclude_id: i64) -> Result<Vec<UserOption>, AppError> {
+        self.run(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT username, display_name, is_active FROM users
+                  WHERE id != ?1 ORDER BY username",
+            )?;
+            let rows = stmt
+                .query_map(params![exclude_id], |row| {
+                    Ok(UserOption {
+                        username: row.get(0)?,
+                        display_name: row.get(1)?,
+                        is_active: row.get(2)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
         })
         .await
     }

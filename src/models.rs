@@ -21,6 +21,17 @@ pub struct User {
     pub quota_bytes: i64,
 }
 
+/// One row of `GET /api/users` — the accounts the share dialog offers as
+/// dropdown entries. Deliberately minimal: no ids, no quotas (those stay
+/// private to their owner), just what is needed to pick a grantee.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserOption {
+    pub username: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub is_active: bool,
+}
+
 /// A file-system entry (file or directory) owned by a user.
 ///
 /// Entries form a tree via `parent_id`; a `NULL` parent means the user's root.

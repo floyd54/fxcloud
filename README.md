@@ -27,8 +27,10 @@ build step, no runtime dependencies.
     share, or download the whole selection as **one ZIP** (folders keep
     their structure)
 - **Sharing** – share files/folders with other users using a Nextcloud-style
-  permission bitmask; shares mount directly in the grantee's root tree and are
-  enforced everywhere (web UI and WebDAV). See [Sharing](#sharing).
+  permission bitmask — the share dialog offers every other account in a
+  dropdown, no need to know the username; shares mount directly in the
+  grantee's root tree and are enforced everywhere (web UI and WebDAV). See
+  [Sharing](#sharing).
 - **WebDAV** – mount your files with real sync clients (Nextcloud desktop,
   rclone, Cyberduck, Windows "Map network drive", etc.). See
   [WebDAV](#webdav) below.
@@ -286,6 +288,7 @@ All `/api/*` routes require a session cookie (except `register` / `login`).
 | POST   | `/api/login`            | `{username, password}`             | Sign in (`403` when the account is inactive) |
 | POST   | `/api/logout`           | –                                  | Sign out                    |
 | GET    | `/api/me`               | –                                  | Current user + `quota_bytes` / `used_bytes` |
+| GET    | `/api/users`            | –                                  | Accounts to share with (everyone but you: `username`, `display_name`, `is_active`) |
 | GET    | `/api/files`            | `?parent=<id>` (omit for root)     | List folder contents        |
 | GET    | `/api/files/breadcrumb` | `?id=<folderId>`                   | Breadcrumb trail            |
 | POST   | `/api/files/folder`     | `{parent_id, name}`                | Create folder               |
