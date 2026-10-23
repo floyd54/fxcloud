@@ -10,6 +10,9 @@ build step, no runtime dependencies.
 - **Single binary** – SQLite (bundled) + frontend assets are embedded inside the
   executable. Just run it.
 - **User accounts** – registration & login with Argon2id password hashing.
+  Accounts start **inactive** and are switched on/off with a single column in
+  the database until a user-administration UI exists — see
+  [Account activation](#account-activation).
 - **Sessions** – HttpOnly cookie sessions, stored server-side, with expiry and
   background cleanup.
 - **File explorer** – a Nextcloud-style web UI to:
@@ -39,8 +42,47 @@ cargo build --release
 
 Then open <http://127.0.0.1:8080>, create an account, and start uploading.
 
-> The first account you register is just a normal user; there is no separate
-> admin concept yet.
+> The **very first** account you register is activated automatically — it is
+> your own login on a fresh instance. There is no separate admin concept yet,
+> and every account registered after that starts inactive: see
+> [Account activation](#account-activation).
+
+## Account activation
+
+Each user row carries an `is_active` flag (`0`/`1`). An inactive account can be
+registered, but it can neither sign in (web) nor authenticate (WebDAV), and
+deactivating a user cuts access off **immediately** — including sessions and
+WebDAV mounts that are already open, because the flag is checked on every
+request.
+
+There is no user-administration UI yet, so the switch is flipped directly in
+the database (no restart required):
+
+```bash
+# overview
+sqlite3 data/fxcloud.db "SELECT id, username, is_active, created_at FROM users ORDER BY id;"
+
+# activate -> the owner can sign in from now on
+sqlite3 data/fxcloud.db "UPDATE users SET is_active = 1 WHERE username = 'max';"
+
+# deactivate -> session cookie and WebDAV credentials stop working right away
+sqlite3 data/fxcloud.db "UPDATE users SET is_active = 0 WHERE username = 'max';"
+```
+
+What users see:
+
+- **Login with an inactive account** (correct password) → `403` with
+  *"account is not activated yet – ask an administrator to activate it"*.
+  Wrong passwords still get a plain `401`.
+- **Registering** an inactive account → `202` with
+  `{"pending_activation": true}` and *no* session cookie; the login page
+  reports "Account created. It has to be activated before you can sign in."
+  (The first account on a fresh instance instead signs in right away.)
+- **WebDAV** with an inactive account → `403` instead of a `401` password
+  prompt loop.
+
+Sharing still works both ways for inactive accounts — shares simply become
+visible to the grantee once their account is activated.
 
 ## Prebuilt binaries
 
@@ -151,7 +193,7 @@ src/
         ├── auth.rs  # /api/register, /login, /logout, /me
         └── files.rs # /api/files/*
 frontend/            # static UI, embedded via rust-embed
-migrations/          # SQL schema (idempotent, applied at startup)
+migrations/          # SQL schema (idempotent or guarded, applied at startup)
 ```
 
 ### Design notes
@@ -171,8 +213,8 @@ All `/api/*` routes require a session cookie (except `register` / `login`).
 
 | Method | Path                    | Body / Query                       | Description                 |
 | ------ | ----------------------- | ---------------------------------- | --------------------------- |
-| POST   | `/api/register`         | `{username, password, display_name?}` | Create account + sign in |
-| POST   | `/api/login`            | `{username, password}`             | Sign in                     |
+| POST   | `/api/register`         | `{username, password, display_name?}` | Create account (202 `pending_activation` while inactive; the first account signs in) |
+| POST   | `/api/login`            | `{username, password}`             | Sign in (`403` when the account is inactive) |
 | POST   | `/api/logout`           | –                                  | Sign out                    |
 | GET    | `/api/me`               | –                                  | Current user                |
 | GET    | `/api/files`            | `?parent=<id>` (omit for root)     | List folder contents        |

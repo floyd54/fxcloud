@@ -1,0 +1,11 @@
+-- Per-account active switch.
+--
+-- An inactive account can neither open a session (web login, first-run
+-- registration) nor use an already-issued session cookie or WebDAV basic auth.
+--
+-- `DEFAULT 1` matters for existing rows: every account that already exists
+-- when this migration runs predates the flag and must keep working. Accounts
+-- created afterwards are inserted with `is_active = 0` explicitly (see
+-- src/db/user.rs::insert_user), so they start inactive until an administrator
+-- flips them on directly in the database.
+ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;

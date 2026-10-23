@@ -7,6 +7,12 @@ pub struct User {
     pub id: i64,
     pub username: String,
     pub display_name: String,
+    /// Accounts are created inactive and must be enabled (directly in the
+    /// database until a user-administration UI exists) before their owner can
+    /// sign in. Deactivating a user cuts off access immediately, including
+    /// sessions that are already open.
+    #[serde(default)]
+    pub is_active: bool,
     pub created_at: DateTime<Utc>,
 }
 

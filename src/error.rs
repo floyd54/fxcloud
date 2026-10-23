@@ -24,6 +24,9 @@ pub enum AppError {
     #[error("forbidden: missing permission")]
     Forbidden,
 
+    #[error("account is not activated yet – ask an administrator to activate it")]
+    InactiveAccount,
+
     #[error("bad request: {0}")]
     BadRequest(String),
 
@@ -45,7 +48,7 @@ impl AppError {
             }
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden => StatusCode::FORBIDDEN,
+            AppError::Forbidden | AppError::InactiveAccount => StatusCode::FORBIDDEN,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
         }

@@ -24,7 +24,12 @@ fn clear_cookie() -> String {
     format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
 }
 
-/// POST /api/register – create the first (or a new) user and sign them in.
+/// POST /api/register – create a new user.
+///
+/// The account is created **inactive** (the very first one on a fresh instance
+/// excepted) and gets no session: it must be activated in the database first,
+/// which is reported back with `pending_activation`. Only an already-usable
+/// account signs in directly.
 pub async fn register(
     State(state): State<SharedState>,
     Json(req): Json<RegisterRequest>,
@@ -52,6 +57,14 @@ pub async fn register(
         .create_user(username, hash, display_name)
         .await?;
 
+    if !user.is_active {
+        // No cookie: an inactive account cannot be used yet.
+        return Ok(
+            (StatusCode::ACCEPTED, Json(json!({ "user": user, "pending_activation": true })))
+                .into_response(),
+        );
+    }
+
     let token = state.db.create_session(user.id, state.config.session_ttl).await?;
     let body = Json(json!({ "user": user }));
     Ok((
@@ -62,6 +75,10 @@ pub async fn register(
 }
 
 /// POST /api/login – verify credentials and open a session.
+///
+/// Correct credentials on a deactivated account are rejected with
+/// [`AppError::InactiveAccount`] (403) instead of a generic 401, so the user
+/// learns that the account is merely waiting to be activated.
 pub async fn login(
     State(state): State<SharedState>,
     Json(req): Json<LoginRequest>,
@@ -75,6 +92,10 @@ pub async fn login(
 
     if !verify_password(&req.password, &found.password_hash) {
         return Err(AppError::Unauthorized);
+    }
+
+    if !found.user.is_active {
+        return Err(AppError::InactiveAccount);
     }
 
     let token = state

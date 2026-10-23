@@ -286,6 +286,13 @@ tbody tr { cursor: pointer; }
   display: none;
 }
 
+/* Neutral/good-news notice (e.g. "account created, awaiting activation"). */
+.error-msg.success {
+  background: #e8f6ee;
+  color: #1e7e46;
+  border-color: #b9e3cb;
+}
+
 .spinner {
   display: inline-block;
   width: 16px;

@@ -12,13 +12,23 @@ use crate::web::state::SharedState;
 #[folder = "frontend/"]
 struct Assets;
 
+/// Whether the request carries a live session for an **active** account.
+///
+/// A deactivated user is treated as logged out so their browser lands on
+/// `/login` instead of the app shell (whose API calls would all 401 anyway).
 async fn is_logged_in(state: &SharedState, headers: &header::HeaderMap) -> bool {
     let Some(token) = token_from_cookie_header(
         headers.get(header::COOKIE).and_then(|v| v.to_str().ok()),
     ) else {
         return false;
     };
-    matches!(state.db.session_user_id(token).await, Ok(Some(_)))
+    let Ok(Some(user_id)) = state.db.session_user_id(token).await else {
+        return false;
+    };
+    matches!(
+        state.db.find_user_by_id(user_id).await,
+        Ok(Some(user)) if user.is_active
+    )
 }
 
 /// GET / – the file explorer app. Redirects to /login when unauthenticated.

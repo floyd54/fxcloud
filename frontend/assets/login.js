@@ -23,12 +23,17 @@
     hideError();
   }
 
-  function showError(message) {
+  function showMessage(message, kind) {
     errorBox.textContent = message;
+    errorBox.classList.toggle("success", kind === "success");
     errorBox.style.display = "block";
+  }
+  function showError(message) {
+    showMessage(message, "error");
   }
   function hideError() {
     errorBox.style.display = "none";
+    errorBox.classList.remove("success");
   }
 
   function setLoading(loading) {
@@ -75,6 +80,22 @@
         // Friendly fallbacks for common failures.
         if (res.status === 401) message = "Invalid username or password.";
         showError(message);
+        return;
+      }
+
+      let body = null;
+      try {
+        body = await res.json();
+      } catch (_) {}
+
+      // The account was created but is still inactive: no session was issued,
+      // so explain the situation instead of pretending the user is signed in.
+      if (body && body.pending_activation) {
+        setMode("login");
+        showMessage(
+          "Account created. It has to be activated before you can sign in – please contact your administrator.",
+          "success"
+        );
         return;
       }
 

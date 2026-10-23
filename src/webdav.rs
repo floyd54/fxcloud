@@ -31,6 +31,9 @@ const MAX_PUT_BYTES: usize = 4 * 1024 * 1024 * 1024;
 pub async fn dispatch(State(state): State<SharedState>, req: Request) -> Response {
     let user = match authenticate_basic(&state, req.headers()).await {
         Ok(u) => u,
+        // Credentials are right but the account is switched off: answer 403
+        // instead of 401 so clients don't keep re-prompting for a password.
+        Err(AppError::InactiveAccount) => return inactive_account(),
         Err(_) => return unauthorized(),
     };
     let owner_id = user.id;
@@ -791,6 +794,13 @@ fn unauthorized() -> Response {
         StatusCode::UNAUTHORIZED,
         [(header::WWW_AUTHENTICATE, "Basic realm=\"fxcloud\", charset=\"UTF-8\"")],
         "Unauthorized",
+    )
+        .into_response()
+}
+fn inactive_account() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        "Account not activated. Ask an administrator to activate it.",
     )
         .into_response()
 }

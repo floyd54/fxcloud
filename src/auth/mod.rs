@@ -59,7 +59,9 @@ impl AuthUser {
 /// Axum extractor that resolves the session cookie into a logged-in user.
 ///
 /// Rejects the request with `401 Unauthorized` when the cookie is missing,
-/// invalid, or expired.
+/// invalid, or expired, and also when the account has been deactivated in the
+/// meantime — deactivating a user cuts off access right away, open sessions
+/// included.
 impl FromRequestParts<SharedState> for AuthUser {
     type Rejection = AppError;
 
@@ -84,6 +86,10 @@ impl FromRequestParts<SharedState> for AuthUser {
             .await?
             .ok_or(AppError::Unauthorized)?;
 
+        if !user.is_active {
+            return Err(AppError::Unauthorized);
+        }
+
         Ok(AuthUser(user))
     }
 }
@@ -91,8 +97,10 @@ impl FromRequestParts<SharedState> for AuthUser {
 /// Authenticate a request via HTTP Basic auth (used by WebDAV clients).
 ///
 /// Returns the logged-in user on success; `Err(AppError::Unauthorized)` on any
-/// missing/malformed/invalid credential. The caller is responsible for adding a
-/// `WWW-Authenticate: Basic` header to the 401 response.
+/// missing/malformed/invalid credential and `Err(AppError::InactiveAccount)`
+/// when the credentials are correct but the account is switched off. The
+/// caller is responsible for adding a `WWW-Authenticate: Basic` header to the
+/// 401 response.
 pub async fn authenticate_basic(
     state: &SharedState,
     headers: &HeaderMap,
@@ -121,6 +129,9 @@ pub async fn authenticate_basic(
 
     if !verify_password(password, &found.password_hash) {
         return Err(AppError::Unauthorized);
+    }
+    if !found.user.is_active {
+        return Err(AppError::InactiveAccount);
     }
     Ok(found.user)
 }

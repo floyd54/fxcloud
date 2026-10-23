@@ -60,15 +60,33 @@ impl Db {
 
     /// Apply any pending schema migrations, in order.
     ///
-    /// Each migration must be idempotent (`IF NOT EXISTS` / guarded DDL) so it
-    /// is safe to re-run on every startup.
+    /// Migrations are re-run on every startup, so each one must be idempotent
+    /// (`IF NOT EXISTS` / guarded DDL). A statement that cannot be written
+    /// idempotently in SQLite — `ALTER TABLE ADD COLUMN` has no `IF NOT
+    /// EXISTS` — therefore ships a guard query: when it returns a non-zero
+    /// count the migration has already been applied and is skipped.
     fn migrate(&self) -> anyhow::Result<()> {
-        const MIGRATIONS: &[(&str, &str)] = &[
-            ("001_init", include_str!("../../migrations/001_init.sql")),
-            ("002_shares", include_str!("../../migrations/002_shares.sql")),
+        const MIGRATIONS: &[(&str, &str, Option<&str>)] = &[
+            ("001_init", include_str!("../../migrations/001_init.sql"), None),
+            ("002_shares", include_str!("../../migrations/002_shares.sql"), None),
+            (
+                "003_user_active",
+                include_str!("../../migrations/003_user_active.sql"),
+                // Skip once `users.is_active` exists.
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('users')
+                     WHERE name = 'is_active'",
+                ),
+            ),
         ];
         let conn = self.pool.get()?;
-        for (name, sql) in MIGRATIONS {
+        for (name, sql, guard) in MIGRATIONS {
+            if let Some(guard) = guard {
+                let applied: i64 = conn.query_row(guard, [], |r| r.get(0))?;
+                if applied > 0 {
+                    continue;
+                }
+            }
             conn.execute_batch(sql)
                 .map_err(|e| anyhow::anyhow!("migration {name} failed: {e}"))?;
         }
