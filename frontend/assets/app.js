@@ -384,6 +384,7 @@
   function renderToolbar() {
     const canCreate = (currentPerms & PERM_CREATE) !== 0;
     const show = canCreate ? "" : "none";
+    document.getElementById("new-file-btn").style.display = show;
     document.getElementById("new-folder-btn").style.display = show;
     document.getElementById("upload-btn").style.display = show;
     document.getElementById("upload-folder-btn").style.display = show;
@@ -440,6 +441,36 @@
         body: JSON.stringify({ parent_id: currentParent, name: name.trim() }),
       });
       await loadFiles(currentParent);
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function newFile() {
+    let name = prompt("New file name:", "note.md");
+    if (name === null) return; // cancelled
+    name = name.trim();
+    if (!name) return;
+    // Only text-ish extensions — anything else needs an upload.
+    const dot = name.lastIndexOf(".");
+    const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
+    const editable =
+      PREVIEW_EXT.text.indexOf(ext) >= 0 || ext === "md" || ext === "markdown";
+    if (!editable) {
+      alert(
+        "Only text files can be created here (.txt, .md, .csv, code, ...).\n" +
+          "Upload other file types instead.",
+      );
+      return;
+    }
+    try {
+      const res = await api("/api/files/file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parent_id: currentParent, name: name }),
+      }).then((r) => r.json());
+      await loadFiles(currentParent);
+      openPreview(res.entry); // text files open straight in the editor
     } catch (e) {
       alert(e.message);
     }
@@ -1334,6 +1365,7 @@
 
   // ---------- wire up ----------
   document.getElementById("new-folder-btn").addEventListener("click", newFolder);
+  document.getElementById("new-file-btn").addEventListener("click", newFile);
   document.getElementById("upload-btn").addEventListener("click", () => fileInput.click());
   document.getElementById("upload-folder-btn").addEventListener("click", () =>
     folderInput.click()

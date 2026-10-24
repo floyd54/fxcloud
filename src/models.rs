@@ -94,6 +94,13 @@ pub struct CreateFolderRequest {
     pub name: String,
 }
 
+/// Payload for creating a new (initially empty) file.
+#[derive(Debug, Deserialize)]
+pub struct CreateFileRequest {
+    pub parent_id: Option<i64>,
+    pub name: String,
+}
+
 /// Payload for renaming an entry.
 #[derive(Debug, Deserialize)]
 pub struct RenameRequest {

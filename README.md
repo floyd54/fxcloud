@@ -33,6 +33,8 @@ build step, no runtime dependencies.
     a live **Markdown preview** pane next to the editor (headings, lists,
     code blocks, links, images; rendered with escaping and URL filtering,
     so a note cannot run script)
+  - **create** new text files directly (`＋ New file`: any text-ish
+    extension, `.md`/`.txt` and friends) — the editor opens right away
   - **multi-select** rows (checkbox per row, header checkbox = all,
     Shift+click = a range) and process them together: delete, move/copy,
     share, or download the whole selection as **one ZIP** (folders keep
@@ -303,6 +305,7 @@ All `/api/*` routes require a session cookie (except `register` / `login`).
 | GET    | `/api/files`            | `?parent=<id>` (omit for root)     | List folder contents        |
 | GET    | `/api/files/breadcrumb` | `?id=<folderId>`                   | Breadcrumb trail            |
 | POST   | `/api/files/folder`     | `{parent_id, name}`                | Create folder               |
+| POST   | `/api/files/file`       | `{parent_id, name}`                | Create empty file (409 on duplicates) |
 | POST   | `/api/files/folder/ensure` | `{parent_id, name}`             | Get-or-create folder (idempotent; powers folder uploads) |
 | POST   | `/api/files/upload`     | multipart: `parent`, `file`        | Upload file                 |
 | GET    | `/api/files/download`   | `?id=<fileId>`                     | Download file               |

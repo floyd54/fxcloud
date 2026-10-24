@@ -13,8 +13,8 @@ use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::files::FileService;
 use crate::models::{
-    BatchIdsRequest, BatchOutcome, BatchTransferRequest, BlobRef, CreateFolderRequest, FileEntry,
-    RenameRequest, TransferRequest, ZipRequest,
+    BatchIdsRequest, BatchOutcome, BatchTransferRequest, BlobRef, CreateFileRequest,
+    CreateFolderRequest, FileEntry, RenameRequest, TransferRequest, ZipRequest,
 };
 use crate::web::state::SharedState;
 
@@ -73,6 +73,28 @@ pub async fn create_folder(
         .db
         .create_dir(user.id(), req.parent_id, req.name)
         .await?;
+    Ok(Json(json!({ "entry": entry })))
+}
+
+/// POST /api/files/file – create a new, initially empty file (the web UI's
+/// "New file" button; content follows via PUT /api/files/content).
+///
+/// Name rules, the CREATE permission on the parent and the duplicate check
+/// are the ones folder creation already uses.
+pub async fn create_file(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<CreateFileRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let entry = state
+        .db
+        .create_file(user.id(), req.parent_id, req.name, 0, None)
+        .await?;
+    // An empty blob on disk, so download and preview work right away.
+    if let Err(e) = state.files.write_blob(&entry, Vec::new()).await {
+        let _ = state.db.delete_entry(user.id(), entry.id).await;
+        return Err(e);
+    }
     Ok(Json(json!({ "entry": entry })))
 }
 
