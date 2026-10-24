@@ -140,7 +140,12 @@
 
       const sizeTd = document.createElement("td");
       sizeTd.className = "size-col";
-      sizeTd.textContent = entry.is_dir ? "—" : formatSize(entry.size);
+      if (entry.is_dir) {
+        sizeTd.textContent =
+          entry.subtree_bytes != null ? formatSize(entry.subtree_bytes) : "—";
+      } else {
+        sizeTd.textContent = formatSize(entry.size);
+      }
 
       const dateTd = document.createElement("td");
       dateTd.className = "date-col";

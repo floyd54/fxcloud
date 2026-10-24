@@ -26,6 +26,7 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
         modified_at: parse_ts(&modified_at, 8)?,
         permissions: PERM_ALL,
         owner_name: None,
+        subtree_bytes: None,
     })
 }
 
@@ -76,35 +77,40 @@ impl Db {
         user_id: i64,
         parent_id: Option<i64>,
     ) -> Result<Vec<FileEntry>, AppError> {
-        self.run(move |conn| match parent_id {
-            None => {
-                let mut entries = own_children(conn, user_id, None)?;
-                entries.extend(incoming_mounts(conn, user_id)?);
-                sort_entries(&mut entries);
-                Ok(entries)
-            }
-            Some(pid) => {
-                let parent = get_entry_by_id(conn, pid)?;
-                if !parent.is_dir {
-                    return Err(AppError::BadRequest("parent is not a folder".into()));
+        self.run(move |conn| {
+            let mut entries = match parent_id {
+                None => {
+                    let mut entries = own_children(conn, user_id, None)?;
+                    entries.extend(incoming_mounts(conn, user_id)?);
+                    sort_entries(&mut entries);
+                    entries
                 }
-                if parent.owner_id == user_id {
-                    own_children(conn, user_id, Some(pid))
-                } else {
-                    // Foreign folder: only a covering share may open it.
-                    let access = covering_share(conn, user_id, pid)?.ok_or(AppError::NotFound)?;
-                    if !access.can(crate::sharing::PERM_READ) {
-                        return Err(AppError::Forbidden);
+                Some(pid) => {
+                    let parent = get_entry_by_id(conn, pid)?;
+                    if !parent.is_dir {
+                        return Err(AppError::BadRequest("parent is not a folder".into()));
                     }
-                    let mut entries = own_children(conn, parent.owner_id, Some(pid))?;
-                    let owner_name = username_by_id(conn, parent.owner_id)?;
-                    for e in &mut entries {
-                        e.permissions = access.permissions;
-                        e.owner_name = Some(owner_name.clone());
+                    if parent.owner_id == user_id {
+                        own_children(conn, user_id, Some(pid))?
+                    } else {
+                        // Foreign folder: only a covering share may open it.
+                        let access =
+                            covering_share(conn, user_id, pid)?.ok_or(AppError::NotFound)?;
+                        if !access.can(crate::sharing::PERM_READ) {
+                            return Err(AppError::Forbidden);
+                        }
+                        let mut entries = own_children(conn, parent.owner_id, Some(pid))?;
+                        let owner_name = username_by_id(conn, parent.owner_id)?;
+                        for e in &mut entries {
+                            e.permissions = access.permissions;
+                            e.owner_name = Some(owner_name.clone());
+                        }
+                        entries
                     }
-                    Ok(entries)
                 }
-            }
+            };
+            fill_subtree_sizes(conn, &mut entries)?;
+            Ok(entries)
         })
         .await
     }
@@ -779,6 +785,7 @@ fn incoming_mounts(conn: &Connection, user_id: i64) -> Result<Vec<FileEntry>, Ap
                 modified_at: parse_ts(&modified, 8)?,
                 permissions: r.get(10)?,
                 owner_name: Some(r.get(9)?),
+                subtree_bytes: None,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -800,6 +807,41 @@ fn username_by_id(conn: &Connection, id: i64) -> Result<String, AppError> {
         |r| r.get(0),
     )?;
     Ok(name)
+}
+
+/// Set `subtree_bytes` on the directory rows of a listing.
+///
+/// One recursive CTE sums every listed folder's whole subtree in a single
+/// pass (the `UNION` also makes a stray parent cycle terminate), so folder
+/// sizes cost one indexed query per page instead of one walk per row.
+fn fill_subtree_sizes(conn: &Connection, entries: &mut [FileEntry]) -> Result<(), AppError> {
+    let dirs: Vec<i64> = entries.iter().filter(|e| e.is_dir).map(|e| e.id).collect();
+    if dirs.is_empty() {
+        return Ok(());
+    }
+    let placeholders = vec!["?"; dirs.len()].join(",");
+    let sql = format!(
+        "WITH RECURSIVE tree(root, id) AS (
+             SELECT id, id FROM files WHERE id IN ({placeholders})
+             UNION
+             SELECT t.root, c.id FROM files c JOIN tree t ON c.parent_id = t.id
+         )
+         SELECT t.root, COALESCE(SUM(f.size), 0)
+         FROM tree t JOIN files f ON f.parent_id = t.id AND f.is_dir = 0
+         GROUP BY t.root"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(dirs.iter()))?;
+    let mut sizes: HashMap<i64, i64> = HashMap::new();
+    while let Some(row) = rows.next()? {
+        sizes.insert(row.get(0)?, row.get(1)?);
+    }
+    for entry in entries.iter_mut() {
+        if entry.is_dir {
+            entry.subtree_bytes = Some(sizes.get(&entry.id).copied().unwrap_or(0));
+        }
+    }
+    Ok(())
 }
 
 fn validate_name(name: &str) -> Result<(), AppError> {

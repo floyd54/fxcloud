@@ -55,6 +55,10 @@ pub struct FileEntry {
     /// Real owner's username, set when the viewer sees it via a share.
     #[serde(default)]
     pub owner_name: Option<String>,
+    /// Total bytes of everything inside this folder (recursive sum). Only
+    /// directory rows of listing responses carry it — see `list_children`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtree_bytes: Option<i64>,
 }
 
 /// Where a file's content blob lives on disk.

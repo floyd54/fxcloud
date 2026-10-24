@@ -16,7 +16,8 @@ build step, no runtime dependencies.
 - **Sessions** – HttpOnly cookie sessions, stored server-side, with expiry and
   background cleanup.
 - **File explorer** – a Nextcloud-style web UI to:
-  - browse a folder tree with breadcrumbs
+  - browse a folder tree with breadcrumbs; folders show their recursive
+    size in the size column (computed by one indexed query per listing)
   - create folders
   - upload files **or whole folders** (buttons, or drag & drop into the
     dropzone — folder trees are recreated including empty subfolders)
