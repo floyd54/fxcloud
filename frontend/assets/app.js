@@ -413,6 +413,30 @@
     loadMe().catch(() => {});
   }
 
+  // The trash is a view over the caller's own trashed roots, not a folder:
+  // no breadcrumb walk of its own, and openFolder() turns the mode off again.
+  async function loadTrash() {
+    const listRes = await api("/api/files/trash").then((r) => r.json());
+    trashView = true;
+    // Navigating starts a fresh selection — the old one described real files.
+    selected.clear();
+    lastCheckIndex = null;
+    renderBreadcrumb([
+      { id: null, name: "Home" },
+      { id: null, name: "Trash" },
+    ]);
+    renderRows(listRes.entries);
+    // The trash swaps the whole toolbar, so no per-folder mask applies here.
+    currentPerms = PERM_ALL;
+    renderToolbar();
+    syncSelectionUi();
+  }
+
+  // Leave the trash and go back to the root folder.
+  function openHome() {
+    openFolder(null);
+  }
+
   // Show the create toolbar only where the viewer holds CREATE. The trash
   // swaps the file actions for its own (Empty trash).
   function renderToolbar() {
@@ -529,6 +553,8 @@
 
   // ---------- actions ----------
   async function openFolder(id, perms) {
+    // Any folder navigation leaves the trash view behind.
+    trashView = false;
     currentParent = id;
     if (id != null) {
       if (perms != null) {
