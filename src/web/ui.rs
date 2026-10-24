@@ -7,6 +7,10 @@ use crate::auth::token_from_cookie_header;
 use crate::error::AppError;
 use crate::web::state::SharedState;
 
+/// Release version shown in the UI, taken from `Cargo.toml` at build time so
+/// the badge next to the logo always matches the binary (and the git tag).
+const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
+
 /// Frontend assets compiled into the binary at build time.
 #[derive(RustEmbed)]
 #[folder = "frontend/"]
@@ -74,12 +78,20 @@ fn serve_asset(path: &str) -> Result<Response, AppError> {
         "no-cache"
     };
 
+    let mut data = file.data.into_owned();
+    if path.ends_with(".html") {
+        // Server-side template slot: the version badge next to the logo is
+        // filled in from Cargo.toml, so display and release tag stay in step.
+        let html = String::from_utf8_lossy(&data).replace("{{version}}", VERSION);
+        data = html.into_bytes().into();
+    }
+
     Ok((
         [
             (header::CONTENT_TYPE, mime),
             (header::CACHE_CONTROL, cache.to_string()),
         ],
-        file.data.into_owned(),
+        data,
     )
         .into_response())
 }
