@@ -27,6 +27,12 @@ build step, no runtime dependencies.
     lightbox with the file embedded, *Open in new tab* renders it natively
     (byte ranges are served so media seeking works; HTML/SVG are sandboxed
     server-side so shared pages cannot touch your session)
+  - **edit** text-ish files in a small built-in editor (opens on row click
+    or the *Edit* menu item): save with the button or Ctrl+S, unsaved
+    changes are flagged and confirmed on close. `.md`/`.markdown` files get
+    a live **Markdown preview** pane next to the editor (headings, lists,
+    code blocks, links, images; rendered with escaping and URL filtering,
+    so a note cannot run script)
   - **multi-select** rows (checkbox per row, header checkbox = all,
     Shift+click = a range) and process them together: delete, move/copy,
     share, or download the whole selection as **one ZIP** (folders keep
@@ -301,6 +307,7 @@ All `/api/*` routes require a session cookie (except `register` / `login`).
 | POST   | `/api/files/upload`     | multipart: `parent`, `file`        | Upload file                 |
 | GET    | `/api/files/download`   | `?id=<fileId>`                     | Download file               |
 | GET    | `/api/files/preview`    | `?id=<fileId>` (+ optional `Range`) | Inline preview (206/416 ranges; `CSP: sandbox` for HTML/SVG) |
+| PUT    | `/api/files/content`    | `?id=<fileId>`, body = raw text    | Overwrite file content (editor save; quota-checked, 507 when full) |
 | GET    | `/api/files/info`       | `?id=<entryId>`                    | One entry + viewer rights   |
 | POST   | `/api/files/rename`     | `{id, name}`                       | Rename entry                |
 | POST   | `/api/files/delete`     | `{id}`                             | Delete (recursive for dirs) |

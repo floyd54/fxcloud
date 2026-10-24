@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
-use axum::routing::{any, get, post};
+use axum::routing::{any, get, post, put};
 use axum::Router;
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::compression::CompressionLayer;
@@ -36,6 +36,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/files/upload", post(routes::files::upload))
         .route("/files/download", get(routes::files::download))
         .route("/files/preview", get(routes::files::preview))
+        .route("/files/content", put(routes::files::save_content))
         .route("/files/rename", post(routes::files::rename))
         .route("/files/delete", post(routes::files::delete))
         .route("/files/move", post(routes::files::move_entry))

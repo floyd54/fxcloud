@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::io::{Read, Write};
 
+use axum::body::Bytes;
 use axum::extract::{Multipart, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -417,6 +418,45 @@ pub async fn preview(
         .body(axum::body::Body::from(body))
         .map_err(|e| AppError::Internal(anyhow::anyhow!("building preview response: {e}")))?;
     Ok(resp.into_response())
+}
+
+/// PUT /api/files/content?id=<id> – overwrite a file's content with the raw
+/// request body (the web editor's save path).
+///
+/// Permission (PERM_UPDATE), tree-owner resolution and the quota gate all
+/// come from `update_file_meta`, the same path WebDAV PUT takes, so the
+/// editor and sync clients cannot diverge.
+pub async fn save_content(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Query(q): Query<IdQuery>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let entry = state
+        .db
+        .entry_for_read(user.id(), q.id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if entry.is_dir {
+        return Err(AppError::BadRequest("cannot edit a folder".into()));
+    }
+    let mime = mime_guess::from_path(&entry.name)
+        .first()
+        .map(|m| m.to_string());
+    // The blob path is id-derived, so replacing the content in place swaps
+    // the blob underneath; meta first, because it holds the quota gate.
+    state
+        .db
+        .update_file_meta(user.id(), entry.id, body.len() as i64, mime)
+        .await?;
+    state.files.write_blob(&entry, body.to_vec()).await?;
+    // Fresh row for the response: size and modified_at just changed.
+    let entry = state
+        .db
+        .entry_for_read(user.id(), q.id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(json!({ "entry": entry })))
 }
 
 // ---------------------------------------------------------------------------

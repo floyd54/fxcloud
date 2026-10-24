@@ -301,7 +301,11 @@
       items.push(["Open", () => openFolder(entry.id, perms)]);
     }
     if (!entry.is_dir && (perms & PERM_READ)) {
-      if (previewKind(entry.name)) items.push(["Preview", () => openPreview(entry)]);
+      if (previewKind(entry.name)) {
+        // Text files open in the editor; everything else gets a preview.
+        const label = previewKind(entry.name) === "text" ? "Edit" : "Preview";
+        items.push([label, () => openPreview(entry)]);
+      }
       items.push(["Download", () => downloadFile(entry.id, entry.name)]);
     }
     if (isOwner) {
@@ -526,6 +530,15 @@
 
     const body = document.getElementById("preview-body");
     body.innerHTML = "";
+    if (kind === "text") {
+      // Text-ish files open in the editor instead of a plain frame.
+      body.style.display = "none";
+      editorRoot.style.display = "flex";
+      openEditor(entry);
+      return;
+    }
+    closeEditor();
+    body.style.display = "";
     let el;
     if (kind === "image") {
       el = document.createElement("img");
@@ -561,9 +574,281 @@
   }
 
   function closePreview() {
+    // An edited file keeps its changes until the user says otherwise.
+    if (editorEntry && editorDirty() && !confirm("Discard unsaved changes?")) return;
     previewModal.style.display = "none";
-    document.getElementById("preview-body").innerHTML = "";
+    const body = document.getElementById("preview-body");
+    body.innerHTML = "";
+    body.style.display = "";
+    closeEditor();
   }
+
+  // ---------- text editor (inside the lightbox) ----------
+  const editorRoot = document.getElementById("editor-root");
+  const editorText = document.getElementById("editor-text");
+  const editorStatus = document.getElementById("editor-status");
+  const editorMeta = document.getElementById("editor-meta");
+  const editorMdToggle = document.getElementById("editor-md-toggle");
+  const editorMdPane = document.getElementById("editor-md");
+  let editorEntry = null; // file open in the editor
+  let editorBaseline = ""; // content as loaded/saved (dirty check)
+  let editorIsMd = false;
+  let editorMdOn = true; // preview pane on/off, remembered across opens
+
+  function editorDirty() {
+    return editorEntry !== null && editorText.value !== editorBaseline;
+  }
+
+  function setEditorStatus(text) {
+    editorStatus.textContent = text;
+    editorStatus.classList.toggle("unsaved", text === "* unsaved");
+  }
+
+  function updateEditorMeta() {
+    const lines = editorText.value === "" ? 1 : editorText.value.split("\n").length;
+    editorMeta.textContent = `${lines} lines, ${editorText.value.length} chars`;
+  }
+
+  function setEditorMdVisible(on) {
+    editorMdPane.style.display = on ? "" : "none";
+    editorMdToggle.setAttribute("aria-pressed", String(on));
+    editorMdToggle.classList.toggle("active", on);
+    if (on) renderMarkdown();
+  }
+
+  function openEditor(entry) {
+    editorEntry = entry;
+    previewModal.style.display = "flex";
+    editorIsMd = /\.(md|markdown)$/i.test(entry.name);
+    editorText.value = "";
+    editorBaseline = "";
+    setEditorStatus("loading...");
+    updateEditorMeta();
+    editorMdToggle.style.display = editorIsMd ? "" : "none";
+    setEditorMdVisible(editorIsMd && editorMdOn);
+    api(`/api/files/preview?id=${entry.id}`)
+      .then((r) => r.text())
+      .then((text) => {
+        if (editorEntry !== entry) return; // another file opened meanwhile
+        editorText.value = text;
+        editorBaseline = text;
+        setEditorStatus("");
+        updateEditorMeta();
+        if (editorMdPane.style.display !== "none") renderMarkdown();
+        editorText.focus();
+      })
+      .catch((e) => setEditorStatus(`load failed: ${e.message}`));
+  }
+
+  function closeEditor() {
+    editorEntry = null;
+    editorBaseline = "";
+    editorText.value = "";
+    editorRoot.style.display = "none";
+    editorMdPane.innerHTML = "";
+    setEditorStatus("");
+  }
+
+  function saveEditor() {
+    if (!editorEntry) return;
+    const entry = editorEntry;
+    const content = editorText.value;
+    setEditorStatus("saving...");
+    api(`/api/files/content?id=${entry.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+      body: content,
+    })
+      .then((r) => r.json())
+      .then((res) => {
+        if (editorEntry !== entry) return;
+        editorBaseline = content;
+        setEditorStatus("saved");
+        window.setTimeout(() => {
+          if (editorStatus.textContent === "saved") setEditorStatus("");
+        }, 2000);
+        if (res.entry) {
+          // The listing behind the dialog shows the new size/modified_at.
+          entry.size = res.entry.size;
+          entry.modified_at = res.entry.modified_at;
+          openFolder(currentParent);
+        }
+        updateEditorMeta();
+      })
+      .catch((e) => setEditorStatus(`save failed: ${e.message}`));
+  }
+
+  // Mini Markdown renderer for the preview pane. Everything is HTML-escaped
+  // before the transformations run and link/image targets are restricted to
+  // http(s) and relative URLs, so a note can never run script in this origin.
+  function mdToHtml(src) {
+    const esc = (s) =>
+      s.replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    const safeUrl = (u) => (/^(https?:\/\/|\/|#)/i.test(u.trim()) ? u.trim() : "#");
+    const inline = (s) => {
+      let out = esc(s);
+      // Code spans first: their content must survive every other rule.
+      const codes = [];
+      out = out.replace(/`([^`]+)`/g, (_, c) => {
+        codes.push(c);
+        return `\uE000${codes.length - 1}\uE000`;
+      });
+      out = out
+        .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => {
+          const src2 = safeUrl(url);
+          if (src2 === "#") return alt;
+          return `<img src="${src2}" alt="${alt}">`;
+        })
+        .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, text, url) =>
+          `<a href="${safeUrl(url)}" target="_blank" rel="noopener noreferrer">${text}</a>`,
+        )
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+        .replace(/~~([^~]+)~~/g, "<del>$1</del>");
+      return out.replace(/\uE000(\d+)\uE000/g, (_, i) => `<code>${codes[+i]}</code>`);
+    };
+    const lines = src.replace(/\r\n?/g, "\n").split("\n");
+    let html = "";
+    let para = [];
+    let listType = null; // "ul" | "ol" while a list is open
+    let quote = [];
+    let fence = null; // accumulated content of an open ``` block
+    const closePara = () => {
+      if (para.length) {
+        html += `<p>${para.join("<br>")}</p>`;
+        para = [];
+      }
+    };
+    const closeList = () => {
+      if (listType) {
+        html += `</${listType}>`;
+        listType = null;
+      }
+    };
+    const closeQuote = () => {
+      if (quote.length) {
+        html += `<blockquote>${quote.join("<br>")}</blockquote>`;
+        quote = [];
+      }
+    };
+    for (const raw of lines) {
+      if (fence !== null) {
+        if (/^\s*```/.test(raw)) {
+          html += `<pre><code>${esc(fence.join("\n"))}</code></pre>`;
+          fence = null;
+        } else {
+          fence.push(raw);
+        }
+        continue;
+      }
+      if (/^\s*```/.test(raw)) {
+        closePara();
+        closeList();
+        closeQuote();
+        fence = [];
+        continue;
+      }
+      if (/^\s*$/.test(raw)) {
+        closePara();
+        closeList();
+        closeQuote();
+        continue;
+      }
+      const heading = raw.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) {
+        closePara();
+        closeList();
+        closeQuote();
+        const level = heading[1].length;
+        html += `<h${level}>${inline(heading[2])}</h${level}>`;
+        continue;
+      }
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(raw)) {
+        closePara();
+        closeList();
+        closeQuote();
+        html += "<hr>";
+        continue;
+      }
+      const quoted = raw.match(/^>\s?(.*)$/);
+      if (quoted) {
+        closePara();
+        closeList();
+        quote.push(inline(quoted[1]));
+        continue;
+      }
+      const ulItem = raw.match(/^\s*[-*+]\s+(.*)$/);
+      const olItem = raw.match(/^\s*\d+\.\s+(.*)$/);
+      if (ulItem || olItem) {
+        closePara();
+        closeQuote();
+        const want = ulItem ? "ul" : "ol";
+        if (listType !== want) {
+          closeList();
+          html += `<${want}>`;
+          listType = want;
+        }
+        html += `<li>${inline((ulItem || olItem)[1])}</li>`;
+        continue;
+      }
+      closeList();
+      closeQuote();
+      para.push(inline(raw));
+    }
+    if (fence !== null) html += `<pre><code>${esc(fence.join("\n"))}</code></pre>`;
+    closePara();
+    closeList();
+    closeQuote();
+    return html;
+  }
+
+  function renderMarkdown() {
+    editorMdPane.innerHTML = mdToHtml(editorText.value);
+  }
+
+  let mdRenderTimer = null;
+  editorText.addEventListener("input", () => {
+    if (editorEntry === null) return;
+    setEditorStatus(editorDirty() ? "* unsaved" : "");
+    updateEditorMeta();
+    if (editorIsMd && editorMdPane.style.display !== "none") {
+      window.clearTimeout(mdRenderTimer);
+      mdRenderTimer = window.setTimeout(renderMarkdown, 150);
+    }
+  });
+  editorText.addEventListener("keydown", (e) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const start = editorText.selectionStart;
+      const end = editorText.selectionEnd;
+      if (e.shiftKey) {
+        // Unindent the current line by up to two spaces.
+        const value = editorText.value;
+        const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+        const drop = value.slice(lineStart, lineStart + 2) === "  " ? 2 : 0;
+        if (drop) {
+          editorText.value = value.slice(0, lineStart) + value.slice(lineStart + drop);
+          editorText.selectionStart = Math.max(lineStart, start - drop);
+          editorText.selectionEnd = end - drop;
+          editorText.dispatchEvent(new Event("input"));
+        }
+      } else {
+        editorText.setRangeText("  ", start, end, "end");
+        editorText.dispatchEvent(new Event("input"));
+      }
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      saveEditor();
+    }
+  });
+  document.getElementById("editor-save-btn").addEventListener("click", saveEditor);
+  editorMdToggle.addEventListener("click", () => {
+    editorMdOn = !editorMdOn;
+    setEditorMdVisible(editorIsMd && editorMdOn);
+  });
 
   // ---------- upload (files, folders, drag & drop) ----------
   const statusEl = document.getElementById("upload-status");

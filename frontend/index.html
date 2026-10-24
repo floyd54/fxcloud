@@ -111,6 +111,20 @@
         <button class="btn secondary" id="preview-close-btn" type="button">Close</button>
       </div>
       <div class="preview-body" id="preview-body"></div>
+      <div class="editor" id="editor-root" style="display:none">
+        <div class="editor-toolbar">
+          <span class="editor-status" id="editor-status"></span>
+          <span class="editor-meta" id="editor-meta"></span>
+          <div class="grow"></div>
+          <button class="btn secondary" id="editor-md-toggle" type="button"
+                  aria-pressed="false" style="display:none">Markdown</button>
+          <button class="btn" id="editor-save-btn" type="button">Save</button>
+        </div>
+        <div class="editor-main">
+          <textarea id="editor-text" spellcheck="false" wrap="off"></textarea>
+          <div class="editor-md" id="editor-md" style="display:none"></div>
+        </div>
+      </div>
     </div>
   </div>
 
