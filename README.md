@@ -22,6 +22,11 @@ build step, no runtime dependencies.
     dropzone — folder trees are recreated including empty subfolders)
   - download, copy/move (destination picker), rename, and delete entries
     via a per-row ⋮ menu (folders delete recursively)
+  - **preview** browser-viewable files (images, video, audio, PDF, HTML,
+    text) right in the app: clicking a row or choosing *Preview* opens a
+    lightbox with the file embedded, *Open in new tab* renders it natively
+    (byte ranges are served so media seeking works; HTML/SVG are sandboxed
+    server-side so shared pages cannot touch your session)
   - **multi-select** rows (checkbox per row, header checkbox = all,
     Shift+click = a range) and process them together: delete, move/copy,
     share, or download the whole selection as **one ZIP** (folders keep
@@ -295,6 +300,7 @@ All `/api/*` routes require a session cookie (except `register` / `login`).
 | POST   | `/api/files/folder/ensure` | `{parent_id, name}`             | Get-or-create folder (idempotent; powers folder uploads) |
 | POST   | `/api/files/upload`     | multipart: `parent`, `file`        | Upload file                 |
 | GET    | `/api/files/download`   | `?id=<fileId>`                     | Download file               |
+| GET    | `/api/files/preview`    | `?id=<fileId>` (+ optional `Range`) | Inline preview (206/416 ranges; `CSP: sandbox` for HTML/SVG) |
 | GET    | `/api/files/info`       | `?id=<entryId>`                    | One entry + viewer rights   |
 | POST   | `/api/files/rename`     | `{id, name}`                       | Rename entry                |
 | POST   | `/api/files/delete`     | `{id}`                             | Delete (recursive for dirs) |

@@ -172,6 +172,10 @@
 
       if (entry.is_dir) {
         tr.addEventListener("click", () => openFolder(entry.id, perms));
+      } else if ((perms & PERM_READ) && previewKind(entry.name)) {
+        // Browser-viewable files open in the lightbox directly.
+        tr.classList.add("previewable");
+        tr.addEventListener("click", () => openPreview(entry));
       }
 
       rowsEl.appendChild(tr);
@@ -297,6 +301,7 @@
       items.push(["Open", () => openFolder(entry.id, perms)]);
     }
     if (!entry.is_dir && (perms & PERM_READ)) {
+      if (previewKind(entry.name)) items.push(["Preview", () => openPreview(entry)]);
       items.push(["Download", () => downloadFile(entry.id, entry.name)]);
     }
     if (isOwner) {
@@ -340,7 +345,10 @@
   // Close the popup on outside clicks, Escape, and layout changes.
   document.addEventListener("click", closeRowMenu);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeRowMenu();
+    if (e.key === "Escape") {
+      closeRowMenu();
+      closePreview();
+    }
   });
   window.addEventListener("resize", closeRowMenu);
   window.addEventListener("scroll", closeRowMenu, true);
@@ -475,6 +483,86 @@
     document.body.appendChild(a);
     a.click();
     a.remove();
+  }
+
+  // ---------- file preview (lightbox) ----------
+  const previewModal = document.getElementById("preview-modal");
+
+  // Extensions the browser renders natively, mirroring `extension_type()` in
+  // src/web/routes/files.rs. The server stays the authority on the actual
+  // Content-Type; this list only decides what a click opens.
+  const PREVIEW_EXT = {
+    image: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "apng", "svg"],
+    video: ["mp4", "webm", "ogv", "mov", "m4v"],
+    audio: ["mp3", "wav", "ogg", "oga", "opus", "m4a", "aac", "flac"],
+    pdf: ["pdf"],
+    html: ["html", "htm"],
+    text: [
+      "txt", "text", "md", "markdown", "csv", "tsv", "log", "json", "xml",
+      "yml", "yaml", "toml", "ini", "cfg", "conf", "env", "sql", "rst",
+      "tex", "diff", "patch", "rs", "js", "mjs", "cjs", "jsx", "ts", "tsx",
+      "py", "rb", "go", "java", "c", "h", "cc", "cpp", "hpp", "cs", "php",
+      "sh", "bash", "zsh", "pl", "lua", "swift", "kt", "kts", "scala", "r",
+      "vue", "svelte", "css", "scss", "sass", "less",
+    ],
+  };
+
+  function previewKind(name) {
+    const dot = name.lastIndexOf(".");
+    if (dot < 0) return null;
+    const ext = name.slice(dot + 1).toLowerCase();
+    for (const kind of Object.keys(PREVIEW_EXT)) {
+      if (PREVIEW_EXT[kind].indexOf(ext) >= 0) return kind;
+    }
+    return null;
+  }
+
+  function openPreview(entry) {
+    const kind = previewKind(entry.name);
+    if (!kind || entry.is_dir) return;
+    document.getElementById("preview-name").textContent = entry.name;
+    const src = `/api/files/preview?id=${entry.id}`;
+    document.getElementById("preview-newtab").href = src;
+
+    const body = document.getElementById("preview-body");
+    body.innerHTML = "";
+    let el;
+    if (kind === "image") {
+      el = document.createElement("img");
+      el.src = src;
+      el.alt = entry.name;
+    } else if (kind === "video") {
+      el = document.createElement("video");
+      el.controls = true;
+      el.src = src;
+    } else if (kind === "audio") {
+      el = document.createElement("audio");
+      el.controls = true;
+      el.src = src;
+    } else {
+      // PDF (the browser's own viewer), HTML (sandboxed server-side) and
+      // text all render fine in a plain frame.
+      el = document.createElement("iframe");
+      el.src = src;
+      el.title = entry.name;
+    }
+    el.className = `preview-${kind}`;
+    if (kind === "image" || kind === "video" || kind === "audio") {
+      el.addEventListener("error", () => {
+        body.innerHTML = "";
+        const msg = document.createElement("div");
+        msg.className = "empty-small";
+        msg.textContent = "Preview failed - the file may be unavailable. Use Download instead.";
+        body.appendChild(msg);
+      });
+    }
+    body.appendChild(el);
+    previewModal.style.display = "flex";
+  }
+
+  function closePreview() {
+    previewModal.style.display = "none";
+    document.getElementById("preview-body").innerHTML = "";
   }
 
   // ---------- upload (files, folders, drag & drop) ----------
@@ -980,6 +1068,11 @@
   document.getElementById("transfer-confirm").addEventListener("click", transferConfirm);
   transferModal.addEventListener("click", (e) => {
     if (e.target === transferModal) closeTransferDialog();
+  });
+  // File preview (lightbox).
+  document.getElementById("preview-close-btn").addEventListener("click", closePreview);
+  previewModal.addEventListener("click", (e) => {
+    if (e.target === previewModal) closePreview();
   });
   // Multi-selection: header checkbox selects the whole listing (deselecting
   // it clears everything, including a partial selection).

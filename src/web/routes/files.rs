@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::io::{Read, Write};
 
 use axum::extract::{Multipart, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
@@ -243,9 +243,180 @@ pub async fn download(
             header::CONTENT_LENGTH,
             data.len().to_string().parse::<header::HeaderValue>().unwrap(),
         ),
+        (
+            header::X_CONTENT_TYPE_OPTIONS,
+            "nosniff".parse::<header::HeaderValue>().unwrap(),
+        ),
     ];
 
     Ok((StatusCode::OK, headers, data).into_response())
+}
+
+/// Content types the browser renders natively, keyed by file extension.
+///
+/// This table decides the `Content-Type` of `/api/files/preview` and is
+/// mirrored in `previewKind()` in `frontend/assets/app.js`, which decides
+/// whether a click opens the lightbox instead of downloading. The server is
+/// the authority on what actually gets served.
+fn extension_type(name: &str) -> Option<&'static str> {
+    let ext = name.rsplit('.').next()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" | "apng" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "svg" => "image/svg+xml",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "ogv" => "video/ogg",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "pdf" => "application/pdf",
+        "html" | "htm" => "text/html; charset=utf-8",
+        // Notes, data, configuration and source files — plain text all the
+        // way, so the browser shows their contents directly.
+        "txt" | "text" | "md" | "markdown" | "csv" | "tsv" | "log" | "json" | "xml" | "yml"
+        | "yaml" | "toml" | "ini" | "cfg" | "conf" | "env" | "sql" | "rst" | "tex" | "diff"
+        | "patch" | "rs" | "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" | "py" | "rb" | "go"
+        | "java" | "c" | "h" | "cc" | "cpp" | "hpp" | "cs" | "php" | "sh" | "bash" | "zsh"
+        | "pl" | "lua" | "swift" | "kt" | "kts" | "scala" | "r" | "vue" | "svelte" | "css"
+        | "scss" | "sass" | "less" | "makefile" => "text/plain; charset=utf-8",
+        _ => return None,
+    })
+}
+
+/// The `Content-Type` an inline preview is served with: the extension wins,
+/// otherwise a stored MIME type the browser understands (an upload that
+/// arrived as `application/octet-stream` still previews when its stored type
+/// is a real one). `None` means "not previewable in the browser".
+fn preview_content_type(entry: &FileEntry) -> Option<String> {
+    if let Some(t) = extension_type(&entry.name) {
+        return Some(t.to_string());
+    }
+    let mime = entry.mime.as_deref()?;
+    let browser_kind = mime.starts_with("text/")
+        || mime.starts_with("image/")
+        || mime.starts_with("video/")
+        || mime.starts_with("audio/")
+        || mime == "application/pdf";
+    browser_kind.then(|| mime.to_string())
+}
+
+/// What to do with a request's `Range` header.
+enum ByteRange {
+    /// No header (or one we deliberately ignore): send the whole body.
+    Full,
+    /// A satisfiable single range, both ends inclusive.
+    Slice(usize, usize),
+    /// Valid syntax, but outside the file: answer `416`.
+    Unsatisfiable,
+}
+
+/// Parse the range forms media players actually send for seeking
+/// (`bytes=0-`, `bytes=100-`, `bytes=-500`). Multi-range and malformed
+/// headers fall back to the full body, which RFC 9110 explicitly allows.
+fn parse_byte_range(value: &str, len: usize) -> ByteRange {
+    let Some(spec) = value.trim().strip_prefix("bytes=") else {
+        return ByteRange::Full; // any other unit: ignore
+    };
+    if spec.contains(',') {
+        return ByteRange::Full; // multipart ranges are not worth it here
+    }
+    let Some((start_s, end_s)) = spec.split_once('-') else {
+        return ByteRange::Full;
+    };
+    let (start_s, end_s) = (start_s.trim(), end_s.trim());
+    if start_s.is_empty() {
+        // "bytes=-500": the last 500 bytes.
+        return match end_s.parse::<usize>() {
+            Ok(0) => ByteRange::Unsatisfiable,
+            Ok(_) if len == 0 => ByteRange::Unsatisfiable,
+            Ok(n) => ByteRange::Slice(len.saturating_sub(n), len - 1),
+            Err(_) => ByteRange::Full,
+        };
+    }
+    let Ok(start) = start_s.parse::<usize>() else {
+        return ByteRange::Full;
+    };
+    if start >= len {
+        return ByteRange::Unsatisfiable;
+    }
+    match end_s.parse::<usize>() {
+        // An open end ("bytes=100-") runs to the last byte.
+        Err(_) if end_s.is_empty() => ByteRange::Slice(start, len - 1),
+        Ok(end) if end >= start => ByteRange::Slice(start, end.min(len - 1)),
+        // last < first is invalid syntax: ignore the header entirely.
+        _ => ByteRange::Full,
+    }
+}
+
+/// GET /api/files/preview?id=<id> – serve content the browser can render by
+/// itself, inline instead of as a download (the web UI's lightbox).
+///
+/// Byte ranges are honoured (206 / 416) because media players seek, and
+/// every response carries `nosniff` plus an empty `sandbox`: HTML or SVG
+/// hosted on this origin renders without scripts, so a page someone shared
+/// in can never act on the viewer's session.
+pub async fn preview(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Query(q): Query<IdQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let (entry, data) = state.files.read_blob(user.id(), q.id).await?;
+    let content_type = preview_content_type(&entry).ok_or_else(|| {
+        AppError::BadRequest(
+            "this file type cannot be displayed in the browser - use Download".into(),
+        )
+    })?;
+    let len = data.len();
+    let range = match headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
+        Some(value) => parse_byte_range(value, len),
+        None => ByteRange::Full,
+    };
+
+    // RFC 5987 encoding so non-ASCII filenames survive the header.
+    let encoded_name = encode_rfc5987(&entry.name);
+    let disposition = format!("inline; filename*=UTF-8''{encoded_name}");
+
+    let (status, body, content_range) = match range {
+        ByteRange::Unsatisfiable => (
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            Vec::new(),
+            Some(format!("bytes */{len}")),
+        ),
+        ByteRange::Slice(start, end) => (
+            StatusCode::PARTIAL_CONTENT,
+            data[start..=end].to_vec(),
+            Some(format!("bytes {start}-{end}/{len}")),
+        ),
+        ByteRange::Full => (StatusCode::OK, data, None),
+    };
+
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, &content_type)
+        .header(header::CONTENT_DISPOSITION, disposition)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        // Empty sandbox: renders without scripts (see the doc comment).
+        .header("Content-Security-Policy", "sandbox");
+    if let Some(content_range) = content_range {
+        builder = builder.header(header::CONTENT_RANGE, content_range);
+    }
+    builder = builder.header(header::CONTENT_LENGTH, body.len().to_string());
+    let resp = builder
+        .body(axum::body::Body::from(body))
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("building preview response: {e}")))?;
+    Ok(resp.into_response())
 }
 
 // ---------------------------------------------------------------------------
