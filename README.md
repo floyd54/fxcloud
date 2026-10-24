@@ -1,165 +1,68 @@
 # fxcloud
 
-A Nextcloud-inspired personal cloud, written in Rust, that compiles down to a
-**single binary**. Start it, open your browser, and you get a familiar
-login + file-explorer experience — no external database, no separate frontend
-build step, no runtime dependencies.
+A Nextcloud-inspired personal cloud, written in Rust, that compiles to a
+**single binary**: SQLite and the web frontend are embedded, there is no
+external database and no runtime dependency. Start it, open
+<http://127.0.0.1:8080>, register - and you get a familiar file explorer
+with sharing, quotas and WebDAV.
 
-## Features (current milestone)
+## Features
 
-- **Single binary** – SQLite (bundled) + frontend assets are embedded inside the
-  executable. Just run it.
-- **User accounts** – registration & login with Argon2id password hashing.
-  Accounts start **inactive** and are switched on/off with a single column in
-  the database until a user-administration UI exists — see
-  [Account activation](#account-activation).
-- **Sessions** – HttpOnly cookie sessions, stored server-side, with expiry and
-  background cleanup.
-- **File explorer** – a Nextcloud-style web UI to:
-  - browse a folder tree with breadcrumbs; folders show their recursive
-    size in the size column (computed by one indexed query per listing)
-  - create folders
-  - upload files **or whole folders** (buttons, or drag & drop into the
-    dropzone — folder trees are recreated including empty subfolders)
-  - download, copy/move (destination picker), rename, and delete entries
-    via a per-row ⋮ menu (folders delete recursively)
-  - **preview** browser-viewable files (images, video, audio, PDF, HTML,
-    text) right in the app: clicking a row or choosing *Preview* opens a
-    lightbox with the file embedded, *Open in new tab* renders it natively
-    (byte ranges are served so media seeking works; HTML/SVG are sandboxed
-    server-side so shared pages cannot touch your session)
-  - **edit** text-ish files in a small built-in editor (opens on row click
-    or the *Edit* menu item): save with the button or Ctrl+S, unsaved
-    changes are flagged and confirmed on close. `.md`/`.markdown` files get
-    a live **Markdown preview** pane next to the editor (headings, lists,
-    code blocks, links, images; rendered with escaping and URL filtering,
-    so a note cannot run script)
-  - **create** new text files directly (`＋ New file`: any text-ish
-    extension, `.md`/`.txt` and friends) — the editor opens right away
-  - **multi-select** rows (checkbox per row, header checkbox = all,
-    Shift+click = a range) and process them together: delete, move/copy,
-    share, or download the whole selection as **one ZIP** (folders keep
-    their structure)
-- **Sharing** – share files/folders with other users using a Nextcloud-style
-  permission bitmask — the share dialog offers every other account in a
-  dropdown, no need to know the username; shares mount directly in the
-  grantee's root tree and are enforced everywhere (web UI and WebDAV). See
-  [Sharing](#sharing).
-- **WebDAV** – mount your files with real sync clients (Nextcloud desktop,
-  rclone, Cyberduck, Windows "Map network drive", etc.). See
-  [WebDAV](#webdav) below.
-- **Storage quotas** – every account gets **1 GiB** by default; content beyond
-  it is refused with `507 Insufficient Storage` and the topbar shows current
-  usage. See [Storage quotas](#storage-quotas).
-- **Clean, modular architecture** – see below.
+- **Single binary** - bundled SQLite + embedded frontend; just run it.
+- **Accounts & sessions** - registration/login (Argon2id), HttpOnly cookie
+  sessions. The first account on a fresh instance becomes your login;
+  later accounts are activated with one SQL statement (see
+  [Managing users & quotas](#managing-users--quotas)).
+- **File explorer** - folders with breadcrumbs and recursive sizes,
+  create/upload (files *or* whole folder trees via drag & drop, empty
+  subfolders included), rename, move/copy, delete, multi-select with
+  download of the whole selection as one ZIP.
+- **Preview & editor** - images, video, audio, PDF, HTML and text open in
+  a lightbox inside the app (HTML/SVG are sandboxed server-side, byte
+  ranges make media seeking work). Text files open in a built-in editor
+  with live Markdown preview; new text files are created directly in the
+  UI.
+- **Sharing** - share files/folders with other accounts using a permission
+  bitmask (read 1, update 2, create 4, delete 8); shares mount in the
+  grantee's root tree and are enforced in the web UI *and* WebDAV.
+  Details: [API.md](API.md#permissions).
+- **WebDAV** - mount your files with Nextcloud desktop clients, rclone,
+  Cyberduck, Windows network drives (see [WebDAV](#webdav)).
+- **Quotas** - 1 GiB per account by default, enforced with
+  `507 Insufficient Storage`, usage shown in the topbar.
 
-## Quick start
+## Install
+
+### Prebuilt binary
+
+Every tagged release on [GitHub
+Releases](https://github.com/floyd54/fxcloud/releases) ships a fully
+static Linux x86_64 build (~6 MB, no runtime dependencies):
 
 ```bash
-# build
-cargo build --release
-
-# run (creates ./data with the DB and blobs)
-./target/release/fxcloud
+chmod +x fxcloud-<tag>-x86_64-unknown-linux-musl
+FXCLOUD_DATA=/srv/fxcloud ./fxcloud-<tag>-x86_64-unknown-linux-musl
 ```
 
-Then open <http://127.0.0.1:8080>, create an account, and start uploading.
-
-> The **very first** account you register is activated automatically — it is
-> your own login on a fresh instance. There is no separate admin concept yet,
-> and every account registered after that starts inactive: see
-> [Account activation](#account-activation).
-
-## Account activation
-
-Each user row carries an `is_active` flag (`0`/`1`). An inactive account can be
-registered, but it can neither sign in (web) nor authenticate (WebDAV), and
-deactivating a user cuts access off **immediately** — including sessions and
-WebDAV mounts that are already open, because the flag is checked on every
-request.
-
-There is no user-administration UI yet, so the switch is flipped directly in
-the database (no restart required). The path below is the development layout
-(`./data`); on a systemd deployment the file is `/home/fxcloud/data/fxcloud.db`:
-
-```bash
-DB=data/fxcloud.db                      # systemd: /home/fxcloud/data/fxcloud.db
-
-# overview
-sqlite3 "$DB" "SELECT id, username, is_active, created_at FROM users ORDER BY id;"
-
-# activate -> the owner can sign in from now on
-sqlite3 "$DB" "UPDATE users SET is_active = 1 WHERE username = 'max';"
-
-# deactivate -> session cookie and WebDAV credentials stop working right away
-sqlite3 "$DB" "UPDATE users SET is_active = 0 WHERE username = 'max';"
-```
-
-What users see:
-
-- **Login with an inactive account** (correct password) → `403` with
-  *"account is not activated yet – ask an administrator to activate it"*.
-  Wrong passwords still get a plain `401`.
-- **Registering** an inactive account → `202` with
-  `{"pending_activation": true}` and *no* session cookie; the login page
-  reports "Account created. It has to be activated before you can sign in."
-  (The first account on a fresh instance instead signs in right away.)
-- **WebDAV** with an inactive account → `403` instead of a `401` password
-  prompt loop.
-
-Sharing still works both ways for inactive accounts — shares simply become
-visible to the grantee once their account is activated.
-
-## Storage quotas
-
-Every account carries a per-owner storage quota in `users.quota_bytes`
-(migration `004_user_quota`):
-
-- **Default 1 GiB** — the column's `DEFAULT` fills new accounts automatically
-  *and* backfills every account that existed when the migration ran, so an
-  upgrade gives everyone the same starting quota.
-- **What counts** is the summed `size` of the entries the account owns.
-  Content shared *to* them is served from the owner's quota; files uploaded
-  into someone else's shared folder count against that owner, because the
-  owner's disk space is being used.
-- **Enforcement sits in the database layer, next to the write itself**:
-  creating a file, overwriting one (only the growth counts) and copying a
-  subtree (checked up front for the whole tree, so a full quota never leaves a
-  partial copy behind). Beyond the quota the API answers
-  `507 Insufficient Storage` with a message such as
-  `storage quota exceeded: 973 MB of 1.0 GB used`; batch operations report it
-  per item, and WebDAV clients see the standard 507 status.
-- **The web UI** shows `used of quota` in the topbar, refreshed with every
-  list reload.
-- **Changing one quota** works like account activation — a single statement in
-  bytes (`1073741824` = 1 GiB):
-
-  ```sh
-  sqlite3 /home/fxcloud/data/fxcloud.db \
-    "UPDATE users SET quota_bytes = 2147483648 WHERE username = 'alice';"
-  ```
-
-## Prebuilt binaries
-
-Every tagged release on [GitHub Releases](https://github.com/floyd54/fxcloud/releases)
-ships a prebuilt binary:
-
-- `fxcloud-<tag>-x86_64-unknown-linux-musl` – a **fully static** Linux x86_64
-  build (~5 MB) with no runtime dependencies: download, `chmod +x fxcloud`,
-  run.
-
-Why only one build? There is exactly **one development environment** behind
-this project – my Linux x86_64 machine – and I don't maintain a zoo of build
-environments for other platforms. On macOS, ARM64, Windows, … just build from
-source (see [Quick start](#quick-start)); it's a plain
-`cargo build --release` with no extra tooling.
-
-New tags get their binary attached automatically by GitHub Actions
+Other platforms (macOS, ARM64, Windows, ...) build from source with a plain
+`cargo build --release` - no extra tooling. Why only one prebuilt target?
+There is exactly one development machine behind this project; new tags get
+their binary attached automatically by GitHub Actions
 (`.github/workflows/release.yml`).
+
+### From source
+
+```bash
+cargo build --release
+./target/release/fxcloud      # creates ./data with the DB and file blobs
+```
+
+Open <http://127.0.0.1:8080> and register: the **first account** on a fresh
+instance is activated automatically, every later account starts inactive.
 
 ## Configuration
 
-Everything is configurable via environment variables:
+Everything is configured via environment variables:
 
 | Variable                | Default         | Description                          |
 | ----------------------- | --------------- | ------------------------------------ |
@@ -168,10 +71,8 @@ Everything is configurable via environment variables:
 | `FXCLOUD_DATA`          | `./data`        | Data directory (DB + file blobs)     |
 | `FXCLOUD_SESSION_TTL`   | `2592000`       | Session lifetime in seconds (30 days)|
 | `FXCLOUD_SECURE_COOKIE` | `false`         | Set `Secure` on cookies (enable behind HTTPS) |
-| `FXCLOUD_MAX_UPLOAD_MB` | `1024`          | Max request body for uploads, in MiB (fixes large-file multipart uploads) |
+| `FXCLOUD_MAX_UPLOAD_MB` | `1024`          | Max request body for uploads, in MiB |
 | `RUST_LOG`              | `fxcloud=info`  | Log filter (tracing)                 |
-
-Example:
 
 ```bash
 FXCLOUD_BIND=0.0.0.0 FXCLOUD_PORT=9000 FXCLOUD_DATA=/srv/fxcloud ./fxcloud
@@ -179,18 +80,38 @@ FXCLOUD_BIND=0.0.0.0 FXCLOUD_PORT=9000 FXCLOUD_DATA=/srv/fxcloud ./fxcloud
 
 ## Deployment
 
+### systemd
+
+The provided hardened unit
+([`deploy/fxcloud.service`](deploy/fxcloud.service)) runs as an
+unprivileged system user, never as root:
+
+```bash
+sudo useradd --system --user-group --create-home --home-dir /home/fxcloud \
+     --shell /usr/sbin/nologin fxcloud
+sudo install -m755 target/release/fxcloud /home/fxcloud/fxcloud
+sudo mkdir -p /home/fxcloud/data      # or move an existing ./data here
+sudo chown -R fxcloud:fxcloud /home/fxcloud
+
+sudo cp deploy/fxcloud.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now fxcloud
+
+sudo systemctl status fxcloud         # logs: sudo journalctl -u fxcloud -f
+```
+
+Rolling out a new build: `sudo systemctl stop fxcloud`, replace the binary,
+`sudo systemctl start fxcloud`.
+
 ### Behind a reverse proxy (HTTPS)
 
-fxcloud speaks plain HTTP and has no built-in upload limit, so your reverse
-proxy must handle TLS **and** allow large uploads:
+fxcloud speaks plain HTTP, so the proxy must terminate TLS - and allow
+large uploads:
 
-- Raise the body-size limit (e.g. nginx `client_max_body_size 10G;`), otherwise
-  uploads over the proxy default (1 MB) fail. Keep it in sync with the app-side
-  limit `FXCLOUD_MAX_UPLOAD_MB` (default 1024) — a file must be under **both**.
-- Forward `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`.
-- Set `FXCLOUD_SECURE_COOKIE=1` so session cookies get the `Secure` attribute.
-
-Example nginx location:
+- Raise the body-size limit (nginx: `client_max_body_size 10G;`) and keep
+  it in sync with `FXCLOUD_MAX_UPLOAD_MB` - a file must be under both.
+- Forward `Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`.
+- Set `FXCLOUD_SECURE_COOKIE=1` so cookies get the `Secure` attribute.
 
 ```nginx
 location / {
@@ -204,203 +125,50 @@ location / {
 }
 ```
 
-### systemd
+## Managing users & quotas
 
-The service runs as an unprivileged system user `fxcloud` (group `fxcloud`,
-shell `nologin`) — never as root. Its home directory holds both the binary
-and the data partition:
-
-```
-/home/fxcloud/fxcloud    # executable (ExecStart)
-/home/fxcloud/data/      # FXCLOUD_DATA: SQLite DB + file blobs
-```
-
-A hardened unit file is provided in [`deploy/fxcloud.service`](deploy/fxcloud.service)
-(`NoNewPrivileges`, `ProtectSystem=strict`, `ReadWritePaths` limited to the
-data directory, …).
+There is no user-administration UI yet; both switches live in the database
+(no restart required). On a systemd deployment the file is
+`/home/fxcloud/data/fxcloud.db`, in development `./data/fxcloud.db`:
 
 ```bash
-# 1. Create the user and install the binary
-sudo useradd --system --user-group --create-home --home-dir /home/fxcloud \
-     --shell /usr/sbin/nologin fxcloud
-sudo install -m755 target/release/fxcloud /home/fxcloud/fxcloud
-sudo mkdir -p /home/fxcloud/data      # or move an existing ./data here
-sudo chown -R fxcloud:fxcloud /home/fxcloud
-sudo chmod 750 /home/fxcloud
+DB=/home/fxcloud/data/fxcloud.db
 
-# 2. Install & start the service
-sudo cp deploy/fxcloud.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now fxcloud
+# overview
+sqlite3 "$DB" "SELECT id, username, is_active, quota_bytes FROM users ORDER BY id;"
 
-# 3. Check status / logs (journald, no log files on disk)
-sudo systemctl status fxcloud
-sudo journalctl -u fxcloud -f
+# activate / deactivate (takes effect instantly: sessions + WebDAV included)
+sqlite3 "$DB" "UPDATE users SET is_active = 1 WHERE username = 'max';"
+sqlite3 "$DB" "UPDATE users SET is_active = 0 WHERE username = 'max';"
 
-# 4. Later: roll out a new build
-sudo systemctl stop fxcloud
-sudo install -m755 target/release/fxcloud /home/fxcloud/fxcloud
-sudo systemctl start fxcloud
+# quota (bytes; 1073741824 = 1 GiB, the default for every account)
+sqlite3 "$DB" "UPDATE users SET quota_bytes = 2147483648 WHERE username = 'alice';"
 ```
 
-The repo checkout itself is *not* used at runtime — the source tree can stay
-wherever development happens (e.g. `/root/fxcloud`).
-
-## Architecture
-
-```
-src/
-├── main.rs          # bootstrap: config, db, background tasks, server
-├── config.rs        # env-driven configuration
-├── error.rs         # unified AppError (maps to HTTP responses)
-├── models.rs        # shared data types (User, FileEntry, DTOs)
-├── auth/            # password hashing, session cookie, AuthUser extractor
-├── db/              # pooled SQLite access + migrations
-│   ├── mod.rs       # Db wrapper (async via spawn_blocking)
-│   ├── user.rs      # user records
-│   ├── session.rs   # session records + token generation
-│   └── file.rs      # file-tree metadata (recursive ops, breadcrumbs)
-├── files/           # FileService: DB metadata + on-disk blob storage
-└── web/             # axum routing layer
-    ├── mod.rs       # router assembly
-    ├── state.rs     # shared AppState
-    ├── ui.rs        # serves the embedded frontend + auth-gated pages
-    └── routes/
-        ├── auth.rs  # /api/register, /login, /logout, /me
-        └── files.rs # /api/files/*
-frontend/            # static UI, embedded via rust-embed
-migrations/          # SQL schema (idempotent or guarded, applied at startup)
-```
-
-### Design notes
-
-- **Storage**: each file's content is stored at
-  `<data>/blobs/<owner-id>/<year>/<h1>/<h2>/<file-id>` — the owner's tree and
-  the creation year first (convenient for per-user and per-year backups), then
-  two id levels (`h1` covers 65 536 ids, `h2` covers 256), so no directory
-  ever holds more than 256 blobs. The leaf name is the plain database row id:
-  unique by construction and immune to path-traversal, and the path stays
-  recomputable from a row without extra state. Blobs from installations that
-  predate this layout are moved into place automatically at startup (idempotent,
-  logged); reads and deletes fall back to the old flat `<data>/blobs/<file-id>`
-  path, so nothing goes missing even if a move fails. Rollback note: builds
-  older than this do not know the structure — roll back from a backup or move
-  the blobs flat again first.
-- **Blocking SQLite**: rusqlite is synchronous, so every DB call is transparently
-  routed through `tokio::task::spawn_blocking` inside the `Db` wrapper. Handlers
-  simply `await`.
-- **Auth**: the `AuthUser` axum extractor resolves the session cookie into a
-  logged-in user, returning `401` otherwise — handlers just accept `AuthUser`.
-
-## HTTP API
-
-All `/api/*` routes require a session cookie (except `register` / `login`).
-
-| Method | Path                    | Body / Query                       | Description                 |
-| ------ | ----------------------- | ---------------------------------- | --------------------------- |
-| POST   | `/api/register`         | `{username, password, display_name?}` | Create account (202 `pending_activation` while inactive; the first account signs in) |
-| POST   | `/api/login`            | `{username, password}`             | Sign in (`403` when the account is inactive) |
-| POST   | `/api/logout`           | –                                  | Sign out                    |
-| GET    | `/api/me`               | –                                  | Current user + `quota_bytes` / `used_bytes` |
-| GET    | `/api/users`            | –                                  | Accounts to share with (everyone but you: `username`, `display_name`, `is_active`) |
-| GET    | `/api/files`            | `?parent=<id>` (omit for root)     | List folder contents        |
-| GET    | `/api/files/breadcrumb` | `?id=<folderId>`                   | Breadcrumb trail            |
-| POST   | `/api/files/folder`     | `{parent_id, name}`                | Create folder               |
-| POST   | `/api/files/file`       | `{parent_id, name}`                | Create empty file (409 on duplicates) |
-| POST   | `/api/files/folder/ensure` | `{parent_id, name}`             | Get-or-create folder (idempotent; powers folder uploads) |
-| POST   | `/api/files/upload`     | multipart: `parent`, `file`        | Upload file                 |
-| GET    | `/api/files/download`   | `?id=<fileId>`                     | Download file               |
-| GET    | `/api/files/preview`    | `?id=<fileId>` (+ optional `Range`) | Inline preview (206/416 ranges; `CSP: sandbox` for HTML/SVG) |
-| PUT    | `/api/files/content`    | `?id=<fileId>`, body = raw text    | Overwrite file content (editor save; quota-checked, 507 when full) |
-| GET    | `/api/files/info`       | `?id=<entryId>`                    | One entry + viewer rights   |
-| POST   | `/api/files/rename`     | `{id, name}`                       | Rename entry                |
-| POST   | `/api/files/delete`     | `{id}`                             | Delete (recursive for dirs) |
-| POST   | `/api/files/move`       | `{id, dest_parent}`                | Move entry (keeps name)     |
-| POST   | `/api/files/copy`       | `{id, dest_parent}`                | Copy entry/subtree + blobs  |
-| POST   | `/api/files/batch/delete` | `{ids}`                         | Delete a selection (per-item outcome) |
-| POST   | `/api/files/batch/move` | `{ids, dest_parent}`               | Move a selection            |
-| POST   | `/api/files/batch/copy` | `{ids, dest_parent}`               | Copy a selection            |
-| POST   | `/api/files/zip`        | `{ids}`                            | Prepare a ZIP download → `{token}` |
-| GET    | `/api/files/zip`        | `?token=<token>`                   | Stream the prepared ZIP (single use, 5 min) |
-| POST   | `/api/shares`           | `{file_id, username, permissions?}`| Share with a user           |
-| POST   | `/api/shares/batch`     | `{file_ids, username, permissions?}` | Share a selection with one user |
-| DELETE | `/api/shares/:id`       | –                                  | Revoke share (owner/grantee)|
-| GET    | `/api/shares/outgoing`  | `?file_id=<id>` (optional filter)  | Shares I created            |
-| GET    | `/api/shares/incoming`  | –                                  | Shares given to me          |
-
-`dest_parent: null` targets your own root. Moves keep the original name
-(collisions return `409`), refuse crossing owners, and enforce the permission
-bitmask (`2` update, `4` create, `8` delete) inherited from any covering share.
-
-The `batch/*` endpoints answer with `{ok: [ids], failed: [{id, name, error}]}`.
-Items are processed **independently** on purpose: an entry the caller may not
-touch (or whose name already exists at the destination) is reported in
-`failed`, while the rest of the selection still goes through — nothing is
-rolled back. The single-item `delete` / `move` / `copy` / `shares` routes stay
-for API compatibility and take a one-element list in the UI.
-
-ZIP downloads are split into two steps so the URL stays short regardless of how
-many ids are selected (proxies cap request lines around 8 KB): the `POST`
-hands out a single-use token valid for five minutes, the `GET` builds the
-archive on a background thread and streams it. The archive is assembled in
-memory, so one download is capped at **1 GiB uncompressed** — the error tells
-you to take fewer items. Folders are packed with their structure and the
-modification times of the entries; content that disappeared in the meantime is
-skipped and listed in `fxcloud-skipped.txt` inside the archive.
-
-## Sharing
-
-Sharing uses a Nextcloud-style permission bitmask:
-
-| Bit | Value | Meaning                                            |
-| --- | ----- | -------------------------------------------------- |
-| READ | 1 | View/download, list folder contents           |
-| UPDATE | 2 | Overwrite file content, rename/move            |
-| CREATE | 4 | Add files/folders inside a shared folder       |
-| DELETE | 8 | Delete the item (or children of a folder)      |
-| SHARE | 16 | Reserved for re-sharing (not wired up yet)     |
-
-A share appears directly in the grantee's **root file tree** under a unique
-display name (`Projekte` → `Projekte (alice) 2` on collision) and resolution
-crosses into the owner's subtree from there. Everything a grantee creates inside
-a shared folder lands in the *owner's* tree. Authorization always asks "do I own
-this, or does a covering share grant the required bit?" — so children of a
-shared folder inherit the folder's share. The same rules apply to the web UI and
-to WebDAV (`/dav/`).
+Inactive accounts can neither sign in nor authenticate over WebDAV and get
+`403` with a hint to contact the administrator. What exactly counts against
+a quota and how it is enforced: [ARCHITECTURE.md](ARCHITECTURE.md#quotas).
 
 ## WebDAV
 
-fxcloud exposes a WebDAV endpoint at **`/dav/`**, authenticated with **HTTP
-Basic auth** (your fxcloud username + password). The path after `/dav/` is
-relative to your home folder.
+fxcloud speaks WebDAV at **`/dav/`** with HTTP Basic auth (your fxcloud
+username + password); the path after `/dav/` is relative to your home
+folder:
 
 ```bash
-# quick check
-curl -u USER:PASS -X PROPFIND -H "Depth: 1" https://your-host/dav/
-
-# with rclone
-rclone config   # type: webdav, url: https://your-host/dav/, user/pass
+rclone config    # type: webdav, url: https://your-host/dav/, user/pass
 rclone lsd remote:
 
 # Windows "Map network drive" / macOS Finder "Connect to Server" -> /dav/
 ```
 
-Supported methods: `OPTIONS`, `PROPFIND` (Depth 0 / 1 / infinity), `GET`,
-`HEAD`, `PUT`, `DELETE`, `MKCOL`, `MOVE`, `COPY`, `LOCK`, `UNLOCK`.
+Supported methods and protocol notes: [API.md](API.md#webdav).
 
-Notes:
-- `LOCK`/`UNLOCK` are **permissive no-ops** (a token is issued but not tracked),
-  just enough to keep Office/Windows clients happy.
-- Uploads go through your reverse proxy — remember to raise
-  `client_max_body_size` (see [Deployment](#deployment)).
+## More documentation
 
-## Roadmap ideas
-
-- File sharing between users, permissions, groups
-- Versioning & trashbin
-- Calendar / Contacts (CalDAV / CardDAV)
-- In-browser file preview (images, text, PDF)
-- TLS termination & `Secure` cookies
+- [ARCHITECTURE.md](ARCHITECTURE.md) - code layout, storage format,
+  permission and quota model
+- [API.md](API.md) - HTTP endpoints, batch/ZIP semantics, WebDAV details
 
 ## License
 
