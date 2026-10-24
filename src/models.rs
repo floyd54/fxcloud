@@ -59,6 +59,14 @@ pub struct FileEntry {
     /// directory rows of listing responses carry it — see `list_children`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtree_bytes: Option<i64>,
+    /// When the entry was moved to the trash. Only the trashed root row
+    /// carries it (its subtree stays intact); trash listings expose it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
+    /// When the background purge will remove the entry for good. Set on
+    /// trash listings only, derived from the retention window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purge_at: Option<DateTime<Utc>>,
 }
 
 /// Where a file's content blob lives on disk.

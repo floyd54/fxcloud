@@ -30,6 +30,9 @@ with sharing, quotas and WebDAV.
   Cyberduck, Windows network drives (see [WebDAV](#webdav)).
 - **Quotas** - 1 GiB per account by default, enforced with
   `507 Insufficient Storage`, usage shown in the topbar.
+- **Trash** - deletions go to a per-user trash first; restore entries with
+  one click, and everything older than 30 days is purged for good by a
+  background sweep.
 
 ## Install
 
@@ -72,6 +75,8 @@ Everything is configured via environment variables:
 | `FXCLOUD_SESSION_TTL`   | `2592000`       | Session lifetime in seconds (30 days)|
 | `FXCLOUD_SECURE_COOKIE` | `false`         | Set `Secure` on cookies (enable behind HTTPS) |
 | `FXCLOUD_MAX_UPLOAD_MB` | `1024`          | Max request body for uploads, in MiB |
+| `FXCLOUD_TRASH_DAYS`    | `30`            | Days a trashed entry is kept before the purge removes it |
+| `FXCLOUD_TRASH_SWEEP_SECS` | `3600`       | Interval of the trash purge sweep, in seconds |
 | `RUST_LOG`              | `fxcloud=info`  | Log filter (tracing)                 |
 
 ```bash

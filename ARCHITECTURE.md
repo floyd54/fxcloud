@@ -90,6 +90,19 @@ the `parent_id` index per listing page (`fill_subtree_sizes` in
 `src/db/file.rs`), not one query per row and not a cached counter that
 every write would have to maintain.
 
+## Trash bin
+
+Deletion is a mark, not a removal: `trash_entry` sets `deleted_at` on the
+entry only, so its subtree rows and blobs stay exactly where they are and
+a restore is a single UPDATE. Only trashed roots (parent live or absent)
+are units - listings exclude them, and `under_trash` walks the parent chain
+to keep everything below a trashed folder invisible to reads, writes and
+WebDAV. A background task hard-deletes expired roots on the sweep interval
+(rows via the foreign-key cascade, then the blobs); upload rollbacks
+bypass the trash via `hard_delete_entry` because those rows never existed
+for the user. Trashed content keeps counting against the owner's quota -
+the disk really holds it.
+
 ## Sessions & activation
 
 Sessions are server-side rows behind an HttpOnly cookie with a TTL

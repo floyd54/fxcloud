@@ -374,7 +374,9 @@ async fn put_file(
             {
                 Ok(entry) => {
                     if let Err(e) = state.files.write_blob(&entry, body.to_vec()).await {
-                        let _ = state.db.delete_entry(owner_id, entry.id).await;
+                        // Failed upload rollback: the row never existed for the
+                        // user, so drop it for good instead of trashing it.
+                        let _ = state.db.hard_delete_entry(owner_id, entry.id).await;
                         return e.into_response();
                     }
                     (
@@ -408,11 +410,10 @@ async fn delete_resource(state: &SharedState, owner_id: i64, segments: &[String]
         Target::Root => return forbidden(),
         Target::Entry(e) => e,
     };
-    match state.db.delete_entry(owner_id, entry.id).await {
-        Ok(blob_ids) => {
-            state.files.delete_blobs(&blob_ids).await;
-            StatusCode::NO_CONTENT.into_response()
-        }
+    match state.db.trash_entry(owner_id, entry.id).await {
+        // The entry (and, for folders, its subtree) moves to the trash:
+        // rows and content stay until the purge or a restore.
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => e.into_response(),
     }
 }
@@ -514,8 +515,10 @@ async fn move_resource(
         if !overwrite_allowed(headers) {
             return precondition();
         }
-        match state.db.delete_entry(owner_id, old.id).await {
-            Ok(blobs) => state.files.delete_blobs(&blobs).await,
+        // Overwriting moves the old target to the trash instead of dropping
+        // it: nothing disappears for good outside the trash flow.
+        match state.db.trash_entry(owner_id, old.id).await {
+            Ok(()) => {}
             Err(e) => return e.into_response(),
         }
     }
@@ -637,8 +640,10 @@ async fn copy_resource(
             Ok(Some(o)) => o,
             _ => return internal(),
         };
-        match state.db.delete_entry(owner_id, old.id).await {
-            Ok(blobs) => state.files.delete_blobs(&blobs).await,
+        // Overwriting moves the old target to the trash instead of dropping
+        // it: nothing disappears for good outside the trash flow.
+        match state.db.trash_entry(owner_id, old.id).await {
+            Ok(()) => {}
             Err(e) => return e.into_response(),
         }
     }

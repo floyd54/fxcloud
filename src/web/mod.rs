@@ -50,7 +50,12 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/files/zip", post(routes::files::prepare_zip))
         .route("/files/zip", get(routes::files::zip_download))
         .route("/files/breadcrumb", get(routes::files::breadcrumb))
-        .route("/files/info", get(routes::files::info));
+        .route("/files/info", get(routes::files::info))
+        // Trash bin: listing, restore, permanent delete, empty
+        .route("/files/trash", get(routes::files::trash_list))
+        .route("/files/trash/restore", post(routes::files::trash_restore))
+        .route("/files/trash/purge", post(routes::files::trash_purge))
+        .route("/files/trash/empty", post(routes::files::trash_empty));
     // Sharing
     let api = api
         .route("/shares", post(routes::shares::create))

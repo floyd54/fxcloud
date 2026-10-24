@@ -87,6 +87,15 @@ impl Db {
                      WHERE name = 'quota_bytes'",
                 ),
             ),
+            (
+                "005_trash",
+                include_str!("../../migrations/005_trash.sql"),
+                // Skip once `files.deleted_at` exists.
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('files')
+                     WHERE name = 'deleted_at'",
+                ),
+            ),
         ];
         let conn = self.pool.get()?;
         for (name, sql, guard) in MIGRATIONS {

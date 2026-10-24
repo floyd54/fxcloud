@@ -92,7 +92,7 @@ pub async fn create_file(
         .await?;
     // An empty blob on disk, so download and preview work right away.
     if let Err(e) = state.files.write_blob(&entry, Vec::new()).await {
-        let _ = state.db.delete_entry(user.id(), entry.id).await;
+        let _ = state.db.hard_delete_entry(user.id(), entry.id).await;
         return Err(e);
     }
     Ok(Json(json!({ "entry": entry })))
@@ -134,8 +134,7 @@ pub async fn delete(
         .get("id")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| AppError::BadRequest("missing 'id'".into()))?;
-    let blobs = state.db.delete_entry(user.id(), id).await?;
-    state.files.delete_blobs(&blobs).await;
+    state.db.trash_entry(user.id(), id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -233,7 +232,7 @@ pub async fn upload(
         .await?;
     if let Err(e) = state.files.write_blob(&entry, data).await {
         // Roll back the orphaned metadata row.
-        let _ = state.db.delete_entry(user.id(), entry.id).await;
+        let _ = state.db.hard_delete_entry(user.id(), entry.id).await;
         return Err(e);
     }
 
@@ -498,14 +497,10 @@ pub async fn batch_delete(
         return Err(AppError::BadRequest("nothing is selected".into()));
     }
     let mut out = BatchOutcome::default();
-    let mut blobs = Vec::new();
 
     for id in req.ids {
-        match state.db.delete_entry(user.id(), id).await {
-            Ok(b) => {
-                blobs.extend(b);
-                out.success(id);
-            }
+        match state.db.trash_entry(user.id(), id).await {
+            Ok(()) => out.success(id),
             Err(e) => {
                 let name = entry_name(&state, user.id(), id).await;
                 out.failure(id, name, e.user_message());
@@ -513,8 +508,63 @@ pub async fn batch_delete(
         }
     }
 
-    state.files.delete_blobs(&blobs).await;
     Ok(Json(out))
+}
+
+/// GET /api/files/trash – the caller's trash: trashed roots, newest first,
+/// each with the deletion time and the purge deadline.
+pub async fn trash_list(
+    State(state): State<SharedState>,
+    user: AuthUser,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut entries = state.db.trash_list(user.id()).await?;
+    let days = state.config.trash_days;
+    for entry in &mut entries {
+        if let Some(deleted) = entry.deleted_at {
+            entry.purge_at = Some(deleted + chrono::Duration::days(days));
+        }
+    }
+    Ok(Json(json!({ "entries": entries })))
+}
+
+/// POST /api/files/trash/restore {id} – bring a trashed entry back to where
+/// it was; a name taken in the meantime gets a " (restored)" suffix.
+pub async fn trash_restore(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let id = req
+        .get("id")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AppError::BadRequest("missing 'id'".into()))?;
+    let entry = state.db.restore_trash(user.id(), id).await?;
+    Ok(Json(json!({ "ok": true, "entry": entry })))
+}
+
+/// POST /api/files/trash/purge {id} – delete one trashed entry for good.
+pub async fn trash_purge(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let id = req
+        .get("id")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AppError::BadRequest("missing 'id'".into()))?;
+    let blobs = state.db.purge_trash_item(user.id(), id).await?;
+    state.files.delete_blobs(&blobs).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// POST /api/files/trash/empty – delete the caller's whole trash now.
+pub async fn trash_empty(
+    State(state): State<SharedState>,
+    user: AuthUser,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let blobs = state.db.empty_trash(user.id()).await?;
+    state.files.delete_blobs(&blobs).await;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// POST /api/files/batch/move – move several entries into one folder.

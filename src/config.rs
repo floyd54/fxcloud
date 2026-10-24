@@ -23,6 +23,12 @@ pub struct Config {
     /// Must exceed the largest single file; the multipart envelope adds a little
     /// overhead on top of the file itself.
     pub max_upload_bytes: usize,
+    /// Days a trashed entry is kept before the background purge removes it
+    /// together with its blob content (default: 30).
+    pub trash_days: i64,
+    /// Interval of the trash purge sweep in seconds (default: hourly). Kept
+    /// configurable so tests can age entries out without waiting.
+    pub trash_sweep_secs: u64,
 }
 
 impl Config {
@@ -48,6 +54,14 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1024);
         let max_upload_bytes = (max_upload_mb.saturating_mul(1024 * 1024)) as usize;
+        let trash_days = std::env::var("FXCLOUD_TRASH_DAYS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        let trash_sweep_secs = std::env::var("FXCLOUD_TRASH_SWEEP_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600);
 
         let cfg = Self {
             bind,
@@ -56,6 +70,8 @@ impl Config {
             session_ttl,
             secure_cookie,
             max_upload_bytes,
+            trash_days,
+            trash_sweep_secs,
         };
         cfg.ensure_dirs().context("creating data directories")?;
         Ok(cfg)

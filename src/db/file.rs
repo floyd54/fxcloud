@@ -14,6 +14,7 @@ use super::Db;
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
     let created_at: String = row.get("created_at")?;
     let modified_at: String = row.get("modified_at")?;
+    let deleted_at: Option<String> = row.get("deleted_at")?;
     Ok(FileEntry {
         id: row.get("id")?,
         owner_id: row.get("owner_id")?,
@@ -27,6 +28,8 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
         permissions: PERM_ALL,
         owner_name: None,
         subtree_bytes: None,
+        deleted_at: deleted_at.as_deref().map(|s| parse_ts(s, 9)).transpose()?,
+        purge_at: None,
     })
 }
 
@@ -64,7 +67,14 @@ fn ensure_quota(conn: &Connection, owner_id: i64, additional: i64) -> Result<(),
 }
 
 const ENTRY_COLS: &str =
-    "id, owner_id, parent_id, name, is_dir, size, mime, created_at, modified_at";
+    "id, owner_id, parent_id, name, is_dir, size, mime, created_at, modified_at, deleted_at";
+
+/// Entries that are trash roots: marked themselves, with a live (or absent)
+/// parent. Children of a trashed folder are part of that folder's restore
+/// unit, not separate trash items.
+const TRASH_ROOTS: &str = "deleted_at IS NOT NULL
+       AND (parent_id IS NULL
+            OR parent_id IN (SELECT id FROM files WHERE deleted_at IS NULL))";
 
 impl Db {
     /// List the direct children of `parent_id` as seen by `user_id`
@@ -275,39 +285,160 @@ impl Db {
         .await
     }
 
-    /// Delete an entry and, for directories, all descendants (cascade).
-    /// Returns the [`BlobRef`]s of any deleted non-directory blobs for
-    /// cleanup, captured while the rows still exist.
+    /// Move an entry to the trash: only the entry itself is marked with a
+    /// deletion time - its subtree rows and blob content stay untouched, so
+    /// a restore is a single UPDATE and nothing moves on disk.
     ///
-    /// Foreign entries require the covering share to grant DELETE.
-    pub async fn delete_entry(&self, user_id: i64, id: i64) -> Result<Vec<BlobRef>, AppError> {
+    /// Foreign entries require the covering share to grant DELETE; the mark
+    /// lands in the *owner's* tree, so the owner sees and restores it.
+    pub async fn trash_entry(&self, user_id: i64, id: i64) -> Result<(), AppError> {
         self.run(move |conn| {
             let tree_owner = update_target(conn, user_id, id, crate::sharing::PERM_DELETE)?;
-
-            // Collect the blobs in the subtree before cascade removes the rows.
-            let mut stmt = conn.prepare(
-                "WITH RECURSIVE subtree(id) AS (
-                     SELECT id FROM files WHERE id = ?1
-                     UNION ALL
-                     SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
-                 )
-                 SELECT id, owner_id, created_at FROM files
-                  WHERE is_dir = 0 AND id IN (SELECT id FROM subtree)",
-            )?;
-            let blobs = stmt
-                .query_map(params![id], |r| {
-                    let id: i64 = r.get(0)?;
-                    let owner_id: i64 = r.get(1)?;
-                    let created_at: String = r.get(2)?;
-                    blob_ref(id, owner_id, &created_at)
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-
             conn.execute(
-                "DELETE FROM files WHERE id = ?1 AND owner_id = ?2",
-                params![id, tree_owner],
+                "UPDATE files SET deleted_at = ?1
+                 WHERE id = ?2 AND owner_id = ?3 AND deleted_at IS NULL",
+                params![Utc::now().to_rfc3339(), id, tree_owner],
             )?;
-            Ok(blobs)
+            Ok(())
+        })
+        .await
+    }
+
+    /// Hard-delete an entry's row subtree and return the blobs to unlink.
+    ///
+    /// This is the *real* deletion, used by the trash purge and by rollback
+    /// paths (a failed upload). Owner-scoped only: a share cannot lead here -
+    /// a grantee's delete marks the owner's entry as trashed instead.
+    pub async fn hard_delete_entry(&self, user_id: i64, id: i64) -> Result<Vec<BlobRef>, AppError> {
+        self.run(move |conn| {
+            let owner: Option<i64> = conn
+                .query_row(
+                    "SELECT owner_id FROM files WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match owner {
+                Some(o) if o == user_id => hard_delete(conn, id),
+                _ => Err(AppError::NotFound),
+            }
+        })
+        .await
+    }
+
+    /// The caller's trash: trashed roots, newest first. One row per restore
+    /// unit - children of a trashed folder come back with their parent.
+    pub async fn trash_list(&self, user_id: i64) -> Result<Vec<FileEntry>, AppError> {
+        self.run(move |conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {ENTRY_COLS} FROM files
+                 WHERE owner_id = ?1 AND {TRASH_ROOTS}
+                 ORDER BY deleted_at DESC, name COLLATE NOCASE ASC"
+            ))?;
+            let mut entries = stmt
+                .query_map(params![user_id], row_to_entry)?
+                .collect::<Result<Vec<_>, _>>()?;
+            // Trashed folders still occupy the disk, so their subtree size
+            // belongs in the listing just like for live folders.
+            fill_subtree_sizes(conn, &mut entries)?;
+            Ok(entries)
+        })
+        .await
+    }
+
+    /// Bring a trashed entry back to where it was; the whole subtree returns
+    /// with it. A live sibling that took the name in the meantime gets a
+    /// " (restored)" suffix, so the restore always succeeds visibly.
+    pub async fn restore_trash(&self, user_id: i64, id: i64) -> Result<FileEntry, AppError> {
+        self.run(move |conn| {
+            let entry = get_entry_by_id(conn, id)?;
+            if entry.owner_id != user_id || entry.deleted_at.is_none() {
+                return Err(AppError::NotFound);
+            }
+            match entry.parent_id {
+                // A root-level item goes straight back to the root.
+                None => {
+                    conn.execute(
+                        "UPDATE files SET deleted_at = NULL WHERE id = ?1",
+                        params![id],
+                    )?;
+                }
+                Some(pid) => {
+                    match get_entry_by_id(conn, pid) {
+                        // Not a trash root of its own: restore the parent first.
+                        Ok(parent) if parent.deleted_at.is_some() => {
+                            return Err(AppError::Conflict(
+                                "the original folder is in the trash - restore it first".into(),
+                            ));
+                        }
+                        Ok(_) => {}
+                        // Parent row gone (a purge takes the subtree along, so
+                        // this cannot normally happen): restore to the root.
+                        Err(AppError::NotFound) => {
+                            conn.execute(
+                                "UPDATE files SET deleted_at = NULL, parent_id = NULL
+                                 WHERE id = ?1",
+                                params![id],
+                            )?;
+                            return get_entry_by_id(conn, id);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                    let mut name = entry.name.clone();
+                    let mut nth = 0;
+                    while find_child(conn, user_id, Some(pid), &name)?.is_some() {
+                        nth += 1;
+                        name = match nth {
+                            1 => format!("{} (restored)", entry.name),
+                            n => format!("{} (restored {n})", entry.name),
+                        };
+                    }
+                    conn.execute(
+                        "UPDATE files SET deleted_at = NULL, name = ?1 WHERE id = ?2",
+                        params![name, id],
+                    )?;
+                }
+            }
+            get_entry_by_id(conn, id)
+        })
+        .await
+    }
+
+    /// Hard-delete every trashed root older than `older_than_days` (rows via
+    /// the foreign-key cascade, blobs returned for the caller to unlink).
+    /// Runs on the background sweep: at startup and then on the interval.
+    pub async fn purge_expired_trash(
+        &self,
+        older_than_days: i64,
+    ) -> Result<Vec<BlobRef>, AppError> {
+        let cutoff = (Utc::now() - chrono::Duration::days(older_than_days)).to_rfc3339();
+        self.run(move |conn| purge_roots(conn, None, Some(cutoff)))
+            .await
+    }
+
+    /// Hard-delete the user's whole trash right now ("Empty trash").
+    pub async fn empty_trash(&self, user_id: i64) -> Result<Vec<BlobRef>, AppError> {
+        self.run(move |conn| purge_roots(conn, Some(user_id), None))
+            .await
+    }
+
+    /// Hard-delete a single trashed root of this user ("Delete permanently").
+    pub async fn purge_trash_item(&self, user_id: i64, id: i64) -> Result<Vec<BlobRef>, AppError> {
+        self.run(move |conn| {
+            let entry = get_entry_by_id(conn, id)?;
+            if entry.owner_id != user_id || entry.deleted_at.is_none() {
+                return Err(AppError::NotFound);
+            }
+            // Only trash roots are units of their own; a child of a trashed
+            // folder goes with its parent.
+            let parent_is_trashed = match entry.parent_id {
+                None => false,
+                Some(pid) => matches!(get_entry_by_id(conn, pid), Ok(p) if p.deleted_at.is_some()),
+            };
+            if parent_is_trashed {
+                return Err(AppError::NotFound);
+            }
+            hard_delete(conn, id)
         })
         .await
     }
@@ -658,6 +789,9 @@ fn readable_entry(conn: &Connection, user_id: i64, id: i64) -> Result<Option<Fil
         Err(AppError::NotFound) => return Ok(None),
         Err(e) => return Err(e),
     };
+    if under_trash(conn, &entry)? {
+        return Ok(None);
+    }
     if entry.owner_id == user_id {
         return Ok(Some(entry));
     }
@@ -692,6 +826,9 @@ fn create_target(
     if !parent.is_dir {
         return Err(AppError::BadRequest("parent is not a folder".into()));
     }
+    if under_trash(conn, &parent)? {
+        return Err(AppError::NotFound);
+    }
     if parent.owner_id == user_id {
         return Ok(user_id);
     }
@@ -711,6 +848,9 @@ fn update_target(
     required: i64,
 ) -> Result<i64, AppError> {
     let entry = get_entry_by_id(conn, id)?;
+    if under_trash(conn, &entry)? {
+        return Err(AppError::NotFound);
+    }
     if entry.owner_id == user_id {
         return Ok(user_id);
     }
@@ -719,6 +859,35 @@ fn update_target(
         return Err(AppError::Forbidden);
     }
     Ok(entry.owner_id)
+}
+
+/// Whether an entry is trashed or sits inside a trashed folder. Such rows
+/// are invisible to every normal operation (listing, read, write, delete).
+fn under_trash(conn: &Connection, entry: &FileEntry) -> Result<bool, AppError> {
+    if entry.deleted_at.is_some() {
+        return Ok(true);
+    }
+    let mut cur = entry.parent_id;
+    let mut hops = 0;
+    while let Some(pid) = cur {
+        // The depth cap turns a corrupt parent cycle into a clean 404.
+        hops += 1;
+        if hops > 64 {
+            return Err(AppError::NotFound);
+        }
+        match get_entry_by_id(conn, pid) {
+            Ok(parent) => {
+                if parent.deleted_at.is_some() {
+                    return Ok(true);
+                }
+                cur = parent.parent_id;
+            }
+            // A missing ancestor leaves the entry unreachable; callers 404.
+            Err(AppError::NotFound) => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(false)
 }
 
 /// Find a direct child of `parent` in `owner`'s tree by name.
@@ -732,7 +901,8 @@ fn find_child(
         .query_row(
             &format!(
                 "SELECT {ENTRY_COLS} FROM files
-                 WHERE owner_id = ?1 AND parent_id IS ?2 AND name = ?3"
+                 WHERE owner_id = ?1 AND parent_id IS ?2 AND name = ?3
+                   AND deleted_at IS NULL"
             ),
             params![owner_id, parent, name],
             row_to_entry,
@@ -749,7 +919,7 @@ fn own_children(
 ) -> Result<Vec<FileEntry>, AppError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {ENTRY_COLS} FROM files
-         WHERE owner_id = ?1 AND parent_id IS ?2
+         WHERE owner_id = ?1 AND parent_id IS ?2 AND deleted_at IS NULL
          ORDER BY is_dir DESC, name COLLATE NOCASE ASC"
     ))?;
     let entries = stmt
@@ -767,7 +937,7 @@ fn incoming_mounts(conn: &Connection, user_id: i64) -> Result<Vec<FileEntry>, Ap
          FROM shares s
          JOIN files f ON f.id = s.source_id
          JOIN users  u ON u.id = s.owner_id
-         WHERE s.grantee_id = ?1",
+         WHERE s.grantee_id = ?1 AND f.deleted_at IS NULL",
     )?;
     let rows = stmt
         .query_map(params![user_id], |r| {
@@ -786,6 +956,8 @@ fn incoming_mounts(conn: &Connection, user_id: i64) -> Result<Vec<FileEntry>, Ap
                 permissions: r.get(10)?,
                 owner_name: Some(r.get(9)?),
                 subtree_bytes: None,
+                deleted_at: None,
+                purge_at: None,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -842,6 +1014,55 @@ fn fill_subtree_sizes(conn: &Connection, entries: &mut [FileEntry]) -> Result<()
         }
     }
     Ok(())
+}
+
+/// Collect a subtree's blobs and delete its root row (children follow via
+/// the foreign-key cascade). The shared engine behind the trash purge and
+/// rollback paths; unlike the user-facing trash flow this removes rows and
+/// content for good.
+fn hard_delete(conn: &Connection, id: i64) -> Result<Vec<BlobRef>, AppError> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE subtree(id) AS (
+             SELECT id FROM files WHERE id = ?1
+             UNION ALL
+             SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+         )
+         SELECT id, owner_id, created_at FROM files
+          WHERE is_dir = 0 AND id IN (SELECT id FROM subtree)",
+    )?;
+    let blobs = stmt
+        .query_map(params![id], |r| {
+            let id: i64 = r.get(0)?;
+            let owner_id: i64 = r.get(1)?;
+            let created_at: String = r.get(2)?;
+            blob_ref(id, owner_id, &created_at)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    conn.execute("DELETE FROM files WHERE id = ?1", params![id])?;
+    Ok(blobs)
+}
+
+/// Shared engine of `purge_expired_trash` / `empty_trash`: hard-delete every
+/// matching trash root and collect the blobs to unlink.
+fn purge_roots(
+    conn: &Connection,
+    owner: Option<i64>,
+    before: Option<String>,
+) -> Result<Vec<BlobRef>, AppError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id FROM files
+         WHERE {TRASH_ROOTS}
+           AND (?1 IS NULL OR owner_id = ?1)
+           AND (?2 IS NULL OR deleted_at < ?2)"
+    ))?;
+    let roots = stmt
+        .query_map(params![owner, before], |r| r.get(0))?
+        .collect::<Result<Vec<i64>, _>>()?;
+    let mut blobs = Vec::new();
+    for id in roots {
+        blobs.extend(hard_delete(conn, id)?);
+    }
+    Ok(blobs)
 }
 
 fn validate_name(name: &str) -> Result<(), AppError> {

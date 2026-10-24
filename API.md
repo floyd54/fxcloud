@@ -32,6 +32,10 @@ allowed -> `403`. Only `register` and `login` are public.
 | POST   | `/api/files/batch/copy` | `{ids, dest_parent}`               | Copy a selection            |
 | POST   | `/api/files/zip`        | `{ids}`                            | Prepare a ZIP download -> `{token}` |
 | GET    | `/api/files/zip`        | `?token=<token>`                   | Stream the prepared ZIP (single use, 5 min) |
+| GET    | `/api/files/trash`      | -                                  | Trash: trashed roots with `deleted_at` / `purge_at` |
+| POST   | `/api/files/trash/restore` | `{id}`                           | Bring a trashed entry back (suffix on name clash) |
+| POST   | `/api/files/trash/purge` | `{id}`                            | Delete one trashed entry for good |
+| POST   | `/api/files/trash/empty` | -                                 | Delete the caller's whole trash now |
 | POST   | `/api/shares`           | `{file_id, username, permissions?}`| Share with a user           |
 | POST   | `/api/shares/batch`     | `{file_ids, username, permissions?}` | Share a selection with one user |
 | DELETE | `/api/shares/:id`       | -                                  | Revoke share (owner/grantee)|
@@ -87,6 +91,21 @@ caller may not touch (or whose name already exists at the destination) is
 reported in `failed`, while the rest of the selection still goes through -
 nothing is rolled back. The single-item `delete` / `move` / `copy` routes
 stay for API compatibility and take a one-element list in the UI.
+
+## Trash
+
+Deletions never remove data directly: `files/delete` and `batch/delete`
+(plus WebDAV `DELETE` and a MOVE/COPY overwrite) mark the entry with
+`deleted_at` instead. Only the trashed root row is marked - its subtree and
+blob content stay untouched, so a restore is a single UPDATE. The trash
+listing shows one row per restore unit with `deleted_at` and the computed
+`purge_at` deadline; `restore` clears the mark (a name taken in the
+meantime gets a " (restored)" suffix). A background sweep hard-deletes
+trash roots older than the retention window (`FXCLOUD_TRASH_DAYS`, default
+30 days): rows via the foreign-key cascade, blobs afterwards. Trashed
+entries are invisible to every other operation (listing, read, write,
+WebDAV) and keep counting against the owner's quota while they sit in the
+trash.
 
 ## ZIP downloads
 

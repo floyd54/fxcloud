@@ -9,6 +9,9 @@
 
   // Current folder id (null == root).
   let currentParent = null;
+  // Trash mode: the listing shows the caller's trashed roots instead of a
+  // folder; restore / delete-permanently replace the file actions.
+  let trashView = false;
   // Viewer's permission mask in the current folder (root is always full).
   let currentPerms = 31;
   // Known permission masks per folder id (learned from listings/info calls).
@@ -103,9 +106,11 @@
     rowsEl.innerHTML = "";
     currentEntries = entries;
     if (entries.length === 0) {
-      rowsEl.innerHTML =
-        '<tr><td colspan="5"><div class="empty"><div class="big">📂</div>' +
-        "This folder is empty.<br/>Upload a file or create a folder to get started.</div></td></tr>";
+      rowsEl.innerHTML = trashView
+        ? '<tr><td colspan="5"><div class="empty"><div class="big">🗑</div>' +
+          "The trash is empty.</div></td></tr>"
+        : '<tr><td colspan="5"><div class="empty"><div class="big">📂</div>' +
+          "This folder is empty.<br/>Upload a file or create a folder to get started.</div></td></tr>";
       return;
     }
 
@@ -149,7 +154,14 @@
 
       const dateTd = document.createElement("td");
       dateTd.className = "date-col";
-      dateTd.textContent = formatDate(entry.modified_at);
+      if (trashView) {
+        dateTd.textContent = formatDate(entry.deleted_at);
+        if (entry.purge_at) {
+          dateTd.title = "Deleted automatically on " + formatDate(entry.purge_at);
+        }
+      } else {
+        dateTd.textContent = formatDate(entry.modified_at);
+      }
 
       const actionsTd = document.createElement("td");
       actionsTd.className = "actions-col";
@@ -175,9 +187,9 @@
       tr.appendChild(dateTd);
       tr.appendChild(actionsTd);
 
-      if (entry.is_dir) {
+      if (!trashView && entry.is_dir) {
         tr.addEventListener("click", () => openFolder(entry.id, perms));
-      } else if ((perms & PERM_READ) && previewKind(entry.name)) {
+      } else if (!trashView && (perms & PERM_READ) && previewKind(entry.name)) {
         // Browser-viewable files open in the lightbox directly.
         tr.classList.add("previewable");
         tr.addEventListener("click", () => openPreview(entry));
@@ -246,6 +258,17 @@
     document.getElementById("bulk-count").textContent =
       selected.size === 1 ? "1 item selected" : `${selected.size} items selected`;
 
+    // The trash swaps the file actions for restore / delete permanently.
+    const fileActions = ["bulk-download", "bulk-move", "bulk-copy", "bulk-share", "bulk-delete"];
+    const trashActions = ["bulk-restore", "bulk-purge"];
+    for (const id of fileActions) {
+      document.getElementById(id).style.display = trashView ? "none" : "";
+    }
+    for (const id of trashActions) {
+      document.getElementById(id).style.display = trashView ? "" : "none";
+    }
+    if (trashView) return;
+
     const enable = (id, can) => {
       document.getElementById(id).disabled = !can;
     };
@@ -302,31 +325,36 @@
     // Re-sharing (PERM_SHARE bit) needs cascading shares on the backend;
     // for now only the owner manages an item's shares.
     const items = [];
-    if (entry.is_dir) {
-      items.push(["Open", () => openFolder(entry.id, perms)]);
-    }
-    if (!entry.is_dir && (perms & PERM_READ)) {
-      if (previewKind(entry.name)) {
-        // Text files open in the editor; everything else gets a preview.
-        const label = previewKind(entry.name) === "text" ? "Edit" : "Preview";
-        items.push([label, () => openPreview(entry)]);
+    if (trashView) {
+      items.push(["Restore", () => restoreTrashEntry(entry.id)]);
+      items.push(["Delete permanently", () => purgeTrashEntry(entry.id), true]);
+    } else {
+      if (entry.is_dir) {
+        items.push(["Open", () => openFolder(entry.id, perms)]);
       }
-      items.push(["Download", () => downloadFile(entry.id, entry.name)]);
-    }
-    if (isOwner) {
-      items.push(["Share", () => openShareDialog([entry])]);
-    }
-    if (perms & PERM_UPDATE) {
-      items.push(["Move to…", () => openTransferDialog("move", [entry])]);
-    }
-    if (perms & PERM_READ) {
-      items.push(["Copy to…", () => openTransferDialog("copy", [entry])]);
-    }
-    if (perms & PERM_UPDATE) {
-      items.push(["Rename", () => renameEntry(entry.id, entry.name)]);
-    }
-    if (perms & PERM_DELETE) {
-      items.push(["Delete", () => deleteEntry(entry.id, entry.is_dir, entry.name), true]);
+      if (!entry.is_dir && (perms & PERM_READ)) {
+        if (previewKind(entry.name)) {
+          // Text files open in the editor; everything else gets a preview.
+          const label = previewKind(entry.name) === "text" ? "Edit" : "Preview";
+          items.push([label, () => openPreview(entry)]);
+        }
+        items.push(["Download", () => downloadFile(entry.id, entry.name)]);
+      }
+      if (isOwner) {
+        items.push(["Share", () => openShareDialog([entry])]);
+      }
+      if (perms & PERM_UPDATE) {
+        items.push(["Move to…", () => openTransferDialog("move", [entry])]);
+      }
+      if (perms & PERM_READ) {
+        items.push(["Copy to…", () => openTransferDialog("copy", [entry])]);
+      }
+      if (perms & PERM_UPDATE) {
+        items.push(["Rename", () => renameEntry(entry.id, entry.name)]);
+      }
+      if (perms & PERM_DELETE) {
+        items.push(["Delete", () => deleteEntry(entry.id, entry.is_dir, entry.name), true]);
+      }
     }
 
     for (const [label, fn, danger] of items) {
@@ -385,14 +413,24 @@
     loadMe().catch(() => {});
   }
 
-  // Show the create toolbar only where the viewer holds CREATE.
+  // Show the create toolbar only where the viewer holds CREATE. The trash
+  // swaps the file actions for its own (Empty trash).
   function renderToolbar() {
+    const trashBtn = document.getElementById("trash-btn");
+    const emptyBtn = document.getElementById("empty-trash-btn");
+    const fileBtns = ["new-file-btn", "new-folder-btn", "upload-btn", "upload-folder-btn"];
+    if (trashView) {
+      for (const id of fileBtns) document.getElementById(id).style.display = "none";
+      dropzone.style.display = "none";
+      trashBtn.classList.add("active");
+      emptyBtn.style.display = "";
+      return;
+    }
+    trashBtn.classList.remove("active");
+    emptyBtn.style.display = "none";
     const canCreate = (currentPerms & PERM_CREATE) !== 0;
     const show = canCreate ? "" : "none";
-    document.getElementById("new-file-btn").style.display = show;
-    document.getElementById("new-folder-btn").style.display = show;
-    document.getElementById("upload-btn").style.display = show;
-    document.getElementById("upload-folder-btn").style.display = show;
+    for (const id of fileBtns) document.getElementById(id).style.display = show;
     dropzone.style.display = show;
   }
 
@@ -414,6 +452,78 @@
     if (storage && res.used_bytes != null && res.quota_bytes != null) {
       storage.textContent = `${fmtBytes(res.used_bytes)} of ${fmtBytes(res.quota_bytes)}`;
       storage.title = "storage used of quota";
+    }
+  }
+
+  async function restoreTrashEntry(id) {
+    try {
+      await api("/api/files/trash/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      // The entry reappears in its original folder (with a " (restored)"
+      // suffix when the name was taken in the meantime).
+      await loadTrash();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function purgeTrashEntry(id) {
+    if (!confirm("Delete this item permanently? This cannot be undone.")) return;
+    try {
+      await api("/api/files/trash/purge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      await loadTrash();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function bulkRestore() {
+    for (const entry of selected.values()) {
+      try {
+        await api("/api/files/trash/restore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: entry.id }),
+        });
+      } catch (e) {
+        alert(e.message);
+        break;
+      }
+    }
+    await loadTrash();
+  }
+
+  async function bulkPurge() {
+    if (!confirm(`Delete ${selected.size} item(s) permanently? This cannot be undone.`)) return;
+    for (const entry of selected.values()) {
+      try {
+        await api("/api/files/trash/purge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: entry.id }),
+        });
+      } catch (e) {
+        alert(e.message);
+        break;
+      }
+    }
+    await loadTrash();
+  }
+
+  async function emptyTrash() {
+    if (!confirm("Empty the trash? Every item in it is deleted permanently.")) return;
+    try {
+      await api("/api/files/trash/empty", { method: "POST" });
+      await loadTrash();
+    } catch (e) {
+      alert(e.message);
     }
   }
 
@@ -498,8 +608,8 @@
 
   async function deleteEntry(id, isDir, name) {
     const promptText = isDir
-      ? `Delete folder "${name}" and everything inside it?`
-      : `Delete file "${name}"?`;
+      ? `Move folder "${name}" and everything inside it to the trash?`
+      : `Move file "${name}" to the trash?`;
     if (!confirm(promptText)) return;
     try {
       // Same endpoint as the bulk bar — a single item is a batch of one.
@@ -1170,7 +1280,7 @@
 
     const files = entries.filter((e) => !e.is_dir);
     const dirs = entries.filter((e) => e.is_dir);
-    let msg = `Delete ${entries.length} of ${selected.size} selected item(s)?`;
+    let msg = `Move ${entries.length} of ${selected.size} selected item(s) to the trash?`;
     if (files.length) {
       msg += `\n\n${files.length} file(s) · ${formatSize(
         files.reduce((sum, e) => sum + (e.size || 0), 0)
@@ -1410,6 +1520,19 @@
   document.getElementById("bulk-copy").addEventListener("click", () => bulkTransfer("copy"));
   document.getElementById("bulk-share").addEventListener("click", bulkShare);
   document.getElementById("bulk-delete").addEventListener("click", bulkDelete);
+  document.getElementById("bulk-restore").addEventListener("click", () => {
+    bulkRestore().catch((e) => alert(e.message));
+  });
+  document.getElementById("bulk-purge").addEventListener("click", () => {
+    bulkPurge().catch((e) => alert(e.message));
+  });
+  document.getElementById("trash-btn").addEventListener("click", () => {
+    if (trashView) openHome();
+    else loadTrash().catch((e) => alert(e.message));
+  });
+  document.getElementById("empty-trash-btn").addEventListener("click", () => {
+    emptyTrash().catch((e) => alert(e.message));
+  });
   document.getElementById("bulk-clear").addEventListener("click", clearSelection);
   fileInput.addEventListener("change", () => {
     uploadFiles(fileInput.files);
