@@ -1152,6 +1152,42 @@ else
   bad "node is not available for the crypto harness"
 fi
 
+# The checks above drive fxcrypto.js through fxtool.js; the browser itself
+# calls the same primitives from fxenc.js, which has to pick every argument
+# and every request body on its own. That distinction shipped twice: a lost
+# parameter in jsonCall and a scrambled encryptBytes(plain, id, fileKey),
+# each of which broke the real UI while every check above stayed green. This
+# harness runs that file as a tab would - fake DOM, cookie-carrying fetch,
+# no Worker - against this instance.
+note "the browser encryption path, end to end (fxenc.js as a tab runs it)"
+HX_LOG=$ROOT/fxenc.log
+HX_COOKIE=$(awk '$6 == "fxcloud_session" { print $6 "=" $7 }' "$JA" | tail -1)
+# The passphrase-change test above rewrapped alice's record, so the tab now
+# opens with that passphrase rather than with the one setup used.
+HX_PASS='a-brand-new-pass'
+HX_OK=0
+HX_FAIL=0
+"$NODE" "$REPO/frontend/tests/fxenc-harness.js" "$BASE" "$HX_COOKIE" "$HX_PASS" alice \
+  > "$HX_LOG" 2>&1
+HX_RC=$?
+while IFS= read -r HX_LINE; do
+  case "$HX_LINE" in
+    OK\ *)
+      ok "fxenc: ${HX_LINE#OK   }"
+      HX_OK=$((HX_OK + 1))
+      ;;
+    FAIL\ *)
+      bad "fxenc: ${HX_LINE#FAIL }"
+      HX_FAIL=$((HX_FAIL + 1))
+      ;;
+  esac
+done < "$HX_LOG"
+# A harness that died before printing anything must not read as a pass.
+if [ "$HX_RC" -ne 0 ] && [ "$HX_FAIL" -eq 0 ]; then
+  bad "fxenc harness exited $HX_RC: $(tail -3 "$HX_LOG" | tr '\n' ' ')"
+fi
+[ "$HX_OK" -gt 0 ] || bad "fxenc harness reported no checks at all"
+
 note "frontend wiring"
 UI=$REPO/frontend/assets/app.js
 UNDEF=""
@@ -1190,7 +1226,8 @@ for SRC in "$REPO/frontend/assets/fxcrypto.js" \
            "$REPO/frontend/assets/fxworker.js" \
            "$REPO/frontend/assets/hashwasm-argon2.js" \
            "$REPO/frontend/tests/fxtool.js" \
-           "$REPO/frontend/tests/crypto-roundtrip.js"; do
+           "$REPO/frontend/tests/crypto-roundtrip.js" \
+           "$REPO/frontend/tests/fxenc-harness.js"; do
   js_parse "$SRC" \
     && ok "$(basename "$SRC") parses ($PARSE)" \
     || bad "$(basename "$SRC") has a syntax error"
@@ -1209,7 +1246,8 @@ if perl "$REPO/tests/check-call-arity.pl" \
      "$REPO/frontend/assets/fxenc.js" \
      "$REPO/frontend/assets/fxworker.js" \
      "$REPO/frontend/tests/fxtool.js" \
-     "$REPO/frontend/tests/crypto-roundtrip.js" >"$ROOT/arity.log" 2>&1; then
+     "$REPO/frontend/tests/crypto-roundtrip.js" \
+     "$REPO/frontend/tests/fxenc-harness.js" >"$ROOT/arity.log" 2>&1; then
   ok "every frontend helper is called with its declared argument count"
 else
   bad "frontend arity: $(tr '\n' ' ' < "$ROOT/arity.log")"
@@ -1238,6 +1276,19 @@ for ID in $(grep -oE '\$\("enc-[a-z0-9-]+"\)' "$ENC_JS" | sed 's/\$("//; s/")//'
 done
 [ -z "$MISSING_IDS" ] && ok "every element fxenc.js reaches for exists in index.html" \
   || bad "ids used by fxenc.js but absent from index.html:$MISSING_IDS"
+
+# The editor round trip and the encrypt-on-create rule are decisions rather
+# than accidents, and neither leaves a trace on the wire that a check above
+# could see: app.js would happily keep opening and saving files if someone
+# dropped either branch, just always in the clear. That is exactly how a new
+# .md file stayed plaintext while encryption was on, so both call sites are
+# pinned here.
+grep -q 'FXEnc.readText(entry)' "$UI" && grep -q 'FXEnc.writeText(entry, content)' "$UI" \
+  && ok "the editor decrypts on open and encrypts on save" \
+  || bad "app.js does not round-trip encrypted rows through fxenc.js"
+grep -q 'FXEnc.writeText(entry, "")' "$UI" \
+  && ok "a file created while encryption is on is encrypted immediately" \
+  || bad "newFile() creates its file without encrypting it"
 
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true

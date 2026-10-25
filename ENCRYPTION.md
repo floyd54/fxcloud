@@ -541,8 +541,8 @@ write path ever looks at the first four bytes.
 | Upload `POST /api/files/upload` (plaintext path) | n/a - this path is not used once encryption is on | unchanged; it is reachable only while the account has no key record, because once keys exist an upload is never silently downgraded to plaintext |
 | Encrypted upload (new two-phase path) | the multipart endpoint has nowhere to bind a key, because the client does not know the row's id until after the row exists | **(1)** `POST /api/files/file {parent_id, name}` reserves the row and returns its id - a duplicate name fails here, before a byte is read or encrypted; **(2)** the client encrypts against that id and `PUT /api/files/content?id=<id>&enc=1&key=<base64>` fills it. The wrapped key lands on a row that `create_file` always mints under the *uploader*, so the wrapper is this account's root key even when the destination folder belongs to someone else - no destination check is needed. Cancelling before step 1 creates nothing; a failure during step 2 deletes the half-made row and purges it from trash, so no 0-byte or half-filled row survives |
 | Download `GET /api/files/download` | returns ciphertext | client fetches, decrypts in memory, saves via Blob URL |
-| Preview `GET /api/files/preview` with `Range`, `nosniff`, `sandbox` | server cannot render or slice plaintext it does not have | **client-side preview:** download, decrypt, render from a Blob; for video/audio, decrypt chunk ranges client-side later. Until that lands (phase 2) the server answers **400** for an `enc_version > 0` row rather than `image/png` for ciphertext, and the UI disables the row click on such rows so no `<img>`/`<iframe>` is ever handed undecodable bytes. Encrypted files are never served inline |
-| Text editor `PUT /api/files/content` | reads and writes plaintext | **phase 2, not in this release:** client decrypts on open, encrypts on save, PUTs ciphertext; the server treats it as an opaque content update (same quota/mtime logic). Until then an encrypted row has no editor at all - the UI hides Edit/Preview on it, and a bare save returns 409 rather than silently replacing ciphertext with plaintext |
+| Preview `GET /api/files/preview` with `Range`, `nosniff`, `sandbox` | server cannot render or slice plaintext it does not have | **client-side preview:** download, decrypt, render from a Blob; for video/audio, decrypt chunk ranges client-side later. Until that lands (phase 2) the server answers **400** for an `enc_version > 0` row rather than `image/png` for ciphertext, and the UI never hands such a row to `<img>` or `<iframe>`: text opens in the editor, which decrypts first, and images/video/audio point at Download. Encrypted files are never served inline |
+| Text editor `PUT /api/files/content` | reads and writes plaintext | **text editor round-trip: shipped.** The client decrypts on open - through the download endpoint, because `/api/files/preview` refuses ciphertext - encrypts on save and PUTs `enc=1&key=`; the server treats it as an opaque content update (same quota/mtime logic), and its 409 still guards the bare plaintext save. A file created while encryption is on is written as an empty container straight away, so a new row is never plaintext even briefly (`newFile()`), and a save re-wraps under a fresh file key |
 | Server-side ZIP `POST/GET /api/files/zip` | cannot zip plaintext it lacks | **client-side ZIP** for encrypted selections (JSZip-style, worker-based); keep server ZIP for plaintext files. DECISION 8 |
 | WebDAV `GET`/`PUT`/`PROPFIND` | desktop clients do not encrypt | DECIDED (9): goal stays *flawless WebDAV*, delivered in two steps. Interim (v1): encrypted files are exposed **read-only as ciphertext** (visible, not hidden - the user sees the file exists) and `PUT` onto an `enc_version > 0` row is **rejected after validating the `FXE1` magic** - the server can do that without decrypting. Not blind-reject: a desktop client writing plaintext over a ciphertext row would otherwise destroy the file. The error body names the fix (web UI or sync agent). Target: `fxcloud sync` agent (see phases) makes DAV transparent again |
 | `Content-Type` authority + HTML/SVG sandbox | server cannot know the real type | server's authoritative answer for `enc_version > 0` is `application/octet-stream; nosniff`, attachment disposition, `sandbox` on the response - always. Real types only ever materialize client-side |
@@ -596,8 +596,12 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
    7), so very large files are already limited before encryption is
    considered - unchanged by this concept.
 4. **Download:** transparently decrypted client-side and saved under the
-   original name. **Preview and edit** decrypt the same way but arrive in
-   phase 2; until then those menu entries are hidden on encrypted rows.
+   original name. **Edit** works the same way for text files: opening
+   decrypts, saving re-encrypts, and a file created while encryption is on
+   is stored as an empty container at once - so "everything new is
+   encrypted" holds without any conversion step. **Preview** of images,
+   video and audio still arrives in phase 2; until then those menu entries
+   are hidden on an encrypted row and the editor does not take them either.
 5. **Share** *(phase 3)*: the share dialog additionally shows the
    grantee's key fingerprint; on first share a "key changed?" warning
    appears if a cached public key differs.
@@ -647,14 +651,25 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **192 checks**. The additions cover the key
+- Testing: the suite now runs **206 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
   `GET /api/keys/<username>` does and does not expose), the encrypted
   write matrix (`enc`/`key` combinations, FXE1 body rule, preview and ZIP
   refusal), the copy refusal, WebDAV's opaque view of an encrypted row,
   and one real encrypt -> upload -> download -> decrypt trip driven through
-  the HTTP API by the very `fxcrypto.js` the browser loads. The crypto
+  the HTTP API by the very `fxcrypto.js` the browser loads. A second
+  harness runs `fxenc.js` itself - the file that picks every argument and
+  every request body - behind a fake DOM, with a cookie-carrying fetch and
+  no Worker (the documented main-thread fallback), and drives the real
+  browser path end to end: unlock through the pane, `encryptUpload` ->
+  `download` byte for byte, `writeText` -> `readText` with the wrapped key
+  rotating per save, and a new file encrypted before anything can read it.
+  That file is what both of this release's frontend bugs hid in: a
+  scrambled `encryptBytes(plain, id, fileKey)` died with "expected a
+  256-bit file key" on every upload while the suite stayed green, because
+  the suite reached encryption through `fxtool.js`, which calls the same
+  primitives in the right order. The crypto
   itself has its own round-trip harness (DECISION 10: 31 checks over the
   same WebCrypto code paths), every frontend source file gets a parse
   check so a syntax error cannot sit unnoticed until someone unlocks, and
@@ -673,8 +688,8 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
 | Phase | Scope | Rough size |
 | --- | --- | --- |
 | 0 | This concept reviewed and DECISIONs answered | **done** - see section 13 |
-| 1 | Key setup, unlock, encrypt-on-upload, decrypt-on-download; **login KDF params raised (condition of DECISION 3)**; recovery key mandatory at setup; UI limited to the header badge plus the setup / unlock / recovery dialog - no preview, no editor, no client-side ZIP | **implemented, not yet released** |
-| 2 | Client-side preview, text editor round-trip, client-side ZIP | makes daily use possible |
+| 1 | Key setup, unlock, encrypt-on-upload, decrypt-on-download; **login KDF params raised (condition of DECISION 3)**; recovery key mandatory at setup; UI limited to the header badge plus the setup / unlock / recovery dialog - no preview, no client-side ZIP | **released since v0.0.9** |
+| 2 | Text editor round-trip (**shipped**: decrypt on open, encrypt on save, and a file created while encryption is on stored encrypted from its first second), client-side preview for images/video/audio, client-side ZIP | makes daily use possible |
 | 3 | Sharing: key exchange, envelopes, fingerprints, revoke | G3 satisfied |
 | 4 | Migration tool ("Encrypt existing files"), per-folder encrypt toggle, recovery-key UX refinements | G5 satisfied |
 | 5 | **`fxcloud sync` agent** - local daemon doing encrypt/decrypt between Finder/Explorer and the unchanged DAV API; this is what makes WebDAV *flawless* (DECISION 9), so it is a committed deliverable, not "later, independent" | largest single item; own milestone |
