@@ -193,6 +193,8 @@ CI runs both layers on every push and pull request
 
 ## More documentation
 
+- [ENCRYPTION.md](ENCRYPTION.md) - client-side per-file encryption: threat
+  model, cryptographic design, the DECISIONs behind it, and the phases
 - [ARCHITECTURE.md](ARCHITECTURE.md) - code layout, storage format,
   permission and quota model
 - [API.md](API.md) - HTTP endpoints, batch/ZIP semantics, WebDAV details
