@@ -360,13 +360,12 @@
         items.push(["Open", () => openFolder(entry.id, perms)]);
       }
       if (!entry.is_dir && (perms & PERM_READ)) {
-        // An encrypted row has no preview and no editor until phase 2
-        // (ENCRYPTION.md section 12) - the useful thing this tab can do with
-        // one is decrypt it on the way out.
-        if (entry.enc_version === 0 && previewKind(entry.name)) {
-          // Text files open in the editor; everything else gets a preview.
-          const label = previewKind(entry.name) === "text" ? "Edit" : "Preview";
-          items.push([label, () => openPreview(entry)]);
+        // Text files open in the editor, encrypted ones included - the editor
+        // decrypts on the way in. Images, video and audio stay plaintext-only
+        // until phase 2 can decrypt those too (ENCRYPTION.md section 12).
+        const entryKind = previewKind(entry.name);
+        if (entryKind && (entry.enc_version === 0 || entryKind === "text")) {
+          items.push([entryKind === "text" ? "Edit" : "Preview", () => openPreview(entry)]);
         }
         items.push(["Download", () => downloadFile(entry.id, entry.name, entry)]);
       }
@@ -651,11 +650,57 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ parent_id: currentParent, name: name }),
       }).then((r) => r.json());
+      let entry = res.entry;
+
+      // With encryption on, nothing new may land in plaintext: the file is
+      // written as an empty container immediately, so the row is encrypted
+      // from its first second instead of waiting for a conversion that would
+      // otherwise never come. The same rule the upload path already follows.
+      const encrypt = FXEnc.enabled();
+      if (encrypt && !(await FXEnc.requestKeys())) {
+        alert("Encryption is locked - unlock it from the badge, then create the file again.");
+        await discardCreated(entry.id);
+        return;
+      }
+      if (encrypt) {
+        try {
+          entry = await FXEnc.writeText(entry, "");
+        } catch (e) {
+          await discardCreated(entry.id);
+          alert(`The new file could not be encrypted, so it was removed: ${e.message}`);
+          return;
+        }
+      }
+
       await loadFiles(currentParent);
-      openPreview(res.entry); // text files open straight in the editor
+      openPreview(entry); // text files open straight in the editor
     } catch (e) {
       alert(e.message);
     }
+  }
+
+  /**
+   * Undo a row that was created but could not be encrypted. An empty
+   * plaintext file left behind would contradict "everything new is
+   * encrypted", so it goes back out of the tree - best effort, since the
+   * caller is already reporting a failure.
+   */
+  async function discardCreated(id) {
+    try {
+      await api("/api/files/batch/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: [id] }),
+      });
+      await api("/api/files/trash/purge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: id }),
+      });
+    } catch (_) {
+      /* already gone */
+    }
+    await loadFiles(currentParent);
   }
 
   async function renameEntry(id, currentName) {
@@ -747,19 +792,24 @@
   function openPreview(entry) {
     const kind = previewKind(entry.name);
     if (!kind || entry.is_dir) return;
-    if (entry.enc_version > 0) {
-      // Never hand ciphertext to <img>/<iframe>: the preview would fail
-      // opaquely. Download decrypts instead; a preview that does the same
-      // arrives with the editor round-trip (phase 2).
+    // Text is the one kind this tab can open on an encrypted row, because the
+    // editor decrypts on the way in. Everything else would hand ciphertext to
+    // <img>/<iframe> and fail opaquely, so it keeps the Download answer until
+    // a decrypt-and-blob preview arrives with phase 2.
+    if (entry.enc_version > 0 && kind !== "text") {
       alert(
-        "This file is encrypted. Preview and editing arrive in a later phase - " +
-          "use Download to decrypt it into a local copy."
+        "This file is encrypted. Preview of images, video and audio arrives in a " +
+          "later phase - use Download to decrypt it into a local copy."
       );
       return;
     }
     document.getElementById("preview-name").textContent = entry.name;
     const src = `/api/files/preview?id=${entry.id}`;
-    document.getElementById("preview-newtab").href = src;
+    const newtab = document.getElementById("preview-newtab");
+    // That endpoint refuses ciphertext, so an encrypted row has no tab to
+    // open in - hide the link rather than hand out a URL that answers 400.
+    newtab.style.display = entry.enc_version > 0 ? "none" : "";
+    newtab.href = entry.enc_version > 0 ? "#" : src;
 
     const body = document.getElementById("preview-body");
     body.innerHTML = "";
@@ -859,8 +909,20 @@
     updateEditorMeta();
     editorMdToggle.style.display = editorIsMd ? "" : "none";
     setEditorMdVisible(editorIsMd && editorMdOn);
-    api(`/api/files/preview?id=${entry.id}`)
-      .then((r) => r.text())
+    // An encrypted row has no server-side preview to read: that endpoint
+    // refuses ciphertext outright. The editor pulls the container from
+    // /api/files/content and decrypts it here instead, so an encrypted
+    // .md opens exactly like a plaintext one.
+    const load =
+      entry.enc_version > 0
+        ? FXEnc.requestKeys().then((ok) => {
+            if (!ok) {
+              throw new Error("encryption is locked - unlock it from the badge to edit this file");
+            }
+            return FXEnc.readText(entry);
+          })
+        : api(`/api/files/preview?id=${entry.id}`).then((r) => r.text());
+    load
       .then((text) => {
         if (editorEntry !== entry) return; // another file opened meanwhile
         editorText.value = text;
@@ -887,12 +949,15 @@
     const entry = editorEntry;
     const content = editorText.value;
     setEditorStatus("saving...");
-    api(`/api/files/content?id=${entry.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-      body: content,
-    })
-      .then((r) => r.json())
+    const save =
+      entry.enc_version > 0
+        ? FXEnc.writeText(entry, content)
+        : api(`/api/files/content?id=${entry.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+            body: content,
+          }).then((r) => r.json());
+    save
       .then((res) => {
         if (editorEntry !== entry) return;
         editorBaseline = content;
@@ -904,6 +969,10 @@
           // The listing behind the dialog shows the new size/modified_at.
           entry.size = res.entry.size;
           entry.modified_at = res.entry.modified_at;
+          // An encrypted save re-wraps under a fresh file key (5.4), so the
+          // row's stored key changes; keep our copy in step or the next
+          // download would unwrap with a key the row no longer carries.
+          if (res.entry.enc_key) entry.enc_key = res.entry.enc_key;
           openFolder(currentParent);
         }
         updateEditorMeta();

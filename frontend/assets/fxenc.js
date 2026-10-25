@@ -529,13 +529,21 @@
       // (create_file always mints the row under the uploader's id), so the
       // destination folder's owner never has to be consulted.
       const wrappedKey = await FX().wrapChildKey(state.session.rootKey, id, fileKey);
-      const out = await heavy("encryptBytes", [plain, id, fileKey], [plain.buffer]);
-      await http("/api/files/content?id=" + id + "&enc=1&key=" + encodeURIComponent(wrappedKey), {
-        method: "PUT",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: out.bytes,
-      });
-      return created.entry;
+      const out = await heavy("encryptBytes", [id, fileKey, plain], [plain.buffer]);
+      const saved = await http(
+        "/api/files/content?id=" + id + "&enc=1&key=" + encodeURIComponent(wrappedKey),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: out.bytes,
+        }
+      ).then((r) => r.json());
+      // The row holds ciphertext and its wrapped key now. Hand back the
+      // server's fresh copy rather than the row as it looked before the
+      // write: the caller's own object has no `enc_key` and an
+      // `enc_version` of 0, so downloading straight after an upload would
+      // try to unwrap a key the row does not carry.
+      return (saved && saved.entry) || created.entry;
     } catch (e) {
       await discardRow(id);
       throw e;
@@ -562,7 +570,7 @@
     const res = await http("/api/files/download?id=" + entry.id);
     const body = new Uint8Array(await res.arrayBuffer());
     const fileKey = await FX().unwrapChildKey(state.session.rootKey, entry.id, entry.enc_key);
-    const out = await heavy("decryptBytes", [body, entry.id, fileKey], [body.buffer]);
+    const out = await heavy("decryptBytes", [entry.id, fileKey, body], [body.buffer]);
     const blob = new Blob([out.bytes], { type: FX().mimeForDownload(entry.name) });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -572,6 +580,49 @@
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  /**
+   * Read an encrypted row back as text for the editor.
+   *
+   * `/api/files/preview` refuses ciphertext outright - it has no plaintext
+   * to describe - and `/api/files/content` is PUT-only (the editor's write
+   * side), so the read side goes through the download endpoint and turns the
+   * FXE1 container back into text here.
+   */
+  async function readText(entry) {
+    if (state.status !== "unlocked") throw new Error("unlock encryption to open this file");
+    if (!entry.enc_key) throw new Error("this file has no stored key to open it with");
+    const res = await http("/api/files/download?id=" + entry.id);
+    const body = new Uint8Array(await res.arrayBuffer());
+    const fileKey = await FX().unwrapChildKey(state.session.rootKey, entry.id, entry.enc_key);
+    const out = await heavy("decryptBytes", [entry.id, fileKey, body], [body.buffer]);
+    return new TextDecoder().decode(out.bytes);
+  }
+
+  /**
+   * Encrypt text and store it as this row's content in one request.
+   *
+   * A fresh file key per save, wrapped under the account root key and bound
+   * to the row id (5.4), so the row's stored `enc_key` changes every time -
+   * which is why the caller keeps the entry returned here rather than its
+   * own copy: a stale key would make the next download unwrappable.
+   */
+  async function writeText(entry, text) {
+    if (state.status !== "unlocked") throw new Error("unlock encryption to save this file");
+    const plain = new TextEncoder().encode(text);
+    const fileKey = FX().randomBytes(32);
+    const out = await heavy("encryptBytes", [entry.id, fileKey, plain], [plain.buffer]);
+    const wrappedKey = await FX().wrapChildKey(state.session.rootKey, entry.id, fileKey);
+    const res = await http(
+      "/api/files/content?id=" + entry.id + "&enc=1&key=" + encodeURIComponent(wrappedKey),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: out.bytes,
+      }
+    );
+    return (await res.json()).entry;
   }
 
   // ------------------------------------------------------------------------
@@ -709,6 +760,8 @@
     enabled: () => state.status === "unlocked" || state.status === "locked",
     requestKeys: requestKeys,
     encryptUpload: encryptUpload,
+    readText: readText,
+    writeText: writeText,
     download: download,
     lockNow: lockNow,
     isEncrypted: (entry) => !!entry && entry.enc_version > 0,
