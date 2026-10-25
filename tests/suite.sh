@@ -1183,6 +1183,25 @@ for SRC in "$REPO/frontend/assets/fxcrypto.js" \
     || bad "$(basename "$SRC") has a syntax error"
 done
 
+# Parsing only proves the parentheses balance, not that they balance the same
+# way at every call site. `jsonCall(method, url, payload)` once carried a
+# stray parameter no caller supplied: every call passed two arguments, so
+# `payload` was undefined, JSON.stringify produced no body at all, and the
+# server answered 400 to the encryption setup - while every syntax check in
+# this file stayed green. hashwasm-argon2.js is excluded because it is a
+# vendored bundle whose single-letter minified names trip the check.
+if perl "$REPO/tests/check-call-arity.pl" \
+     "$REPO/frontend/assets/app.js" \
+     "$REPO/frontend/assets/fxcrypto.js" \
+     "$REPO/frontend/assets/fxenc.js" \
+     "$REPO/frontend/assets/fxworker.js" \
+     "$REPO/frontend/tests/fxtool.js" \
+     "$REPO/frontend/tests/crypto-roundtrip.js" >"$ROOT/arity.log" 2>&1; then
+  ok "every frontend helper is called with its declared argument count"
+else
+  bad "frontend arity: $(tr '\n' ' ' < "$ROOT/arity.log")"
+fi
+
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true
 

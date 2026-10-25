@@ -51,7 +51,11 @@
     return res;
   }
 
-  const jsonCall = (method, url, payload) => ({
+  // Note the arity: every call site passes (method, payload) only - a third
+  // parameter here silently becomes `undefined`, JSON.stringify turns that
+  // into no body at all, and the server answers 400 for an empty JSON
+  // request. tests/suite.sh pins call sites against this signature.
+  const jsonCall = (method, payload) => ({
     method: method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
