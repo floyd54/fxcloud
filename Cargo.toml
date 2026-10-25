@@ -2,7 +2,7 @@
 name = "fxcloud"
 # Canonical release version: shown in the app header next to the logo
 # (see src/web/ui.rs) and matching the git tag of each release.
-version = "0.0.9"
+version = "0.0.10"
 edition = "2021"
 description = "fxcloud – a Nextcloud-inspired personal cloud in a single Rust binary"
 license = "MIT"
