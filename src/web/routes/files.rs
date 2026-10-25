@@ -623,12 +623,18 @@ pub async fn save_content(
             .map(|m| m.to_string())
     };
     // The blob path is id-derived, so replacing the content in place swaps
-    // the blob underneath; meta first, because it holds the quota gate.
-    state
-        .db
-        .update_file_meta(user.id(), entry.id, body.len() as i64, mime, transition)
-        .await?;
-    state.files.write_blob(&entry, body.to_vec()).await?;
+    // the blob underneath; meta first, because it holds the quota gate. Both
+    // halves run under the row's write lock: two saves of this row landing at
+    // once must not interleave, or the row ends up with one save's `enc_key`
+    // next to another save's bytes (see `FileService::begin_replace`).
+    {
+        let _write = state.files.begin_replace(entry.id).await;
+        state
+            .db
+            .update_file_meta(user.id(), entry.id, body.len() as i64, mime, transition)
+            .await?;
+        state.files.write_blob(&entry, body.to_vec()).await?;
+    }
     // Fresh row for the response: size and modified_at just changed.
     let entry = state
         .db

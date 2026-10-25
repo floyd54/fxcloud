@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::config::Config;
 use crate::db::Db;
@@ -32,7 +33,14 @@ pub const FXE1_MAGIC: &[u8] = b"FXE1";
 pub struct FileService {
     db: Db,
     blob_dir: PathBuf,
+    /// One write lock per row that is being (or was recently) rewritten; see
+    /// [`FileService::begin_replace`].
+    replaces: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
 }
+
+/// Rows remembered for write serialization at once (see
+/// [`FileService::begin_replace`]); above this, slots nobody holds are dropped.
+const REPLACE_LOCKS_MAX: usize = 4096;
 
 /// Counters of one migration run (see [`FileService::migrate_flat_blobs`]).
 #[derive(Default)]
@@ -55,7 +63,40 @@ impl FileService {
         Self {
             db,
             blob_dir: config.blob_dir(),
+            replaces: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Hold a row's write lock across both halves of a content replacement.
+    ///
+    /// Replacing content is two operations: the metadata statement (size,
+    /// mime, `modified_at`, and for an encrypted save `enc_version`/`enc_key`)
+    /// and then the blob write. Nothing pairs them, so two saves of the *same*
+    /// row overlapping in time can interleave - the later save's `enc_key`
+    /// lands first and the earlier save's ciphertext lands last - and the row
+    /// is left holding one file key next to another save's bytes.
+    ///
+    /// That state looks entirely healthy from the outside: the stored key
+    /// still unwraps (it is bound to this row's id, and the passphrase is
+    /// right), so the failure only surfaces the next time the file is opened,
+    /// as `decryption failed for chunk 0`. Holding this guard around the
+    /// statement *and* the blob write makes the pair atomic per row, while
+    /// writes to different rows stay independent.
+    pub async fn begin_replace(&self, file_id: i64) -> tokio::sync::OwnedMutexGuard<()> {
+        let slot = {
+            let mut map = self.replaces.lock().unwrap_or_else(|p| p.into_inner());
+            // Keep the map from growing with every row ever written: a slot
+            // whose only reference is the map's own is idle. The clone below
+            // happens under this same lock, so a slot about to be handed out
+            // is never seen as idle.
+            if map.len() > REPLACE_LOCKS_MAX {
+                map.retain(|_, slot| Arc::strong_count(slot) > 1);
+            }
+            map.entry(file_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        slot.lock_owned().await
     }
 
     /// On-disk location of a file's content (see the module docs for the

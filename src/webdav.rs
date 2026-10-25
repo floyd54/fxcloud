@@ -381,15 +381,21 @@ async fn put_file(
             // No magic sniffing on plaintext rows: their content is arbitrary
             // user data, and four bytes of it are none of the server's
             // business. `enc_version` stays 0 here either way.
-            if let Err(e) = state
-                .db
-                .update_file_meta(owner_id, old.id, size, mime, None)
-                .await
+            // Both halves under the row's write lock: a DAV overwrite racing
+            // a browser save must not interleave the two halves (see
+            // `FileService::begin_replace`).
             {
-                return e.into_response();
-            }
-            if let Err(e) = state.files.write_blob(&old, body.to_vec()).await {
-                return e.into_response();
+                let _write = state.files.begin_replace(old.id).await;
+                if let Err(e) = state
+                    .db
+                    .update_file_meta(owner_id, old.id, size, mime, None)
+                    .await
+                {
+                    return e.into_response();
+                }
+                if let Err(e) = state.files.write_blob(&old, body.to_vec()).await {
+                    return e.into_response();
+                }
             }
             StatusCode::NO_CONTENT.into_response()
         }

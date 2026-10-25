@@ -542,7 +542,7 @@ write path ever looks at the first four bytes.
 | Encrypted upload (new two-phase path) | the multipart endpoint has nowhere to bind a key, because the client does not know the row's id until after the row exists | **(1)** `POST /api/files/file {parent_id, name}` reserves the row and returns its id - a duplicate name fails here, before a byte is read or encrypted; **(2)** the client encrypts against that id and `PUT /api/files/content?id=<id>&enc=1&key=<base64>` fills it. The wrapped key lands on a row that `create_file` always mints under the *uploader*, so the wrapper is this account's root key even when the destination folder belongs to someone else - no destination check is needed. Cancelling before step 1 creates nothing; a failure during step 2 deletes the half-made row and purges it from trash, so no 0-byte or half-filled row survives |
 | Download `GET /api/files/download` | returns ciphertext | client fetches, decrypts in memory, saves via Blob URL |
 | Preview `GET /api/files/preview` with `Range`, `nosniff`, `sandbox` | server cannot render or slice plaintext it does not have | **client-side preview:** download, decrypt, render from a Blob; for video/audio, decrypt chunk ranges client-side later. Until that lands (phase 2) the server answers **400** for an `enc_version > 0` row rather than `image/png` for ciphertext, and the UI never hands such a row to `<img>` or `<iframe>`: text opens in the editor, which decrypts first, and images/video/audio point at Download. Encrypted files are never served inline |
-| Text editor `PUT /api/files/content` | reads and writes plaintext | **text editor round-trip: shipped.** The client decrypts on open - through the download endpoint, because `/api/files/preview` refuses ciphertext - encrypts on save and PUTs `enc=1&key=`; the server treats it as an opaque content update (same quota/mtime logic), and its 409 still guards the bare plaintext save. A file created while encryption is on is written as an empty container straight away, so a new row is never plaintext even briefly (`newFile()`), and a save re-wraps under a fresh file key |
+| Text editor `PUT /api/files/content` | reads and writes plaintext | **text editor round-trip: shipped.** The client decrypts on open - through the download endpoint, because `/api/files/preview` refuses ciphertext - encrypts on save and PUTs `enc=1&key=`; the server treats it as an opaque content update (same quota/mtime logic), and its 409 still guards the bare plaintext save. A file created while encryption is on is written as an empty container straight away, so a new row is never plaintext even briefly (`newFile()`), and a save re-wraps under a fresh file key. Key and bytes are written under a per-row lock, so two saves landing at the same moment cannot interleave into one save's `enc_key` beside another save's ciphertext: that state unwraps happily - the key is still bound to this row and the passphrase is right - and only fails the next time the file is opened, as `decryption failed for chunk 0` |
 | Server-side ZIP `POST/GET /api/files/zip` | cannot zip plaintext it lacks | **client-side ZIP** for encrypted selections (JSZip-style, worker-based); keep server ZIP for plaintext files. DECISION 8 |
 | WebDAV `GET`/`PUT`/`PROPFIND` | desktop clients do not encrypt | DECIDED (9): goal stays *flawless WebDAV*, delivered in two steps. Interim (v1): encrypted files are exposed **read-only as ciphertext** (visible, not hidden - the user sees the file exists) and `PUT` onto an `enc_version > 0` row is **rejected after validating the `FXE1` magic** - the server can do that without decrypting. Not blind-reject: a desktop client writing plaintext over a ciphertext row would otherwise destroy the file. The error body names the fix (web UI or sync agent). Target: `fxcloud sync` agent (see phases) makes DAV transparent again |
 | `Content-Type` authority + HTML/SVG sandbox | server cannot know the real type | server's authoritative answer for `enc_version > 0` is `application/octet-stream; nosniff`, attachment disposition, `sandbox` on the response - always. Real types only ever materialize client-side |
@@ -651,7 +651,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **206 checks**. The additions cover the key
+- Testing: the suite now runs **224 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
   `GET /api/keys/<username>` does and does not expose), the encrypted
@@ -660,12 +660,18 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   and one real encrypt -> upload -> download -> decrypt trip driven through
   the HTTP API by the very `fxcrypto.js` the browser loads. A second
   harness runs `fxenc.js` itself - the file that picks every argument and
-  every request body - behind a fake DOM, with a cookie-carrying fetch and
-  no Worker (the documented main-thread fallback), and drives the real
-  browser path end to end: unlock through the pane, `encryptUpload` ->
-  `download` byte for byte, `writeText` -> `readText` with the wrapped key
-  rotating per save, and a new file encrypted before anything can read it.
-  That file is what both of this release's frontend bugs hid in: a
+  every request body - behind a fake DOM and a cookie-carrying fetch, and
+  drives the real browser path end to end: unlock through the pane,
+  `encryptUpload` -> `download` byte for byte, `writeText` -> `readText`
+  with the wrapped key rotating per save, a reopen that goes through a
+  *fresh listing* instead of the object the save handed back, overlapping
+  saves of one row, and a new file encrypted before anything can read it.
+  It runs twice - once with `Worker` undefined, the documented
+  main-thread fallback, and once with a Worker whose message handler is
+  the real `fxworker.js` source, cloned on both hops the way a browser
+  serialises them: that is the path a browser tab always takes, and
+  nothing else in the suite could see it. That module is what both of
+  this release's frontend bugs hid in: a
   scrambled `encryptBytes(plain, id, fileKey)` died with "expected a
   256-bit file key" on every upload while the suite stayed green, because
   the suite reached encryption through `fxtool.js`, which calls the same
@@ -676,7 +682,13 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   every frontend call site is checked against the signature it calls - an
   argument dropped on the way parses perfectly and surfaces only as a 400
   in a user's browser, which is how the encryption setup answered 400 for
-  every user of the previous release. The setup dialog's wiring is pinned
+  every user of the previous release. The save path is pinned the same
+  way, for the same reason - nothing on the wire shows it: a save refreshes
+  the folder before it checks whether that file is still open in the
+  editor. The other order skips the refresh whenever the lightbox closes
+  during the round trip, and every row then keeps the previous wrapped key
+  - which still unwraps, so the next open fails much further down, as
+  `decryption failed for chunk 0`. The setup dialog's wiring is pinned
   as well: the pre-selected default of section 5.7, the alternative beside
   it, and the `/api/login` re-check it runs from inside an existing
   session.

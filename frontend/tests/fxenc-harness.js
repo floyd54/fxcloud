@@ -9,14 +9,23 @@
  * id, fileKey)` scrambled one, so every upload died with "expected a 256-bit
  * file key" while the whole suite stayed green.
  *
- * So this harness loads the *real* fxenc.js behind a fake DOM, a fetch that
- * prefixes the base URL and carries the session cookie, and without a Worker
- * (the documented main-thread fallback), then drives it against a live
- * instance exactly as a browser tab would:
+ * So this harness loads the *real* fxenc.js behind a fake DOM and a fetch
+ * that prefixes the base URL and carries the session cookie, then drives it
+ * against a live instance exactly as a browser tab would:
  *
  *   unlock through the pane  -> encryptUpload -> download -> bytes identical
  *   writeText -> readText    -> text identical, wrapped key rotated per save
+ *   reopening                -> through a fresh listing, not a saved object
+ *   overlapping saves        -> never a row whose key and bytes disagree
  *   a brand new file         -> encrypted from its first second
+ *
+ * It runs twice, because those are two different paths. By default `Worker`
+ * is undefined here, so every whole-file operation takes the documented
+ * main-thread fallback. With FXENC_WORKER=1 a Worker is installed whose
+ * message handler *is* the real fxworker.js source, cloned on both hops the
+ * way a browser serialises them - that is the path a browser tab always
+ * takes, and nothing else in the suite could see it. Fixture rows carry the
+ * mode in their name so both runs can share one instance.
  *
  * Usage: fxenc-harness.js <base-url> <cookie-header> <passphrase> [user]
  *
@@ -167,6 +176,66 @@ globalThis.fetch = function (input, init) {
 globalThis.hashwasm = require(path.join(ASSETS, "hashwasm-argon2.js"));
 globalThis.FXCrypto = require(path.join(ASSETS, "fxcrypto.js"));
 
+// ---------------------------------------------------------------------------
+// The other half of the path: the real fxworker.js
+//
+// A browser tab always has a Worker, so fxenc.js hands every whole-file
+// operation to fxworker.js and the page never runs those itself. Node has no
+// global `Worker`, which meant this harness quietly tested only the fallback
+// - a bug that lives on the cloned hop could stay green here forever.
+//
+// With FXENC_WORKER=1 this installs a Worker whose message handler *is* the
+// real fxworker.js source, wired to the same `self`/`importScripts` globals a
+// browser gives it, and both hops are structured clones exactly as the
+// browser serialises them. Counted so the run can prove which path it took.
+// ---------------------------------------------------------------------------
+
+const fs = require("fs");
+const USE_WORKER = process.env.FXENC_WORKER === "1";
+let workerMessages = 0;
+// The suite runs this harness once per crypto path against one instance, so
+// fixture rows carry the mode in their name and the second run cannot collide
+// with the files the first one left behind.
+const TAG = USE_WORKER ? "worker" : "page";
+
+if (USE_WORKER) {
+  const workerSource = fs.readFileSync(path.join(ASSETS, "fxworker.js"), "utf8");
+
+  globalThis.Worker = class FakeWorker {
+    constructor() {
+      this.onmessage = null;
+      this.onerror = null;
+      const page = this;
+      const workerGlobal = {
+        postMessage: function (data) {
+          const cloned = structuredClone(data);
+          queueMicrotask(() => {
+            if (typeof page.onmessage === "function") page.onmessage({ data: cloned });
+          });
+        },
+      };
+      const importScripts = function () {
+        for (const p of arguments) {
+          require(path.join(ASSETS, p.replace("/assets/", "")));
+        }
+      };
+      new Function("self", "importScripts", workerSource)(workerGlobal, importScripts);
+      this.handle = workerGlobal.onmessage;
+      if (typeof this.handle !== "function") {
+        throw new Error("fxworker.js never assigned self.onmessage");
+      }
+    }
+    postMessage(msg) {
+      workerMessages += 1;
+      const cloned = structuredClone(msg);
+      queueMicrotask(() => {
+        if (this.handle) this.handle({ data: cloned });
+      });
+    }
+    terminate() {}
+  };
+}
+
 // The module under test: an IIFE that publishes globalThis.FXEnc.
 require(path.join(ASSETS, "fxenc.js"));
 const FXEnc = globalThis.FXEnc;
@@ -262,13 +331,18 @@ async function main() {
     FXEnc.unlocked() === true,
     "status=" + FXEnc.status() + " / " + element("enc-status").textContent
   );
+  expect(
+    "whole-file crypto runs on " + (USE_WORKER ? "the real fxworker.js" : "the page fallback"),
+    USE_WORKER ? workerMessages > 0 : workerMessages === 0,
+    "messages through the worker=" + workerMessages
+  );
 
   // ---- 3. the two-phase upload the browser really performs ----------------
   const PLAIN = new TextEncoder().encode(
     "fxenc harness payload\n" + "abcdefghij".repeat(410) + "\nend\n"
   );
   const file = {
-    name: "harness.bin",
+    name: `harness-${TAG}.bin`,
     // A copy: encryptUpload may transfer its buffer to the worker.
     arrayBuffer: async function () {
       return PLAIN.slice().buffer;
@@ -277,7 +351,7 @@ async function main() {
 
   let upEntry = null;
   await step("encryptUpload returns the row as the server has it", async () => {
-    upEntry = await FXEnc.encryptUpload(file, null, "harness.bin");
+    upEntry = await FXEnc.encryptUpload(file, null, `harness-${TAG}.bin`);
     if (!upEntry || !upEntry.id) throw new Error("no entry returned");
     if (upEntry.enc_version !== 1) throw new Error("enc_version=" + upEntry.enc_version);
     if (!upEntry.enc_key) throw new Error("no enc_key on the returned entry");
@@ -308,7 +382,7 @@ async function main() {
   let textRow = null;
 
   await step("writeText turns a fresh plaintext row into an encrypted one", async () => {
-    textRow = await createRow("harness-note.md");
+    textRow = await createRow(`harness-note-${TAG}.md`);
     if (textRow.enc_version !== 0) throw new Error("fixture is already encrypted");
     const saved = await FXEnc.writeText(textRow, TEXT1);
     if (saved.enc_version !== 1) throw new Error("enc_version=" + saved.enc_version);
@@ -341,11 +415,56 @@ async function main() {
       rc === 409,
       "status=" + rc
     );
+
+    // The UI never reuses the entry object it saved with: reopening reads a
+    // fresh listing and hands *that* row to readText. So the key that reaches
+    // the decryptor comes from here, and a listing that disagreed with what
+    // the save returned would show up as "decryption failed for chunk 0".
+    await step("reopening through a fresh listing still decrypts", async () => {
+      const listing = JSON.parse(await rawGet("/api/files", false));
+      const row = (listing.entries || []).filter((e) => e.name === `harness-note-${TAG}.md`)[0];
+      if (!row) throw new Error("row missing from the listing");
+      if (row.enc_key !== textRow.enc_key) {
+        throw new Error("listing enc_key differs from the one the save returned");
+      }
+      if (row.enc_version !== 1) throw new Error("listing enc_version=" + row.enc_version);
+      const back = await FXEnc.readText(row);
+      if (back !== TEXT2) throw new Error("got " + JSON.stringify(back.slice(0, 40)));
+    });
+
+    // Overlapping saves of one row. `save_content` writes the row's key and
+    // then its bytes, so without `FileService::begin_replace` two saves that
+    // interleave leave one save's `enc_key` next to another save's ciphertext
+    // - the row then unwraps fine and fails only when the file is next
+    // opened, as "decryption failed for chunk 0". Several rounds, because
+    // that tear needs the interleaving to actually happen.
+    await step("overlapping saves never pair one key with another's bytes", async () => {
+      const created = await createRow(`harness-race-${TAG}.md`);
+      const first = await FXEnc.writeText(created, "race-base");
+      let checked = 0;
+      for (let round = 0; round < 3; round++) {
+        const writes = [];
+        for (let i = 0; i < 6; i++) {
+          writes.push(FXEnc.writeText(first, "race-" + round + "-" + i));
+        }
+        const results = await Promise.all(writes.map((p) => p.then(() => null, (e) => e)));
+        const rejected = results.filter((e) => e).length;
+        if (rejected) throw new Error(rejected + " of 6 saves were rejected");
+        const listing = JSON.parse(await rawGet("/api/files", false));
+        const row = (listing.entries || []).filter((e) => e.name === `harness-race-${TAG}.md`)[0];
+        const back = await FXEnc.readText(row);
+        if (!/^race-\d+-\d+$/.test(back)) {
+          throw new Error("round " + round + " stored a row that no longer matches its key");
+        }
+        checked += 1;
+      }
+      if (checked !== 3) throw new Error("only " + checked + " rounds checked");
+    });
   }
 
   // ---- 5. the case the user reported: a brand new .md file ---------------
   await step("a newly created file is encrypted before anything reads it", async () => {
-    const created = await createRow("harness-empty.md");
+    const created = await createRow(`harness-empty-${TAG}.md`);
     // This is precisely what app.js newFile() now does when encryption is on.
     const saved = await FXEnc.writeText(created, "");
     if (saved.enc_version !== 1) throw new Error("enc_version=" + saved.enc_version);
@@ -358,7 +477,7 @@ async function main() {
 
   // ---- 6. a plaintext file keeps working the way it always did ------------
   await step("a plaintext row still saves and reads in the clear", async () => {
-    const created = await createRow("harness-plain.txt");
+    const created = await createRow(`harness-plain-${TAG}.txt`);
     const res = await realFetch(BASE + "/api/files/content?id=" + created.id, {
       method: "PUT",
       headers: Object.assign(

@@ -1157,36 +1157,49 @@ fi
 # and every request body on its own. That distinction shipped twice: a lost
 # parameter in jsonCall and a scrambled encryptBytes(plain, id, fileKey),
 # each of which broke the real UI while every check above stayed green. This
-# harness runs that file as a tab would - fake DOM, cookie-carrying fetch,
-# no Worker - against this instance.
+# harness runs that file as a tab would - fake DOM, cookie-carrying fetch -
+# against this instance, over both crypto paths (page and worker, below).
 note "the browser encryption path, end to end (fxenc.js as a tab runs it)"
-HX_LOG=$ROOT/fxenc.log
 HX_COOKIE=$(awk '$6 == "fxcloud_session" { print $6 "=" $7 }' "$JA" | tail -1)
 # The passphrase-change test above rewrapped alice's record, so the tab now
 # opens with that passphrase rather than with the one setup used.
 HX_PASS='a-brand-new-pass'
-HX_OK=0
-HX_FAIL=0
-"$NODE" "$REPO/frontend/tests/fxenc-harness.js" "$BASE" "$HX_COOKIE" "$HX_PASS" alice \
-  > "$HX_LOG" 2>&1
-HX_RC=$?
-while IFS= read -r HX_LINE; do
-  case "$HX_LINE" in
-    OK\ *)
-      ok "fxenc: ${HX_LINE#OK   }"
-      HX_OK=$((HX_OK + 1))
-      ;;
-    FAIL\ *)
-      bad "fxenc: ${HX_LINE#FAIL }"
-      HX_FAIL=$((HX_FAIL + 1))
-      ;;
-  esac
-done < "$HX_LOG"
-# A harness that died before printing anything must not read as a pass.
-if [ "$HX_RC" -ne 0 ] && [ "$HX_FAIL" -eq 0 ]; then
-  bad "fxenc harness exited $HX_RC: $(tail -3 "$HX_LOG" | tr '\n' ' ')"
-fi
-[ "$HX_OK" -gt 0 ] || bad "fxenc harness reported no checks at all"
+# Twice, because a browser tab always has a Worker: once with `Worker`
+# undefined, which is the documented fallback an engine without one takes,
+# and once with a Worker whose message handler is the real fxworker.js -
+# that is the path every whole-file operation actually travels in a browser,
+# and the cloned hop is invisible to everything else in this file. Fixture
+# rows carry the mode in their name, so the two runs do not collide.
+for HX_MODE in page worker; do
+  HX_LOG=$ROOT/fxenc-$HX_MODE.log
+  if [ "$HX_MODE" = "worker" ]; then
+    FXENC_WORKER=1 "$NODE" "$REPO/frontend/tests/fxenc-harness.js" \
+      "$BASE" "$HX_COOKIE" "$HX_PASS" alice > "$HX_LOG" 2>&1
+  else
+    "$NODE" "$REPO/frontend/tests/fxenc-harness.js" \
+      "$BASE" "$HX_COOKIE" "$HX_PASS" alice > "$HX_LOG" 2>&1
+  fi
+  HX_RC=$?
+  HX_OK=0
+  HX_FAIL=0
+  while IFS= read -r HX_LINE; do
+    case "$HX_LINE" in
+      OK\ *)
+        ok "fxenc[$HX_MODE]: ${HX_LINE#OK   }"
+        HX_OK=$((HX_OK + 1))
+        ;;
+      FAIL\ *)
+        bad "fxenc[$HX_MODE]: ${HX_LINE#FAIL }"
+        HX_FAIL=$((HX_FAIL + 1))
+        ;;
+    esac
+  done < "$HX_LOG"
+  # A harness that died before printing anything must not read as a pass.
+  if [ "$HX_RC" -ne 0 ] && [ "$HX_FAIL" -eq 0 ]; then
+    bad "fxenc[$HX_MODE] harness exited $HX_RC: $(tail -3 "$HX_LOG" | tr '\n' ' ')"
+  fi
+  [ "$HX_OK" -gt 0 ] || bad "fxenc[$HX_MODE] harness reported no checks at all"
+done
 
 note "frontend wiring"
 UI=$REPO/frontend/assets/app.js
@@ -1289,6 +1302,20 @@ grep -q 'FXEnc.readText(entry)' "$UI" && grep -q 'FXEnc.writeText(entry, content
 grep -q 'FXEnc.writeText(entry, "")' "$UI" \
   && ok "a file created while encryption is on is encrypted immediately" \
   || bad "newFile() creates its file without encrypting it"
+
+# A save changes the row on the server, and the folder behind the lightbox is
+# the second place that holds a key for it: newFile() hands the editor the
+# *save response*, not one of the rendered rows. So the refresh has to happen
+# before the "is this still the open file?" check - put it behind that and
+# closing the lightbox during the round trip skips it, every row keeps the
+# previous wrapped key, and the next open unwraps that key happily and fails
+# much further down, as "decryption failed for chunk 0".
+SAVE_BODY=$(awk '/^  function saveEditor\(\)/,/^  }$/' "$UI")
+REFRESH=$(printf '%s\n' "$SAVE_BODY" | grep -n 'openFolder(currentParent);' | cut -d: -f1 | head -1)
+SAVE_GUARD=$(printf '%s\n' "$SAVE_BODY" | grep -n 'if (editorEntry !== entry) return;' | cut -d: -f1 | head -1)
+[ -n "$REFRESH" ] && [ -n "$SAVE_GUARD" ] && [ "$REFRESH" -lt "$SAVE_GUARD" ] \
+  && ok "a save refreshes the folder before it drops the response" \
+  || bad "saveEditor() refreshes the listing only while that file is still open"
 
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true

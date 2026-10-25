@@ -959,22 +959,28 @@
           }).then((r) => r.json());
     save
       .then((res) => {
-        if (editorEntry !== entry) return;
+        // The row changed on the server, whatever the editor does next - so
+        // this runs before the "still this file?" check below. An encrypted
+        // save re-wraps the row under a fresh file key (5.4), and the object
+        // in hand is not necessarily one of the rendered rows (newFile() hands
+        // the editor the *save response*), which means the folder behind the
+        // lightbox is the only other place holding a key for this row. Skip
+        // this refresh - it used to sit behind the check, so closing the
+        // lightbox during the round trip skipped it too - and every row keeps
+        // the previous key. That key still unwraps, so the next open fails
+        // later and much more confusingly: "decryption failed for chunk 0".
+        if (res.entry) {
+          entry.size = res.entry.size;
+          entry.modified_at = res.entry.modified_at;
+          if (res.entry.enc_key) entry.enc_key = res.entry.enc_key;
+          openFolder(currentParent);
+        }
+        if (editorEntry !== entry) return; // another file opened meanwhile
         editorBaseline = content;
         setEditorStatus("saved");
         window.setTimeout(() => {
           if (editorStatus.textContent === "saved") setEditorStatus("");
         }, 2000);
-        if (res.entry) {
-          // The listing behind the dialog shows the new size/modified_at.
-          entry.size = res.entry.size;
-          entry.modified_at = res.entry.modified_at;
-          // An encrypted save re-wraps under a fresh file key (5.4), so the
-          // row's stored key changes; keep our copy in step or the next
-          // download would unwrap with a key the row no longer carries.
-          if (res.entry.enc_key) entry.enc_key = res.entry.enc_key;
-          openFolder(currentParent);
-        }
         updateEditorMeta();
       })
       .catch((e) => setEditorStatus(`save failed: ${e.message}`));
