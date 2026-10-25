@@ -287,6 +287,19 @@ sqlite3 "$DATA/fxcloud.db" "UPDATE users SET is_active=1 WHERE username='bob';" 
   || sqlite3 "$DATA/fxcloud.db" ".tables"
 req POST /api/login "$JB" '{"username":"bob","password":"correct-horse"}'; echo
 
+# The setup dialog's pre-selected default (DECISION 3) proves the typed
+# string against /api/login *while the user is already signed in*, so the
+# endpoint has to keep answering in that state: 401 is the dialog's verdict
+# on a typo, 200 issues a replacement cookie that must still authenticate.
+note "login re-check from inside an existing session"
+RC=$(reqcode POST /api/login "$JA" '{"username":"alice","password":"wrong-password"}')
+[ "$RC" = "401" ] && ok "a wrong login password answers 401" || bad "expected 401, got $RC"
+RC=$(reqcode POST /api/login "$JA" '{"username":"alice","password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "the re-check answers 200 while already signed in" || bad "expected 200, got $RC"
+RC=$(reqcode GET /api/me "$JA")
+[ "$RC" = "200" ] && ok "the replacement session cookie still authenticates" \
+  || bad "session dead after the re-check: $RC"
+
 note "alice shares [a.txt, docs] with bob (read-only) in one call"
 OUT=$(req POST /api/shares/batch "$JA" "{\"file_ids\":[$A,$DOC],\"username\":\"bob\",\"permissions\":1}")
 echo "$OUT"
@@ -1201,6 +1214,30 @@ if perl "$REPO/tests/check-call-arity.pl" \
 else
   bad "frontend arity: $(tr '\n' ' ' < "$ROOT/arity.log")"
 fi
+
+# ENCRYPTION.md 5.7 makes "reuse login password" the pre-selected default in
+# the setup UI. No parser can notice a control that was never written, so the
+# choice itself is asserted here - as is the check that keeps it honest.
+ENC_HTML="$REPO/frontend/index.html"
+ENC_JS="$REPO/frontend/assets/fxenc.js"
+grep -q 'id="enc-use-login"[^>]*checked' "$ENC_HTML" \
+  && ok "setup offers reuse-login-password, pre-selected (DECISION 3)" \
+  || bad "setup pane is missing the pre-selected login-password option"
+grep -q 'id="enc-use-pass"' "$ENC_HTML" \
+  && ok "a separate passphrase stays one click away" \
+  || bad "setup pane offers no separate passphrase"
+grep -q 'await verifyLogin(pass)' "$ENC_JS" \
+  && ok "the reused login password is verified before any key is created" \
+  || bad "fxenc.js does not verify the reused login password"
+grep -q 'res.status === 401) return false' "$ENC_JS" \
+  && ok "a wrong password is read as a verdict, not as a dead session" \
+  || bad "verifyLogin would route a typo through the 401 redirect"
+MISSING_IDS=""
+for ID in $(grep -oE '\$\("enc-[a-z0-9-]+"\)' "$ENC_JS" | sed 's/\$("//; s/")//' | sort -u); do
+  grep -q "id=\"$ID\"" "$ENC_HTML" || MISSING_IDS="$MISSING_IDS $ID"
+done
+[ -z "$MISSING_IDS" ] && ok "every element fxenc.js reaches for exists in index.html" \
+  || bad "ids used by fxenc.js but absent from index.html:$MISSING_IDS"
 
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true

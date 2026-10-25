@@ -298,15 +298,60 @@
     emit();
   }
 
+  /**
+   * Prove that the typed secret really is the account's login password.
+   *
+   * The client has no way to know that string, and a typo in the default
+   * would not surface until a later tab tried to unlock - by then the only
+   * way back in is the recovery key. So the one time the default is chosen,
+   * the string is checked against the account first.
+   *
+   * Deliberately not `http()`: a wrong password answers 401 and `http()`
+   * treats every 401 as a dead session, redirecting to /login - which would
+   * throw the user out of this dialog over a mere typo. Here a 401 is the
+   * verdict, not a session failure.
+   */
+  async function verifyLogin(password) {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: state.username, password: password }),
+    });
+    if (res.ok) return true;
+    if (res.status === 401) return false;
+    let msg = "Could not check the login password (" + res.status + ")";
+    try {
+      const b = await res.json();
+      if (b && b.error) msg = b.error;
+    } catch (_) {
+      /* not JSON; keep the status line */
+    }
+    throw new Error(msg);
+  }
+
   async function runSetup() {
+    const reuseLogin = $("enc-use-login").checked;
     const pass = $("enc-setup-pass").value;
     const pass2 = $("enc-setup-pass2").value;
-    if (!pass) return setStatus("Choose a storage passphrase.", true);
-    if (pass !== pass2) return setStatus("The two passphrases do not match.", true);
+    if (!pass)
+      return setStatus(
+        reuseLogin ? "Enter your fxcloud login password." : "Choose a storage passphrase.",
+        true
+      );
+    if (!reuseLogin && pass !== pass2)
+      return setStatus("The two passphrases do not match.", true);
 
-    setStatus("Deriving keys (Argon2id, 64 MiB)…");
     setBusy(true);
     try {
+      if (reuseLogin) {
+        setStatus("Checking your login password…");
+        if (!(await verifyLogin(pass))) {
+          setStatus("That is not your fxcloud login password.", true);
+          return;
+        }
+      }
+
+      setStatus("Deriving keys (Argon2id, 64 MiB)…");
       const account = await FX().generateAccount(pass, derive);
       let body;
       try {
@@ -581,22 +626,60 @@
         if (btn && !btn.disabled) btn.click();
       });
     };
+    enterTo("enc-setup-pass", "enc-setup-go");
     enterTo("enc-setup-pass2", "enc-setup-go");
     enterTo("enc-unlock-pass", "enc-unlock-go");
     enterTo("enc-rcv-pass2", "enc-rcv-go");
 
-    // The setup button only arms once both passphrase fields agree.
+    // The setup button arms on whichever fields are actually showing: one in
+    // the default login mode, both once a separate passphrase is chosen.
     const armSetup = () => {
       const go = $("enc-setup-go");
       if (!go) return;
+      const reuseLogin = $("enc-use-login").checked;
       const pass = $("enc-setup-pass").value;
-      go.disabled = !pass || pass !== $("enc-setup-pass2").value;
+      go.disabled = !pass || (!reuseLogin && pass !== $("enc-setup-pass2").value);
     };
+
+    // DECISION 3: "reuse login password" is pre-selected, the separate
+    // passphrase one click away. The choice changes more than a label - the
+    // default mode sends the string to the server once for verification,
+    // while a separate passphrase never leaves this browser - so the wording
+    // and the autofill hint have to follow it.
+    const syncSecretMode = () => {
+      const reuseLogin = $("enc-use-login").checked;
+      $("enc-setup-pass-label").textContent = reuseLogin
+        ? "Your fxcloud login password"
+        : "Storage passphrase";
+      $("enc-setup-pass").setAttribute(
+        "autocomplete",
+        reuseLogin ? "current-password" : "new-password"
+      );
+      $("enc-setup-row2").style.display = reuseLogin ? "none" : "";
+      $("enc-setup-hint").textContent = reuseLogin
+        ? "Signing in already makes the server spend a 64 MiB Argon2id hash, " +
+          "so one strong password can cover both. Your browser can fill this " +
+          "from the password you signed in with, and it is checked against " +
+          "your account before any key is created."
+        : "A separate passphrase is never sent anywhere; only the 64 MiB " +
+          "Argon2id derivation runs here. It is one more secret to keep: " +
+          "without it your files cannot be opened again.";
+      for (const id of ["enc-use-login", "enc-use-pass"]) {
+        const el = $(id);
+        const wrap = el && el.closest ? el.closest(".enc-option") : null;
+        if (wrap) wrap.classList.toggle("is-on", el.checked);
+      }
+      armSetup();
+    };
+    for (const id of ["enc-use-login", "enc-use-pass"]) {
+      const el = $(id);
+      if (el) el.addEventListener("change", syncSecretMode);
+    }
+    syncSecretMode();
     for (const id of ["enc-setup-pass", "enc-setup-pass2"]) {
       const el = $(id);
       if (el) el.addEventListener("input", armSetup);
     }
-    armSetup();
     armSaved();
 
     const ack = $("enc-saved-ack");

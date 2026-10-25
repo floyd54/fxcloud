@@ -147,23 +147,27 @@
           and no readable content for them - it can still see file names,
           sizes and sharing, because those are what the storage service needs.
         </p>
-        <p class="enc-lead">
-          The passphrase is never sent anywhere. Only a 64&nbsp;MiB Argon2id
-          derivation runs here, which takes a moment.
-        </p>
-        <div class="field">
-          <label for="enc-setup-pass">Storage passphrase</label>
-          <input type="password" id="enc-setup-pass" autocomplete="new-password" />
+        <!-- ENCRYPTION.md 5.7 / DECISION 3: reusing the login password is the
+             default, and the separate passphrase stays one click away. -->
+        <div class="enc-choice">
+          <label class="enc-option" for="enc-use-login">
+            <input type="radio" name="enc-secret" id="enc-use-login" value="login" checked />
+            <span>Use my fxcloud login password</span>
+          </label>
+          <label class="enc-option" for="enc-use-pass">
+            <input type="radio" name="enc-secret" id="enc-use-pass" value="pass" />
+            <span>Choose a separate passphrase</span>
+          </label>
         </div>
         <div class="field">
+          <label for="enc-setup-pass" id="enc-setup-pass-label">Your fxcloud login password</label>
+          <input type="password" id="enc-setup-pass" autocomplete="current-password" />
+        </div>
+        <div class="field" id="enc-setup-row2" style="display:none">
           <label for="enc-setup-pass2">Repeat passphrase</label>
           <input type="password" id="enc-setup-pass2" autocomplete="new-password" />
         </div>
-        <p class="hint">
-          Reusing your fxcloud login password is the recommended default: the
-          server already enforces the same KDF cost for login, so one strong
-          password can cover both.
-        </p>
+        <p class="enc-lead" id="enc-setup-hint"></p>
         <div class="modal-footer">
           <button class="btn secondary" id="enc-setup-cancel" type="button">Cancel</button>
           <button class="btn" id="enc-setup-go" type="button" disabled>Continue</button>

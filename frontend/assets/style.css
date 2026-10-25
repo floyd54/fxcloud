@@ -631,6 +631,27 @@ tr.previewable { cursor: pointer; }
 
 .enc-modal { width: min(520px, calc(100vw - 32px)); }
 .enc-pane { display: block; }
+
+/* DECISION 3: the two storage-secret choices, login pre-selected. */
+.enc-choice { margin-bottom: 16px; }
+.enc-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.enc-option + .enc-option { margin-top: 8px; }
+.enc-option input { margin: 0; accent-color: var(--accent); }
+.enc-option.is-on {
+  border-color: var(--accent);
+  background: rgba(0, 130, 201, 0.07);
+}
 .enc-lead {
   margin: 0 0 12px;
   font-size: 13.5px;
