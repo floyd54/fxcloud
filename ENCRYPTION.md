@@ -647,7 +647,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **183 checks**. The additions cover the key
+- Testing: the suite now runs **192 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
   `GET /api/keys/<username>` does and does not expose), the encrypted
@@ -656,8 +656,15 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   and one real encrypt -> upload -> download -> decrypt trip driven through
   the HTTP API by the very `fxcrypto.js` the browser loads. The crypto
   itself has its own round-trip harness (DECISION 10: 31 checks over the
-  same WebCrypto code paths), and every frontend source file gets a parse
-  check so a syntax error cannot sit unnoticed until someone unlocks.
+  same WebCrypto code paths), every frontend source file gets a parse
+  check so a syntax error cannot sit unnoticed until someone unlocks, and
+  every frontend call site is checked against the signature it calls - an
+  argument dropped on the way parses perfectly and surfaces only as a 400
+  in a user's browser, which is how the encryption setup answered 400 for
+  every user of the previous release. The setup dialog's wiring is pinned
+  as well: the pre-selected default of section 5.7, the alternative beside
+  it, and the `/api/login` re-check it runs from inside an existing
+  session.
 
 ---
 
