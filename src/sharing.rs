@@ -66,3 +66,80 @@ pub fn perm_names(mask: i64) -> Vec<&'static str> {
     }
     names
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_read_only_share_cannot_write() {
+        assert!(grants(PERM_READ, PERM_READ));
+        assert!(!grants(PERM_READ, PERM_UPDATE));
+        assert!(!grants(PERM_READ, PERM_CREATE));
+        assert!(!grants(PERM_READ, PERM_DELETE));
+        assert!(!grants(PERM_READ, PERM_SHARE));
+    }
+
+    #[test]
+    fn all_permissions_cover_every_bit() {
+        assert_eq!(
+            PERM_ALL,
+            PERM_READ | PERM_UPDATE | PERM_CREATE | PERM_DELETE | PERM_SHARE
+        );
+        for req in [PERM_READ, PERM_UPDATE, PERM_CREATE, PERM_DELETE, PERM_SHARE] {
+            assert!(grants(PERM_ALL, req), "PERM_ALL must grant {req}");
+        }
+    }
+
+    #[test]
+    fn a_combined_requirement_needs_every_bit_of_it() {
+        let read_write = PERM_READ | PERM_UPDATE;
+        assert!(grants(read_write, read_write));
+        assert!(!grants(PERM_READ, read_write));
+        assert!(!grants(PERM_UPDATE, read_write));
+        assert!(grants(PERM_ALL, read_write));
+    }
+
+    #[test]
+    fn an_empty_mask_grants_nothing() {
+        assert!(!grants(0, PERM_READ));
+        assert!(!grants(0, PERM_UPDATE | PERM_DELETE));
+        // `required == 0` is vacuously satisfied, but no caller asks for it;
+        // recording it keeps the mask arithmetic honest rather than special.
+        assert!(grants(0, 0));
+    }
+
+    #[test]
+    fn normalize_drops_bits_that_are_not_permissions() {
+        assert_eq!(normalize(PERM_ALL | 0b1000_0000), PERM_ALL);
+        assert_eq!(normalize(PERM_READ | PERM_DELETE), PERM_READ | PERM_DELETE);
+        // A negative mask has every bit set, including bits that do not exist.
+        assert_eq!(normalize(-1), PERM_ALL);
+        assert_eq!(normalize(0), 0);
+    }
+
+    #[test]
+    fn perm_names_lists_exactly_what_is_granted() {
+        assert_eq!(perm_names(0), Vec::<&str>::new());
+        assert_eq!(perm_names(PERM_READ), vec!["read"]);
+        assert_eq!(
+            perm_names(PERM_DELETE | PERM_SHARE),
+            vec!["delete", "share"]
+        );
+        assert_eq!(perm_names(PERM_ALL).len(), 5);
+    }
+
+    #[test]
+    fn a_resolved_grant_delegates_to_its_mask() {
+        let read_only = ShareAccess {
+            share_id: 1,
+            source_id: 2,
+            owner_id: 3,
+            grantee_id: 4,
+            permissions: PERM_READ,
+        };
+        assert!(read_only.can(PERM_READ));
+        assert!(!read_only.can(PERM_UPDATE));
+        assert!(!read_only.can(PERM_SHARE));
+    }
+}

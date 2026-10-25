@@ -243,3 +243,87 @@ impl Db {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn params(m: u64, t: u64, p: u64) -> Value {
+        json!({"kdf": "argon2id", "m": m, "t": t, "p": p})
+    }
+
+    #[test]
+    fn the_floor_exactly_is_accepted_and_stronger_is_too() {
+        assert!(enforce_kdf_floor(&params(
+            LOGIN_KDF_M_KIB.into(),
+            LOGIN_KDF_T.into(),
+            LOGIN_KDF_P.into()
+        ))
+        .is_ok());
+        assert!(enforce_kdf_floor(&params(131072, 4, 2)).is_ok());
+    }
+
+    #[test]
+    fn every_number_below_the_floor_is_refused() {
+        let too_weak = [(65535, 3, 1), (65536, 2, 1), (65536, 3, 0)];
+        for (m, t, p) in too_weak {
+            let claimed = params(m, t, p);
+            assert!(
+                enforce_kdf_floor(&claimed).is_err(),
+                "accepted m={m} t={t} p={p}"
+            );
+        }
+    }
+
+    #[test]
+    fn another_hash_function_is_refused_even_with_enough_memory() {
+        for kdf in ["argon2i", "argon2d", "scrypt", ""] {
+            let claimed = json!({"kdf": kdf, "m": 65536, "t": 3, "p": 1});
+            assert!(enforce_kdf_floor(&claimed).is_err(), "accepted kdf={kdf:?}");
+        }
+    }
+
+    #[test]
+    fn shapes_that_are_not_a_parameter_object_are_refused() {
+        assert!(enforce_kdf_floor(&json!("65536")).is_err());
+        assert!(enforce_kdf_floor(&json!(null)).is_err());
+        assert!(enforce_kdf_floor(&json!([])).is_err());
+        // A missing number is an absent claim, not a defaulted one.
+        assert!(enforce_kdf_floor(&json!({"kdf": "argon2id", "m": 65536, "t": 3})).is_err());
+        // Nor is a number wearing the wrong JSON type.
+        assert!(
+            enforce_kdf_floor(&json!({"kdf": "argon2id", "m": "65536", "t": 3, "p": 1})).is_err()
+        );
+    }
+
+    #[test]
+    fn a_float_from_a_javascript_client_is_still_a_number() {
+        // JavaScript hands integers back as JSON numbers; a client that did
+        // the arithmetic in floating point must not be refused over a decimal
+        // point. This is the fallback path of `num`.
+        assert!(
+            enforce_kdf_floor(&json!({"kdf": "argon2id", "m": 65536.0, "t": 3.0, "p": 1.0}))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_rejection_names_the_numbers_it_did_not_like() {
+        let err = enforce_kdf_floor(&params(1024, 1, 1)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("m=1024"), "got: {msg}");
+        assert!(msg.contains("t=1"), "got: {msg}");
+        assert!(msg.contains(KDF_FLOOR_MESSAGE), "got: {msg}");
+    }
+
+    #[test]
+    fn the_floor_is_the_same_cost_as_the_login_hash() {
+        // fxcrypto.js carries these three numbers as KDF_FLOOR. If one side
+        // moves without the other, a passphrase could open key material that
+        // the server's own login hash would have refused as too weak.
+        assert_eq!(LOGIN_KDF_M_KIB, 65536);
+        assert_eq!(LOGIN_KDF_T, 3);
+        assert_eq!(LOGIN_KDF_P, 1);
+    }
+}

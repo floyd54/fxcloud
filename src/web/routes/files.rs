@@ -1124,3 +1124,70 @@ fn encode_rfc5987(input: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::encode_rfc5987;
+
+    /// Inverse of [`encode_rfc5987`], used to prove the encoding round-trips
+    /// rather than to compare it against another encoder that could share the
+    /// same mistake.
+    fn decode(input: &str) -> Vec<u8> {
+        let raw = input.as_bytes();
+        let mut out = Vec::with_capacity(raw.len());
+        let mut i = 0;
+        while i < raw.len() {
+            if raw[i] == b'%' && i + 2 < raw.len() {
+                let hex = std::str::from_utf8(&raw[i + 1..i + 3]).expect("hex digits");
+                out.push(u8::from_str_radix(hex, 16).expect("valid hex escape"));
+                i += 3;
+            } else {
+                out.push(raw[i]);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn unreserved_characters_stay_as_they_are() {
+        assert_eq!(encode_rfc5987("abcXYZ019-._~"), "abcXYZ019-._~");
+        assert_eq!(encode_rfc5987(""), "");
+    }
+
+    #[test]
+    fn everything_else_is_percent_encoded() {
+        // Space must not survive as a literal or become '+', which a browser
+        // would read as a space in some contexts and as '+' in others.
+        assert_eq!(encode_rfc5987("two words.txt"), "two%20words.txt");
+        assert_eq!(encode_rfc5987("a+b"), "a%2Bb");
+        assert_eq!(encode_rfc5987("a&b=c"), "a%26b%3Dc");
+        // An already-encoded name must be re-encoded, not silently accepted.
+        assert_eq!(encode_rfc5987("100%"), "100%25");
+        assert_eq!(encode_rfc5987("#anchor"), "%23anchor");
+        assert_eq!(encode_rfc5987("\u{00fc}"), "%C3%BC");
+    }
+
+    #[test]
+    fn non_ascii_is_encoded_one_utf8_byte_at_a_time() {
+        assert_eq!(encode_rfc5987("\u{00e9}"), "%C3%A9");
+        assert_eq!(encode_rfc5987("\u{65e5}\u{672c}"), "%E6%97%A5%E6%9C%AC");
+        assert_eq!(encode_rfc5987("\u{1f512}"), "%F0%9F%94%92");
+    }
+
+    #[test]
+    fn the_encoding_round_trips_to_the_original_bytes() {
+        for original in [
+            "plain.txt",
+            "two words.tar.gz",
+            "\u{dc}n\u{ef}c\u{f6}d\u{e9} (1) [final].txt",
+            "100% \u{65e5}\u{672c}\u{8a9e}/v2 + &.csv",
+        ] {
+            assert_eq!(
+                decode(&encode_rfc5987(original)),
+                original.as_bytes(),
+                "{original}"
+            );
+        }
+    }
+}

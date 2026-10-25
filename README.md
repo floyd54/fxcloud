@@ -169,6 +169,28 @@ rclone lsd remote:
 
 Supported methods and protocol notes: [API.md](API.md#webdav).
 
+## Testing
+
+Two layers, both runnable straight after a checkout:
+
+```bash
+cargo test          # unit tests: permissions, quota, KDF floor, filename and
+                    # RFC 5987 encoding, session-cookie parsing
+./tests/suite.sh    # integration: 183 checks against a throwaway instance
+```
+
+`tests/suite.sh` starts its own fxcloud on a loopback port with a temporary
+data directory, drives it over HTTP, WebDAV and the encryption endpoints, and
+tears it down again - including on an early exit. It runs `cargo build` first,
+because it asserts that the served version badge matches `Cargo.toml`, and a
+stale binary would otherwise be a red check rather than a quiet pass. It needs
+`curl`, `perl`, `sqlite3` and `node`; the JavaScript syntax checks use `qjsc`
+when it is installed and `node --check` otherwise. It never reads your own
+configuration or data.
+
+CI runs both layers on every push and pull request
+(`.github/workflows/test.yml`).
+
 ## More documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - code layout, storage format,

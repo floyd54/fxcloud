@@ -1187,3 +1187,207 @@ fn map_constraint(e: rusqlite::Error, name: &str) -> AppError {
         other => other.into(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+
+    /// A throwaway database with the real migrations applied.
+    ///
+    /// File-backed rather than `:memory:` on purpose: `Db` pools eight
+    /// connections and SQLite hands every `:memory:` connection its own
+    /// private database, so seven of them would come up empty.
+    struct Scratch {
+        db: Db,
+        dir: PathBuf,
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn scratch() -> Scratch {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("fxcloud-unit-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = Db::open(&dir.join("fxcloud.db")).expect("migrations must apply to an empty db");
+        Scratch { db, dir }
+    }
+
+    fn user_with_quota(conn: &Connection, quota: i64) -> i64 {
+        conn.execute(
+            "INSERT INTO users (username, password_hash, display_name, created_at, quota_bytes)
+             VALUES ('u', 'hash', 'u', '2026-01-01T00:00:00Z', ?1)",
+            params![quota],
+        )
+        .expect("insert user");
+        conn.query_row("SELECT id FROM users WHERE username = 'u'", [], |r| {
+            r.get(0)
+        })
+        .expect("user id")
+    }
+
+    fn add_file(conn: &Connection, owner: i64, name: &str, size: i64, is_dir: bool) {
+        conn.execute(
+            "INSERT INTO files (owner_id, name, is_dir, size, created_at, modified_at)
+             VALUES (?1, ?2, ?3, ?4, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            params![owner, name, is_dir, size],
+        )
+        .expect("insert file");
+    }
+
+    #[test]
+    fn the_quota_holds_at_the_exact_byte() {
+        let s = scratch();
+        let conn = s.db.pool.get().unwrap();
+        let owner = user_with_quota(&conn, 100);
+
+        assert!(
+            ensure_quota(&conn, owner, 100).is_ok(),
+            "exactly the quota fits"
+        );
+        assert!(
+            ensure_quota(&conn, owner, 101).is_err(),
+            "one byte over does not"
+        );
+
+        add_file(&conn, owner, "a", 60, false);
+        assert!(ensure_quota(&conn, owner, 40).is_ok(), "60 + 40 == 100");
+        assert!(ensure_quota(&conn, owner, 41).is_err(), "60 + 41 > 100");
+    }
+
+    #[test]
+    fn trash_keeps_billing_until_it_is_purged() {
+        // Deleting frees no disk until the sweep runs, so the bytes stay on
+        // the owner's account - otherwise a full quota would be one click away.
+        let s = scratch();
+        let conn = s.db.pool.get().unwrap();
+        let owner = user_with_quota(&conn, 100);
+        add_file(&conn, owner, "keep", 50, false);
+        add_file(&conn, owner, "gone", 40, false);
+        conn.execute(
+            "UPDATE files SET deleted_at = '2026-01-01T00:00:00Z' WHERE name = 'gone'",
+            [],
+        )
+        .expect("trash");
+
+        assert!(ensure_quota(&conn, owner, 10).is_ok(), "90 + 10 == 100");
+        assert!(ensure_quota(&conn, owner, 11).is_err());
+    }
+
+    #[test]
+    fn folders_are_never_billed() {
+        let s = scratch();
+        let conn = s.db.pool.get().unwrap();
+        let owner = user_with_quota(&conn, 100);
+        add_file(&conn, owner, "d", 0, true);
+        // No writer gives a folder a size today; assert the filter anyway, so
+        // the invariant is pinned rather than implied by the data.
+        conn.execute("UPDATE files SET size = 999 WHERE is_dir = 1", [])
+            .expect("size");
+        assert!(
+            ensure_quota(&conn, owner, 100).is_ok(),
+            "folder bytes must not count"
+        );
+    }
+
+    #[test]
+    fn a_zero_or_negative_write_never_fails() {
+        // Downloads, renames and metadata updates also go through this gate;
+        // a full quota must not be able to block reading what is already there.
+        let s = scratch();
+        let conn = s.db.pool.get().unwrap();
+        let owner = user_with_quota(&conn, 100);
+        add_file(&conn, owner, "full", 500, false);
+
+        assert!(ensure_quota(&conn, owner, 0).is_ok());
+        assert!(ensure_quota(&conn, owner, -5).is_ok());
+    }
+
+    #[test]
+    fn the_refusal_reports_both_numbers() {
+        let s = scratch();
+        let conn = s.db.pool.get().unwrap();
+        let owner = user_with_quota(&conn, 100);
+        add_file(&conn, owner, "a", 90, false);
+
+        match ensure_quota(&conn, owner, 20) {
+            Err(AppError::QuotaExceeded { used, quota }) => {
+                assert_eq!(used, 90);
+                assert_eq!(quota, 100);
+            }
+            other => panic!("expected QuotaExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn names_that_could_escape_or_corrupt_a_listing_are_refused() {
+        for rejected in [
+            "",
+            "   ",
+            ".",
+            "..",
+            "a/b",
+            "a\\b",
+            "/abs",
+            "line\nbreak",
+            "nul\u{0}byte",
+        ] {
+            assert!(validate_name(rejected).is_err(), "accepted {rejected:?}");
+        }
+    }
+
+    #[test]
+    fn ordinary_names_are_accepted() {
+        for accepted in [
+            "a.txt",
+            "Ümlaute.txt",
+            "two words.tar.gz",
+            "  padded  ",
+            "a-b_c.1",
+        ] {
+            assert!(validate_name(accepted).is_ok(), "refused {accepted:?}");
+        }
+    }
+
+    #[test]
+    fn listings_are_folders_first_then_case_insensitive() {
+        let now = Utc::now();
+        let entry = |name: &str, is_dir: bool| FileEntry {
+            id: 0,
+            owner_id: 1,
+            parent_id: None,
+            name: name.to_string(),
+            is_dir,
+            size: 0,
+            mime: None,
+            created_at: now,
+            modified_at: now,
+            permissions: 0,
+            owner_name: None,
+            subtree_bytes: None,
+            deleted_at: None,
+            purge_at: None,
+            enc_version: 0,
+            enc_key: None,
+        };
+
+        let mut entries = vec![
+            entry("b.txt", false),
+            entry("Zeta", true),
+            entry("alpha", false),
+            entry("Docs", true),
+        ];
+        sort_entries(&mut entries);
+
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Docs", "Zeta", "alpha", "b.txt"]);
+    }
+}

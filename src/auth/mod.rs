@@ -262,3 +262,65 @@ pub async fn authenticate_basic(
     }
     Ok(found.user)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(value: &str) -> String {
+        format!("{SESSION_COOKIE}={value}")
+    }
+
+    #[test]
+    fn no_header_means_no_session() {
+        assert_eq!(token_from_cookie_header(None), None);
+        assert_eq!(token_from_cookie_header(Some("")), None);
+        assert_eq!(token_from_cookie_header(Some("other=1")), None);
+        assert_eq!(token_from_cookie_header(Some(";")), None);
+    }
+
+    #[test]
+    fn finds_our_cookie_among_the_others() {
+        let mixed = format!("a=1; {} ; b=2", session("deadbeef"));
+        assert_eq!(
+            token_from_cookie_header(Some(&mixed)).as_deref(),
+            Some("deadbeef")
+        );
+        assert_eq!(
+            token_from_cookie_header(Some(&session("solo"))).as_deref(),
+            Some("solo")
+        );
+    }
+
+    #[test]
+    fn whitespace_around_the_pair_is_tolerated() {
+        let spaced = format!("  a=1 ;  {}  ", session(" tok "));
+        assert_eq!(
+            token_from_cookie_header(Some(&spaced)).as_deref(),
+            Some("tok")
+        );
+    }
+
+    #[test]
+    fn lookalike_names_are_not_ours() {
+        assert_eq!(token_from_cookie_header(Some("x_fxcloud_session=1")), None);
+        assert_eq!(
+            token_from_cookie_header(Some(&format!("pre{SESSION_COOKIE}=1"))),
+            None
+        );
+        assert_eq!(
+            token_from_cookie_header(Some(&format!("{SESSION_COOKIE}x=1"))),
+            None
+        );
+    }
+
+    #[test]
+    fn the_login_hash_uses_the_documented_cost() {
+        // Guarded from both sides: fxcrypto.js holds the same numbers, and
+        // db/keys.rs enforces them on every key setup and rewrap.
+        assert_eq!(LOGIN_KDF_M_KIB, 65536);
+        assert_eq!(LOGIN_KDF_T, 3);
+        assert_eq!(LOGIN_KDF_P, 1);
+        assert!(KDF_FLOOR_MESSAGE.contains("65536"));
+    }
+}

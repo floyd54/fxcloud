@@ -1,0 +1,46 @@
+name: test
+
+# Everything a fresh `git clone` can run: the Rust unit tests, then the
+# black-box suite that starts a throwaway instance and drives it over HTTP,
+# WebDAV and the encryption endpoints. Green on every push and every pull
+# request, so `main` never claims a test that CI did not actually execute.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # node runs the client-crypto harness and the JS syntax checks in
+      # tests/suite.sh. Without it those checks fail loudly instead of being
+      # skipped: an untested crypto path is worse than a red build.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # The suite reads and updates the throwaway database directly to set up
+      # quota and trash states that no HTTP endpoint would produce.
+      - name: Install sqlite3 if the runner does not ship it
+        run: |
+          if ! command -v sqlite3 >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq sqlite3
+          fi
+
+      - name: Unit tests
+        run: cargo test
+
+      # Builds the debug binary itself (so its version badge always matches
+      # Cargo.toml) and then runs every integration check.
+      - name: Integration suite
+        run: ./tests/suite.sh
