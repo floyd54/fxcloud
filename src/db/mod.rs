@@ -1,4 +1,5 @@
 pub mod file;
+pub mod keys;
 pub mod session;
 pub mod share;
 pub mod user;
@@ -94,6 +95,24 @@ impl Db {
                 Some(
                     "SELECT COUNT(*) FROM pragma_table_info('files')
                      WHERE name = 'deleted_at'",
+                ),
+            ),
+            (
+                "006_keys",
+                include_str!("../../migrations/006_keys.sql"),
+                // Skip once `files.enc_version` exists.
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('files')
+                     WHERE name = 'enc_version'",
+                ),
+            ),
+            (
+                "007_enc_key",
+                include_str!("../../migrations/007_enc_key.sql"),
+                // Skip once `files.enc_key` exists.
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('files')
+                     WHERE name = 'enc_key'",
                 ),
             ),
         ];

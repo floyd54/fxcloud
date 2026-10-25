@@ -16,8 +16,19 @@
   let currentPerms = 31;
   // Known permission masks per folder id (learned from listings/info calls).
   const folderPerms = {};
+  // Known owner ids per folder id, for the same reason: an encrypted upload
+  // has to know whose tree it is about to write into (see uploadTree).
+  const folderOwner = {};
+  // Folders we have seen to contain (or be an ancestor of) an encrypted row.
+  // A copy of one of these is refused server-side - a new row id cannot
+  // carry the old key record - so this is what lets the dialog explain that
+  // before the round trip.
+  const folderHasEnc = {};
   // The signed-in user's id (to tell own items from shared ones).
   let meId = null;
+  // The signed-in username, handed to the encryption module for the
+  // recovery-key file's header.
+  let meName = null;
 
   // Multi-selection: id -> entry, as shown in the current listing.
   const selected = new Map();
@@ -118,6 +129,10 @@
       const tr = document.createElement("tr");
       tr.dataset.id = String(entry.id);
       if (selected.has(entry.id)) tr.classList.add("selected");
+      // Learn folder ownership while we are already looking at the row: an
+      // encrypted upload into a subtree we do not own must stay plaintext,
+      // because the wrapper is this account's root key.
+      if (entry.is_dir && entry.owner_id != null) folderOwner[entry.id] = entry.owner_id;
 
       // Selection checkbox; Shift+click extends over a range of rows.
       const checkTd = document.createElement("td");
@@ -138,6 +153,10 @@
         '<div><div>' + escapeHtml(entry.name) +
         (entry.owner_name
           ? ' <span class="shared-badge">↔ ' + escapeHtml(entry.owner_name) + "</span>"
+          : "") +
+        (entry.enc_version > 0
+          ? ' <span class="enc-mark" title="encrypted in the browser - the ' +
+            'server only stores ciphertext">&#128274;</span>'
           : "") +
         '<div class="meta-mobile">' +
         (entry.is_dir ? "Folder" : formatSize(entry.size)) + " · " +
@@ -189,8 +208,16 @@
 
       if (!trashView && entry.is_dir) {
         tr.addEventListener("click", () => openFolder(entry.id, perms));
-      } else if (!trashView && (perms & PERM_READ) && previewKind(entry.name)) {
-        // Browser-viewable files open in the lightbox directly.
+      } else if (
+        !trashView &&
+        (perms & PERM_READ) &&
+        entry.enc_version === 0 &&
+        previewKind(entry.name)
+      ) {
+        // Browser-viewable files open in the lightbox directly. An encrypted
+        // row stays inert on click: rendering ciphertext through <img> or
+        // <iframe> would only produce a broken frame, and decrypting into a
+        // preview is phase 2 (ENCRYPTION.md section 12).
         tr.classList.add("previewable");
         tr.addEventListener("click", () => openPreview(entry));
       }
@@ -333,12 +360,15 @@
         items.push(["Open", () => openFolder(entry.id, perms)]);
       }
       if (!entry.is_dir && (perms & PERM_READ)) {
-        if (previewKind(entry.name)) {
+        // An encrypted row has no preview and no editor until phase 2
+        // (ENCRYPTION.md section 12) - the useful thing this tab can do with
+        // one is decrypt it on the way out.
+        if (entry.enc_version === 0 && previewKind(entry.name)) {
           // Text files open in the editor; everything else gets a preview.
           const label = previewKind(entry.name) === "text" ? "Edit" : "Preview";
           items.push([label, () => openPreview(entry)]);
         }
-        items.push(["Download", () => downloadFile(entry.id, entry.name)]);
+        items.push(["Download", () => downloadFile(entry.id, entry.name, entry)]);
       }
       if (isOwner) {
         items.push(["Share", () => openShareDialog([entry])]);
@@ -400,6 +430,15 @@
         : api(`/api/files/breadcrumb?id=${parent}`).then((r) => r.json()),
     ]);
     renderBreadcrumb(crumbRes.breadcrumbs);
+    // Remember every folder on the way here that holds encrypted rows: the
+    // copy guard needs to know about a subtree, not just the listing in
+    // front of us, because `copy_recursive` refuses keyed descendants.
+    if (listRes.entries.some((e) => e.enc_version > 0)) {
+      if (parent != null) folderHasEnc[parent] = true;
+      for (const b of crumbRes.breadcrumbs) {
+        if (b.id != null) folderHasEnc[b.id] = true;
+      }
+    }
     // Navigating starts a fresh selection — the old one described another folder.
     selected.clear();
     lastCheckIndex = null;
@@ -470,6 +509,7 @@
   async function loadMe() {
     const res = await api("/api/me").then((r) => r.json());
     meId = res.id;
+    meName = res.username;
     document.getElementById("user-label").textContent =
       res.display_name || res.username;
     const storage = document.getElementById("storage-label");
@@ -564,6 +604,7 @@
         try {
           const r = await api(`/api/files/info?id=${id}`).then((r) => r.json());
           folderPerms[id] = r.entry.permissions;
+          if (r.entry.owner_id != null) folderOwner[id] = r.entry.owner_id;
         } catch (_) {
           folderPerms[id] = PERM_ALL;
         }
@@ -651,7 +692,17 @@
     }
   }
 
-  function downloadFile(id, name) {
+  function downloadFile(id, name, entry) {
+    // An encrypted row arrives as FXE1 ciphertext behind an octet-stream
+    // Content-Type: the server has no plaintext to describe. Turning those
+    // bytes back into a file needs this tab's root key, so the unlock prompt
+    // may legitimately appear here.
+    if (entry && entry.enc_version > 0) {
+      FXEnc.requestKeys()
+        .then((ok) => (ok ? FXEnc.download(entry) : null))
+        .catch((e) => alert(e.message));
+      return;
+    }
     // Trigger a browser download via a temporary anchor.
     const a = document.createElement("a");
     a.href = `/api/files/download?id=${id}`;
@@ -696,6 +747,16 @@
   function openPreview(entry) {
     const kind = previewKind(entry.name);
     if (!kind || entry.is_dir) return;
+    if (entry.enc_version > 0) {
+      // Never hand ciphertext to <img>/<iframe>: the preview would fail
+      // opaquely. Download decrypts instead; a preview that does the same
+      // arrives with the editor round-trip (phase 2).
+      alert(
+        "This file is encrypted. Preview and editing arrive in a later phase - " +
+          "use Download to decrypt it into a local copy."
+      );
+      return;
+    }
     document.getElementById("preview-name").textContent = entry.name;
     const src = `/api/files/preview?id=${entry.id}`;
     document.getElementById("preview-newtab").href = src;
@@ -1108,6 +1169,33 @@
     const files = items.filter((i) => i.file);
     if (items.length === 0) return;
     const base = currentParent; // null = own root
+
+    // One decision for the whole drop, taken before anything is created.
+    //
+    // `enabled()` is true as soon as this account has a key record, and from
+    // that moment on an upload is never *silently* downgraded to plaintext:
+    // the user unlocks, or the batch stops before a single folder is made.
+    // Before setup the feature is simply off, and the badge in the header is
+    // what invites turning it on.
+    //
+    // The destination is deliberately not part of this test. `create_file`
+    // always mints the new row under the uploader's id, so the file key is
+    // always wrapped with *our* root key and stored on a row we own - which
+    // makes it correct inside our own tree, inside a folder someone shared
+    // with us, or anywhere else an upload is allowed to land.
+    let encrypt = false;
+    if (FXEnc.enabled()) {
+      const unlocked = await FXEnc.requestKeys();
+      if (!unlocked) {
+        alert(
+          "Encrypted upload cancelled - nothing was sent.\n\n" +
+            "Unlock encryption from the badge in the header and try again."
+        );
+        return;
+      }
+      encrypt = true;
+    }
+
     const failures = [];
     const failedDirs = new Set();
     const cache = new Map([["", base]]);
@@ -1124,12 +1212,20 @@
         const fileName = parts.pop();
         const parentId = await ensurePath(base, parts.join("/"), cache, failures, failedDirs);
         if (parentId === undefined) continue; // reason already recorded
-        setUploadStatus(`Uploading ${done + 1}/${files.length} — ${item.path}`);
-        const fd = new FormData();
-        fd.append("parent", parentId == null ? "" : String(parentId));
-        fd.append("file", item.file, fileName);
+        setUploadStatus(
+          `Uploading ${done + 1}/${files.length} — ${item.path}` +
+            (encrypt ? " (encrypted)" : "")
+        );
         try {
-          await api("/api/files/upload", { method: "POST", body: fd });
+          if (encrypt) {
+            // Two-phase: reserve the row, encrypt against its id, fill it.
+            await FXEnc.encryptUpload(item.file, parentId, fileName);
+          } else {
+            const fd = new FormData();
+            fd.append("parent", parentId == null ? "" : String(parentId));
+            fd.append("file", item.file, fileName);
+            await api("/api/files/upload", { method: "POST", body: fd });
+          }
         } catch (e) {
           failures.push(`${item.path} — ${e.message}`);
         }
@@ -1187,6 +1283,24 @@
   // Open the destination picker for one entry (row menu) or the whole
   // selection (bulk bar) — both go through the batch endpoints.
   function openTransferDialog(mode, entries) {
+    // A copy mints a brand-new row id, and a key record is bound to its row
+    // by `child_id || version` - so the wrapped key could never be opened
+    // against the copy, and there is no re-wrap API yet (ENCRYPTION.md 5.4,
+    // DECISION 4). The server refuses this too; saying so here just means
+    // the reason arrives before a round trip that had no chance of working.
+    if (mode === "copy") {
+      const keyed = entries.filter((e) => e.enc_key || (e.is_dir && folderHasEnc[e.id]));
+      if (keyed.length > 0) {
+        const one = keyed.length === 1 ? `“${keyed[0].name}”` : `${keyed.length} item(s)`;
+        alert(
+          `Cannot copy ${one}.\n\n` +
+            "A copy gets a new row id, and re-wrapping a key record for a " +
+            "new row arrives with the key-exchange phase. Move it instead, " +
+            "or download it and upload it again."
+        );
+        return;
+      }
+    }
     transfer = { mode, entries };
     const what =
       entries.length === 1 ? `"${entries[0].name}"` : `${entries.length} items`;
@@ -1339,7 +1453,28 @@
     const entries = eligible((e) => permsOf(e) & PERM_READ);
     if (entries.length === 0) return;
 
+    const encrypted = entries.filter((e) => !e.is_dir && e.enc_version > 0);
+
     (async () => {
+      // The server-side ZIP is a plaintext archive: producing one would mean
+      // decrypting these rows server-side, which it cannot do (prepare_zip
+      // refuses them with 400). So an encrypted selection falls back to
+      // decrypting each row in this tab instead - including the plaintext
+      // siblings in the same selection, which still download normally.
+      if (encrypted.length > 0) {
+        try {
+          const ok = await FXEnc.requestKeys();
+          if (!ok) return;
+          for (const e of encrypted) await FXEnc.download(e);
+          for (const e of entries) {
+            if (!e.is_dir && e.enc_version === 0) downloadFile(e.id, e.name, e);
+          }
+        } catch (e) {
+          alert(e.message);
+        }
+        return;
+      }
+
       try {
         const res = await api("/api/files/zip", {
           method: "POST",
@@ -1593,6 +1728,7 @@
 
   // ---------- init ----------
   loadMe()
+    .then(() => FXEnc.init(meName))
     .then(() => loadFiles(currentParent))
     .catch((e) => {
       if (e.message !== "unauthorized") alert(e.message);

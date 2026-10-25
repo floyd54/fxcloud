@@ -6,6 +6,7 @@ use axum::extract::{Multipart, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -88,7 +89,10 @@ pub async fn create_file(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let entry = state
         .db
-        .create_file(user.id(), req.parent_id, req.name, 0, None)
+        // An empty file is always created plaintext: only a client-side
+        // encrypt-on-save (a later phase) can put ciphertext behind a row it
+        // also knows the wrapped key for.
+        .create_file(user.id(), req.parent_id, req.name, 0, None, 0, None)
         .await?;
     // An empty blob on disk, so download and preview work right away.
     if let Err(e) = state.files.write_blob(&entry, Vec::new()).await {
@@ -190,6 +194,12 @@ pub async fn upload(
     let mut filename: Option<String> = None;
     let mut data: Option<Vec<u8>> = None;
     let mut mime: Option<String> = None;
+    // Client-side encryption, sent as two plain multipart fields: a version
+    // (0 = plaintext, 1 = FXE1) and the entry's key wrapped with the parent
+    // folder's key, base64. The server stores both without looking inside -
+    // it cannot read either of them (ENCRYPTION.md 5.3/5.4).
+    let mut enc_version: i64 = 0;
+    let mut enc_key: Option<Vec<u8>> = None;
 
     while let Some(field) = multipart
         .next_field()
@@ -203,6 +213,32 @@ pub async fn upload(
                     .await
                     .map_err(|e| AppError::BadRequest(format!("bad parent: {e}")))?;
                 parent_id = text.trim().parse().ok();
+            }
+            "enc_version" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("bad enc_version: {e}")))?;
+                enc_version = text
+                    .trim()
+                    .parse()
+                    .map_err(|_| AppError::BadRequest("bad enc_version".into()))?;
+                if enc_version != 0 && enc_version != 1 {
+                    return Err(AppError::BadRequest("unsupported enc_version".into()));
+                }
+            }
+            "enc_key" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("bad enc_key: {e}")))?;
+                let text = text.trim();
+                if !text.is_empty() {
+                    enc_key =
+                        Some(BASE64.decode(text).map_err(|_| {
+                            AppError::BadRequest("enc_key is not valid base64".into())
+                        })?);
+                }
             }
             "file" => {
                 filename = field.file_name().map(|s| s.to_string());
@@ -225,10 +261,34 @@ pub async fn upload(
     let data = data.ok_or_else(|| AppError::BadRequest("missing file data".into()))?;
     let size = data.len() as i64;
 
+    // Encrypted content needs its wrapped key, and must not claim a
+    // content type the server will later serve as if it were the truth: the
+    // bytes on disk are ciphertext (ENCRYPTION.md section 7).
+    if enc_version > 0 {
+        if enc_key.is_none() {
+            return Err(AppError::BadRequest(
+                "encrypted upload is missing enc_key".into(),
+            ));
+        }
+        mime = None;
+    } else if enc_key.is_some() {
+        return Err(AppError::BadRequest(
+            "enc_key given for a plaintext upload".into(),
+        ));
+    }
+
     // Create metadata first to obtain a file id, then persist the blob.
     let entry = state
         .db
-        .create_file(user.id(), parent_id, filename, size, mime)
+        .create_file(
+            user.id(),
+            parent_id,
+            filename,
+            size,
+            mime,
+            enc_version,
+            enc_key,
+        )
         .await?;
     if let Err(e) = state.files.write_blob(&entry, data).await {
         // Roll back the orphaned metadata row.
@@ -247,10 +307,18 @@ pub async fn download(
 ) -> Result<Response, AppError> {
     let (entry, data) = state.files.read_blob(user.id(), q.id).await?;
 
-    let content_type = entry
-        .mime
-        .clone()
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+    // Encrypted rows never advertise a content type: the bytes on disk are an
+    // FXE1 container, so `image/png` here would be a lie the browser acts on
+    // (ENCRYPTION.md section 7 - the server's authoritative answer for
+    // encrypted content is octet-stream, always).
+    let content_type = if entry.enc_version > 0 {
+        "application/octet-stream".to_string()
+    } else {
+        entry
+            .mime
+            .clone()
+            .unwrap_or_else(|| "application/octet-stream".to_string())
+    };
     // RFC 5987 encoding so non-ASCII filenames survive the header.
     let encoded_name = encode_rfc5987(&entry.name);
     let disposition = format!("attachment; filename*=UTF-8''{encoded_name}");
@@ -394,6 +462,16 @@ pub async fn preview(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let (entry, data) = state.files.read_blob(user.id(), q.id).await?;
+    // Encrypted rows are not previewable server-side: there is no plaintext
+    // to serve, and answering `image/png` for ciphertext would hand the
+    // browser bytes it cannot render. Inline preview of encrypted content is a
+    // client-side decrypt-and-blob flow (phase 2); until then the UI offers
+    // Download, which decrypts in the browser.
+    if entry.enc_version > 0 {
+        return Err(AppError::BadRequest(
+            "this file is encrypted - download it to decrypt it in the browser".into(),
+        ));
+    }
     let content_type = preview_content_type(&entry).ok_or_else(|| {
         AppError::BadRequest(
             "this file type cannot be displayed in the browser - use Download".into(),
@@ -441,8 +519,25 @@ pub async fn preview(
     Ok(resp.into_response())
 }
 
+/// Query for `PUT /api/files/content`: the row plus the optional encryption
+/// mode the caller wants to write it in.
+///
+/// `enc` is absent for the ordinary editor save, where the row's mode is left
+/// exactly as it is. `enc=1` with `key` is the *only* way a plaintext row ever
+/// becomes encrypted through this endpoint - the server never sniffs a
+/// plaintext row, because arbitrary user files may legitimately begin with the
+/// four magic bytes. On a row that is already encrypted the content is our own
+/// format, so the magic check there is exact (ENCRYPTION.md 5.3).
+#[derive(Deserialize)]
+pub struct ContentQuery {
+    pub id: i64,
+    pub enc: Option<u8>,
+    pub key: Option<String>,
+}
+
 /// PUT /api/files/content?id=<id> – overwrite a file's content with the raw
-/// request body (the web editor's save path).
+/// request body (the web editor's save path, and the second half of an
+/// encrypted upload).
 ///
 /// Permission (PERM_UPDATE), tree-owner resolution and the quota gate all
 /// come from `update_file_meta`, the same path WebDAV PUT takes, so the
@@ -450,7 +545,7 @@ pub async fn preview(
 pub async fn save_content(
     State(state): State<SharedState>,
     user: AuthUser,
-    Query(q): Query<IdQuery>,
+    Query(q): Query<ContentQuery>,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let entry = state
@@ -461,14 +556,77 @@ pub async fn save_content(
     if entry.is_dir {
         return Err(AppError::BadRequest("cannot edit a folder".into()));
     }
-    let mime = mime_guess::from_path(&entry.name)
-        .first()
-        .map(|m| m.to_string());
+
+    let enc_version = q.enc.unwrap_or(entry.enc_version as u8);
+    let transition = match (q.enc, &q.key) {
+        (None, None) => {
+            // Plain save: leave the mode alone.
+            if entry.enc_version > 0 && !body.starts_with(crate::files::FXE1_MAGIC) {
+                return Err(AppError::Conflict(
+                    "this file is encrypted; saving plaintext would destroy it - \
+                     encrypt the content first (client-side save arrives with the \
+                     editor round-trip)"
+                        .into(),
+                ));
+            }
+            None
+        }
+        (None, Some(_)) => {
+            return Err(AppError::BadRequest("key requires enc=1".into()));
+        }
+        (Some(1), Some(key)) => {
+            if !body.starts_with(crate::files::FXE1_MAGIC) {
+                return Err(AppError::Conflict(
+                    "enc=1 declares encrypted content but the body is not an FXE1 \
+                     container"
+                        .into(),
+                ));
+            }
+            let key = BASE64
+                .decode(key.trim())
+                .map_err(|_| AppError::BadRequest("key is not valid base64".into()))?;
+            if key.is_empty() {
+                return Err(AppError::BadRequest("key is empty".into()));
+            }
+            Some((1i64, key))
+        }
+        (Some(1), None) => {
+            return Err(AppError::BadRequest("enc=1 requires key".into()));
+        }
+        (Some(0), Some(_)) => {
+            return Err(AppError::BadRequest("enc=0 cannot carry a key".into()));
+        }
+        (Some(0), None) => {
+            if entry.enc_version > 0 {
+                // The server holds no plaintext, so it can never produce a
+                // plaintext body for this row.
+                return Err(AppError::Conflict(
+                    "an encrypted file cannot be turned back into plaintext here - \
+                     download it, decrypt it client-side and upload it again"
+                        .into(),
+                ));
+            }
+            None
+        }
+        (Some(_), _) => {
+            return Err(AppError::BadRequest("unsupported enc_version".into()));
+        }
+    };
+
+    // For an encrypted row keep `mime` NULL: the stored type must not describe
+    // bytes the server has never seen in plaintext.
+    let mime = if enc_version > 0 {
+        None
+    } else {
+        mime_guess::from_path(&entry.name)
+            .first()
+            .map(|m| m.to_string())
+    };
     // The blob path is id-derived, so replacing the content in place swaps
     // the blob underneath; meta first, because it holds the quota gate.
     state
         .db
-        .update_file_meta(user.id(), entry.id, body.len() as i64, mime)
+        .update_file_meta(user.id(), entry.id, body.len() as i64, mime, transition)
         .await?;
     state.files.write_blob(&entry, body.to_vec()).await?;
     // Fresh row for the response: size and modified_at just changed.
@@ -692,6 +850,17 @@ pub async fn prepare_zip(
         for (_, entry) in state.db.readable_subtree(user.id(), *id).await? {
             if !entry.is_dir {
                 total += entry.size;
+            }
+            // The server ZIP writes plaintext members. Packing ciphertext
+            // under a `.png` name would hand back a file nothing can open, so
+            // the archive refuses the selection instead of quietly degrading:
+            // zipping encrypted content is a client-side job (DECISION 8).
+            if entry.enc_version > 0 {
+                return Err(AppError::BadRequest(format!(
+                    "\"{}\" is encrypted - download encrypted items one by one, \
+                     or unselect them to zip the rest",
+                    entry.name
+                )));
             }
         }
         if total > MAX_ZIP_BYTES {

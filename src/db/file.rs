@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
 use crate::error::AppError;
 use crate::models::{BlobRef, Breadcrumb, FileEntry};
 use crate::sharing::PERM_ALL;
@@ -28,6 +30,12 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
         permissions: PERM_ALL,
         owner_name: None,
         subtree_bytes: None,
+        enc_version: row.get("enc_version")?,
+        // Blobs only ever leave as base64: the JSON API and the WebDAV layer
+        // both speak that, and serde would otherwise emit an array of bytes.
+        enc_key: row
+            .get::<_, Option<Vec<u8>>>("enc_key")?
+            .map(|b| BASE64.encode(b)),
         deleted_at: deleted_at.as_deref().map(|s| parse_ts(s, 9)).transpose()?,
         purge_at: None,
     })
@@ -66,8 +74,8 @@ fn ensure_quota(conn: &Connection, owner_id: i64, additional: i64) -> Result<(),
     Ok(())
 }
 
-const ENTRY_COLS: &str =
-    "id, owner_id, parent_id, name, is_dir, size, mime, created_at, modified_at, deleted_at";
+const ENTRY_COLS: &str = "id, owner_id, parent_id, name, is_dir, size, mime, created_at, \
+                         modified_at, deleted_at, enc_version, enc_key";
 
 /// Entries that are trash roots: marked themselves, with a live (or absent)
 /// parent. Children of a trashed folder are part of that folder's restore
@@ -173,6 +181,8 @@ impl Db {
         name: String,
         size: i64,
         mime: Option<String>,
+        enc_version: i64,
+        enc_key: Option<Vec<u8>>,
     ) -> Result<FileEntry, AppError> {
         self.run(move |conn| {
             validate_name(&name)?;
@@ -183,9 +193,19 @@ impl Db {
             ensure_quota(conn, tree_owner, size)?;
             let now = Utc::now().to_rfc3339();
             conn.execute(
-                "INSERT INTO files (owner_id, parent_id, name, is_dir, size, mime, created_at, modified_at)
-                 VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?6)",
-                params![tree_owner, parent_id, name, size, mime, now],
+                "INSERT INTO files (owner_id, parent_id, name, is_dir, size, mime, created_at,
+                                    modified_at, enc_version, enc_key)
+                 VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?6, ?7, ?8)",
+                params![
+                    tree_owner,
+                    parent_id,
+                    name,
+                    size,
+                    mime,
+                    now,
+                    enc_version,
+                    enc_key
+                ],
             )
             .map_err(|e| map_constraint(e, &name))?;
             let id = conn.last_insert_rowid();
@@ -590,6 +610,38 @@ impl Db {
                     "cannot move an item across owners".into(),
                 ));
             }
+            // A key record is wrapped under the *source* parent's key, so a
+            // move is a pure metadata operation only while both parents carry
+            // the same key record (ENCRYPTION.md 5.4). No folder has one today
+            // - everything wraps against the account root - so this never
+            // fires yet; it exists so that the moment folders are keyed a move
+            // refuses instead of producing a row that no longer decrypts.
+            let (keyed, src_parent): (Option<Vec<u8>>, Option<i64>) = conn.query_row(
+                "SELECT enc_key, parent_id FROM files WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            if keyed.is_some() {
+                let key_of = |parent: Option<i64>| -> rusqlite::Result<Option<Vec<u8>>> {
+                    match parent {
+                        None => Ok(None),
+                        Some(p) => Ok(conn
+                            .query_row("SELECT enc_key FROM files WHERE id = ?1", params![p], |r| {
+                                r.get(0)
+                            })
+                            .optional()?
+                            .flatten()),
+                    }
+                };
+                if key_of(src_parent)? != key_of(new_parent)? {
+                    return Err(AppError::Conflict(
+                        "moving this item between folders with different keys needs \
+                         its key record re-wrapped first, which the client must do \
+                         (ENCRYPTION.md 5.4)"
+                            .into(),
+                    ));
+                }
+            }
             // Cycle guard: new parent must not be the entry itself or a descendant.
             let mut cur = new_parent;
             while let Some(c) = cur {
@@ -628,6 +680,10 @@ impl Db {
         id: i64,
         size: i64,
         mime: Option<String>,
+        // `(enc_version, enc_key)` when this write also changes the row's
+        // encryption mode; `None` to leave both columns alone (the usual
+        // case: content replaced, mode unchanged).
+        enc: Option<(i64, Vec<u8>)>,
     ) -> Result<(), AppError> {
         self.run(move |conn| {
             let tree_owner = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
@@ -643,11 +699,24 @@ impl Db {
             if let Some(old_size) = old_size {
                 ensure_quota(conn, tree_owner, size - old_size)?;
             }
-            let changed = conn.execute(
-                "UPDATE files SET size = ?1, mime = ?2, modified_at = ?3
-                 WHERE id = ?4 AND owner_id = ?5 AND is_dir = 0",
-                params![size, mime, Utc::now().to_rfc3339(), id, tree_owner],
-            )?;
+            let now = Utc::now().to_rfc3339();
+            // Mode change and content change belong in one statement: a row
+            // that reports `enc_version = 0` while holding ciphertext (or the
+            // other way round) is exactly the half-applied state every other
+            // branch in this codebase is written to avoid.
+            let changed = match enc {
+                Some((version, key)) => conn.execute(
+                    "UPDATE files SET size = ?1, mime = ?2, modified_at = ?3,
+                                     enc_version = ?4, enc_key = ?5
+                     WHERE id = ?6 AND owner_id = ?7 AND is_dir = 0",
+                    params![size, mime, now, version, key, id, tree_owner],
+                )?,
+                None => conn.execute(
+                    "UPDATE files SET size = ?1, mime = ?2, modified_at = ?3
+                     WHERE id = ?4 AND owner_id = ?5 AND is_dir = 0",
+                    params![size, mime, now, id, tree_owner],
+                )?,
+            };
             if changed == 0 {
                 return Err(AppError::NotFound);
             }
@@ -694,6 +763,34 @@ impl Db {
                 |r| r.get(0),
             )?;
             Ok(total)
+        })
+        .await
+    }
+
+    /// Names of every entry at or below `id` that carries a key record.
+    ///
+    /// A copy mints new row ids, and a key record's AAD binds it to the id it
+    /// was wrapped for (ENCRYPTION.md 5.4), so none of these can survive being
+    /// copied: the result would look perfectly healthy and never decrypt. The
+    /// fix is a client-side re-wrap of each record under the destination key,
+    /// which has no API yet - this helper is what lets the copy paths refuse
+    /// loudly instead of handing back a row that silently fails to open.
+    pub async fn subtree_keyed_names(&self, id: i64) -> Result<Vec<String>, AppError> {
+        self.run(move |conn| {
+            let mut stmt = conn.prepare(
+                "WITH RECURSIVE subtree(id) AS (
+                     SELECT id FROM files WHERE id = ?1
+                     UNION ALL
+                     SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+                 )
+                 SELECT name FROM files
+                  WHERE id IN (SELECT id FROM subtree) AND enc_key IS NOT NULL
+                  ORDER BY is_dir DESC, name COLLATE NOCASE ASC",
+            )?;
+            let names = stmt
+                .query_map(params![id], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(names)
         })
         .await
     }
@@ -933,7 +1030,8 @@ fn own_children(
 fn incoming_mounts(conn: &Connection, user_id: i64) -> Result<Vec<FileEntry>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT f.id, f.owner_id, f.parent_id, s.display_name, f.is_dir, f.size, f.mime,
-                f.created_at, f.modified_at, u.username, s.permissions
+                f.created_at, f.modified_at, u.username, s.permissions,
+                f.enc_version, f.enc_key
          FROM shares s
          JOIN files f ON f.id = s.source_id
          JOIN users  u ON u.id = s.owner_id
@@ -956,6 +1054,8 @@ fn incoming_mounts(conn: &Connection, user_id: i64) -> Result<Vec<FileEntry>, Ap
                 permissions: r.get(10)?,
                 owner_name: Some(r.get(9)?),
                 subtree_bytes: None,
+                enc_version: r.get(11)?,
+                enc_key: r.get::<_, Option<Vec<u8>>>(12)?.map(|b| BASE64.encode(b)),
                 deleted_at: None,
                 purge_at: None,
             })

@@ -67,6 +67,84 @@ pub struct FileEntry {
     /// trash listings only, derived from the retention window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purge_at: Option<DateTime<Utc>>,
+    /// Content encryption format: `0` = plaintext (the default for every
+    /// pre-existing row), `1` = the "FXE1" container of ENCRYPTION.md 5.3.
+    /// Read paths branch on this instead of sniffing bytes, and the UI
+    /// badges the row.
+    #[serde(default)]
+    pub enc_version: i64,
+    /// The entry's key wrapped with its parent folder's key (ENCRYPTION.md
+    /// 5.4), base64-encoded. `None` for plaintext entries.
+    ///
+    /// Server-opaque: useless without the parent key, which only the client
+    /// can unwrap. It is returned exactly where the existing read logic
+    /// already authorizes the caller, because that is who may unwrap it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enc_key: Option<String>,
+}
+
+/// One account's encryption key material (ENCRYPTION.md section 6).
+///
+/// Blobs travel base64-encoded: the server stores and forwards them, it can
+/// neither read nor produce them. `kdf_params` is the client-side Argon2id
+/// configuration as JSON, kept opaque here - only the client ever parses it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserKeys {
+    pub user_id: i64,
+    /// Raw public key with its suite id prefix; published to other users.
+    pub public_key: String,
+    /// Private key wrapped under the ARK - owner only.
+    pub private_key_wrapped: String,
+    /// Account root key wrapped under the passphrase-derived KEK.
+    pub wrapped_ark: String,
+    /// Root folder key wrapped under the ARK (ENCRYPTION.md 5.4).
+    pub wrapped_root_key: String,
+    /// ARK wrapped under the recovery key. Mandatory, not optional: under
+    /// DECISION 3 the login password and the storage secret are one event,
+    /// so this is the only path left if that secret is forgotten.
+    pub wrapped_ark_recovery: String,
+    /// Salt for the client-side Argon2id run.
+    pub kdf_salt: String,
+    /// Argon2id m/t/p and suite ids, as sent at setup.
+    pub kdf_params: serde_json::Value,
+    /// Display fingerprint for out-of-band comparison (ENCRYPTION.md 5.6).
+    pub fingerprint: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// POST /api/keys/setup payload - everything the server needs to store a
+/// fresh key material row. All blobs base64.
+#[derive(Debug, Deserialize)]
+pub struct SetupKeysRequest {
+    pub public_key: String,
+    pub private_key_wrapped: String,
+    pub wrapped_ark: String,
+    pub wrapped_root_key: String,
+    pub wrapped_ark_recovery: String,
+    pub kdf_salt: String,
+    pub kdf_params: serde_json::Value,
+    pub fingerprint: String,
+}
+
+/// PUT /api/keys/me payload - rewraps the ARK after a passphrase change.
+///
+/// Only the KEK-wrapped values move: `private_key_wrapped` and
+/// `wrapped_root_key` stay untouched because they hang off the ARK, which is
+/// exactly why the hierarchy has a KEK -> ARK indirection in the first place.
+#[derive(Debug, Deserialize)]
+pub struct RewrapKeysRequest {
+    pub wrapped_ark: String,
+    pub kdf_salt: String,
+    pub kdf_params: serde_json::Value,
+}
+
+/// One entry of `GET /api/keys/<username>` - the public half only.
+#[derive(Debug, Serialize)]
+pub struct PublicKeyInfo {
+    pub username: String,
+    pub public_key: String,
+    pub fingerprint: String,
 }
 
 /// Where a file's content blob lives on disk.

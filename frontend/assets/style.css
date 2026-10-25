@@ -600,3 +600,116 @@ tr.previewable { cursor: pointer; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---------- Client-side encryption (ENCRYPTION.md section 7) ---------- */
+
+/* Header switch: reads as a state, not as an action, until it is clicked. */
+.topbar .enc-badge {
+  font-size: 12.5px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  white-space: nowrap;
+}
+.topbar .enc-badge.setup { background: rgba(255, 255, 255, 0.12); opacity: 0.9; }
+.topbar .enc-badge.locked { background: rgba(0, 0, 0, 0.22); }
+.topbar .enc-badge.unlocked { background: rgba(46, 160, 67, 0.55); }
+
+/* A row whose bytes the server cannot read. */
+.enc-mark {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1a6b34;
+  background: #e6f5ea;
+  border-radius: 8px;
+  padding: 1px 6px;
+  margin-left: 4px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.enc-modal { width: min(520px, calc(100vw - 32px)); }
+.enc-pane { display: block; }
+.enc-lead {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.enc-lead strong { color: var(--text); }
+
+/* Explicit, small, and never a colour that carries meaning on its own. */
+.enc-status {
+  min-height: 18px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.enc-status.error {
+  color: var(--danger);
+  background: #fdecec;
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+
+/* The recovery key: monospaced, selectable, unambiguous about grouping. */
+.enc-recovery {
+  margin: 0;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  letter-spacing: 1.5px;
+  user-select: all;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.enc-ack {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 12px;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.enc-ack input { margin-top: 3px; }
+
+.hint {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.enc-fingerprint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 15px;
+  letter-spacing: 1px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  user-select: all;
+}
+
+/* A secondary footer row inside the same pane (the recovery-key step). */
+.enc-pane .modal-footer + .enc-ack + .hint + .modal-footer { margin-top: 10px; }
+textarea#enc-rcv-key {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  resize: vertical;
+}
+textarea#enc-rcv-key:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 130, 201, 0.12);
+}

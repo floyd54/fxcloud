@@ -10,6 +10,7 @@
   <header class="topbar">
     <div class="brand">fx<span>cloud</span><b class="brand-version">{{version}}</b></div>
     <div class="spacer"></div>
+    <button class="enc-badge" id="enc-badge" type="button" style="display:none"></button>
     <span class="storage" id="storage-label" title="storage used of quota"></span>
     <span class="user" id="user-label"></span>
     <button id="logout-btn" type="button">Sign out</button>
@@ -133,6 +134,141 @@
     </div>
   </div>
 
+  <!-- Client-side encryption: setup, unlock, recovery key (ENCRYPTION.md 7) -->
+  <div class="modal-backdrop" id="enc-modal" style="display:none">
+    <div class="modal enc-modal">
+
+      <!-- First run: choose the storage passphrase -->
+      <div class="enc-pane" id="enc-pane-setup" style="display:none">
+        <h3>Enable file encryption</h3>
+        <p class="enc-lead">
+          Files you upload are encrypted <strong>in this browser</strong> before
+          they leave your device. The server receives ciphertext, a wrapped key
+          and no readable content for them - it can still see file names,
+          sizes and sharing, because those are what the storage service needs.
+        </p>
+        <p class="enc-lead">
+          The passphrase is never sent anywhere. Only a 64&nbsp;MiB Argon2id
+          derivation runs here, which takes a moment.
+        </p>
+        <div class="field">
+          <label for="enc-setup-pass">Storage passphrase</label>
+          <input type="password" id="enc-setup-pass" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label for="enc-setup-pass2">Repeat passphrase</label>
+          <input type="password" id="enc-setup-pass2" autocomplete="new-password" />
+        </div>
+        <p class="hint">
+          Reusing your fxcloud login password is the recommended default: the
+          server already enforces the same KDF cost for login, so one strong
+          password can cover both.
+        </p>
+        <div class="modal-footer">
+          <button class="btn secondary" id="enc-setup-cancel" type="button">Cancel</button>
+          <button class="btn" id="enc-setup-go" type="button" disabled>Continue</button>
+        </div>
+      </div>
+
+      <!-- Shown once, right after setup: the recovery key -->
+      <div class="enc-pane" id="enc-pane-saved" style="display:none">
+        <h3>Save your recovery key</h3>
+        <p class="enc-lead">
+          This is the only way back into your encrypted files if the
+          passphrase is forgotten. It is shown once and never stored anywhere
+          you can retrieve it later.
+        </p>
+        <pre class="enc-recovery" id="enc-saved-key"></pre>
+        <div class="modal-footer">
+          <button class="btn secondary" id="enc-saved-dl" type="button">
+            Download recovery key
+          </button>
+        </div>
+        <label class="enc-ack">
+          <input type="checkbox" id="enc-saved-ack" />
+          I have saved this recovery key somewhere safe and offline.
+        </label>
+        <p class="hint">
+          Anyone holding this file can decrypt your files. Losing both it and
+          the passphrase means nobody - including us - can read them again.
+        </p>
+        <div class="modal-footer">
+          <button class="btn" id="enc-saved-go" type="button" disabled>Enable encryption</button>
+        </div>
+      </div>
+
+      <!-- Every later tab: unlock -->
+      <div class="enc-pane" id="enc-pane-unlock" style="display:none">
+        <h3>Encrypted files are locked</h3>
+        <p class="enc-lead">
+          Enter the storage passphrase to decrypt this session's keys. They
+          stay in this tab's memory only, and a reload locks them again.
+        </p>
+        <div class="field">
+          <label for="enc-unlock-pass">Storage passphrase</label>
+          <input type="password" id="enc-unlock-pass" autocomplete="current-password" />
+        </div>
+        <div class="modal-footer">
+          <button class="btn secondary" id="enc-unlock-recover" type="button">
+            Use recovery key
+          </button>
+          <button class="btn secondary" id="enc-unlock-cancel" type="button">Cancel</button>
+          <button class="btn" id="enc-unlock-go" type="button">Unlock</button>
+        </div>
+      </div>
+
+      <!-- Forgotten passphrase: recovery key + new passphrase -->
+      <div class="enc-pane" id="enc-pane-recover" style="display:none">
+        <h3>Recover with your recovery key</h3>
+        <p class="enc-lead">
+          Paste the 64 hex digits, then pick a new storage passphrase. Every
+          existing encrypted file keeps working: only the outer wrapper
+          changes.
+        </p>
+        <div class="field">
+          <label for="enc-rcv-key">Recovery key</label>
+          <textarea id="enc-rcv-key" rows="4" spellcheck="false"
+                    placeholder="a1b2c3d4 e5f6..."></textarea>
+        </div>
+        <div class="field">
+          <label for="enc-rcv-pass">New storage passphrase</label>
+          <input type="password" id="enc-rcv-pass" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label for="enc-rcv-pass2">Repeat passphrase</label>
+          <input type="password" id="enc-rcv-pass2" autocomplete="new-password" />
+        </div>
+        <div class="modal-footer">
+          <button class="btn secondary" id="enc-rcv-back" type="button">Back</button>
+          <button class="btn" id="enc-rcv-go" type="button">Recover</button>
+        </div>
+      </div>
+
+      <!-- Unlocked: what this account's key looks like, and a lock switch -->
+      <div class="enc-pane" id="enc-pane-info" style="display:none">
+        <h3>Encryption is on</h3>
+        <p class="enc-lead">
+          Uploads are encrypted in this browser. Compare the fingerprint below
+          with the one shown to the other person before you trust a key
+          exchange (DECISION 6).
+        </p>
+        <div class="field">
+          <label>Key fingerprint</label>
+          <div class="enc-fingerprint" id="enc-info-fp">—</div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn secondary" id="enc-info-lock" type="button">Lock now</button>
+          <button class="btn" id="enc-info-close" type="button">Close</button>
+        </div>
+      </div>
+
+      <div class="enc-status" id="enc-status"></div>
+    </div>
+  </div>
+
+  <script src="/assets/hashwasm-argon2.js"></script>
+  <script src="/assets/fxcrypto.js"></script>
+  <script src="/assets/fxenc.js"></script>
   <script src="/assets/app.js"></script>
 </body>
 </html>

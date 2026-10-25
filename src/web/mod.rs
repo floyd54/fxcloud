@@ -64,6 +64,15 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/shares/incoming", get(routes::shares::incoming))
         .route("/shares/{id}", axum::routing::delete(routes::shares::revoke));
 
+    // Client-side encryption key material (ENCRYPTION.md section 6).
+    // `/keys/me` is static, so it wins over `/keys/{username}` on that one
+    // path; every other username falls through to the parameterised route.
+    let api = api
+        .route("/keys/setup", post(routes::keys::setup))
+        .route("/keys/me", get(routes::keys::get_me))
+        .route("/keys/me", put(routes::keys::put_me))
+        .route("/keys/{username}", get(routes::keys::get_public));
+
     Router::new()
         // UI pages & embedded assets
         .route("/", get(ui::index))

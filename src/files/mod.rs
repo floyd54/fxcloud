@@ -6,6 +6,14 @@ use crate::db::Db;
 use crate::error::AppError;
 use crate::models::{BlobRef, FileEntry};
 
+/// Leading bytes of client-side encrypted content (ENCRYPTION.md 5.3).
+///
+/// The server never parses beyond this: the magic exists so a write path can
+/// tell "the caller handed me a ciphertext container" from "the caller handed
+/// me plaintext" *before* it overwrites a row, which is what keeps WebDAV from
+/// silently destroying encrypted files with a plaintext `PUT`.
+pub const FXE1_MAGIC: &[u8] = b"FXE1";
+
 /// High-level file operations combining DB metadata with on-disk blobs.
 ///
 /// Blob layout: `<blob_dir>/<owner-id>/<year>/<h1>/<h2>/<file-id>` — the

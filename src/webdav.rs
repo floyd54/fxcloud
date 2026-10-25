@@ -277,10 +277,16 @@ async fn serve_file(
 
     match state.files.read_blob(owner_id, entry.id).await {
         Ok((e, data)) => {
-            let content_type = e
-                .mime
-                .clone()
-                .unwrap_or_else(|| "application/octet-stream".to_string());
+            // Encrypted rows are exposed as opaque ciphertext: same branch the
+            // JSON download takes, so a dumb client sees one consistent,
+            // self-describing content type instead of a guessed one.
+            let content_type = if e.enc_version > 0 {
+                "application/octet-stream".to_string()
+            } else {
+                e.mime
+                    .clone()
+                    .unwrap_or_else(|| "application/octet-stream".to_string())
+            };
             let etag = format!("\"{}-{}-{}\"", e.id, e.size, e.modified_at.timestamp());
             let builder = Response::builder()
                 .header(header::CONTENT_TYPE, content_type)
@@ -354,7 +360,32 @@ async fn put_file(
             if !crate::sharing::grants(old.permissions, crate::sharing::PERM_UPDATE) {
                 return forbidden();
             }
-            if let Err(e) = state.db.update_file_meta(owner_id, old.id, size, mime).await {
+            // A row the client encrypted carries a wrapped key the server
+            // cannot read, so it only ever accepts a body it can *recognise*
+            // as another FXE1 container - a desktop client's plaintext would
+            // otherwise overwrite ciphertext the server cannot produce again.
+            // Validating that magic first is what keeps DAV from silently
+            // destroying encrypted files (ENCRYPTION.md 5.4, DECISION 9:
+            // never blind). The row's `enc_key` is untouched, so the writer
+            // must be whoever holds the file key - same contract the editor
+            // save path takes (DECISION 5: no rotation on overwrite).
+            if old.enc_version > 0 && !body.starts_with(crate::files::FXE1_MAGIC) {
+                return (
+                    StatusCode::CONFLICT,
+                    "Encrypted file: this row only accepts an FXE1 container. A \
+                     desktop client cannot produce one - write through the web \
+                     client, or use the fxcloud sync agent.",
+                )
+                    .into_response();
+            }
+            // No magic sniffing on plaintext rows: their content is arbitrary
+            // user data, and four bytes of it are none of the server's
+            // business. `enc_version` stays 0 here either way.
+            if let Err(e) = state
+                .db
+                .update_file_meta(owner_id, old.id, size, mime, None)
+                .await
+            {
                 return e.into_response();
             }
             if let Err(e) = state.files.write_blob(&old, body.to_vec()).await {
@@ -367,9 +398,14 @@ async fn put_file(
             if !crate::sharing::grants(parent.permissions, crate::sharing::PERM_CREATE) {
                 return forbidden();
             }
+            // A *create* is not an overwrite, so nothing can be destroyed and
+            // nothing is sniffed: `enc_version` stays 0, exactly as it would
+            // for any other file whose first four bytes happen to spell
+            // "FXE1". DAV has no channel for a key record, so it can only ever
+            // create plaintext rows.
             match state
                 .db
-                .create_file(owner_id, parent.id, name, size, mime)
+                .create_file(owner_id, parent.id, name, size, mime, 0, None)
                 .await
             {
                 Ok(entry) => {
@@ -558,6 +594,21 @@ pub(crate) async fn copy_recursive(
     dst_name: String,
 ) -> Result<FileEntry, AppError> {
     let total = state.db.subtree_size(src.id).await?;
+    // Refuse before anything is written: a partial copy of an encrypted
+    // subtree would be a row the user can see and never open again.
+    let keyed = state.db.subtree_keyed_names(src.id).await?;
+    if let Some(first) = keyed.first() {
+        let what = if keyed.len() == 1 {
+            format!("\"{first}\"")
+        } else {
+            format!("{} encrypted items", keyed.len())
+        };
+        return Err(AppError::Conflict(format!(
+            "{what} cannot be copied yet - a copy gets a new row id and would \
+             need its key record re-wrapped under the destination key first; \
+             download and upload it instead"
+        )));
+    }
     state.db.check_quota(owner_id, total).await?;
     copy_node(state, owner_id, src, dst_parent, dst_name).await
 }
@@ -589,7 +640,17 @@ async fn copy_node(
     } else {
         let new_file = state
             .db
-            .create_file(owner_id, dst_parent, dst_name, src.size, src.mime.clone())
+            // `copy_recursive` already refused any subtree carrying a key
+            // record, so what reaches here is plaintext by construction.
+            .create_file(
+                owner_id,
+                dst_parent,
+                dst_name,
+                src.size,
+                src.mime.clone(),
+                0,
+                None,
+            )
             .await?;
         let (_e, data) = state.files.read_blob(owner_id, src.id).await?;
         state.files.write_blob(&new_file, data).await?;

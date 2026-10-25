@@ -1,5 +1,9 @@
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
 use argon2::password_hash::{rand_core::OsRng, SaltString};
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
@@ -13,17 +17,53 @@ use crate::web::state::SharedState;
 /// Name of the session cookie.
 pub const SESSION_COOKIE: &str = "fxcloud_session";
 
-/// Hash a plaintext password using Argon2id.
+/// Argon2id parameters for **new** login hashes, and the floor the client-side
+/// storage KDF has to clear at setup.
+///
+/// DECISION 3 (ENCRYPTION.md 5.7) reuses the login password as the default
+/// storage secret, which turns the database's login hash into an offline
+/// shortcut to the encryption key. Raising the login cost is therefore a
+/// *condition* of that decision, not an optimisation: the login hash must be
+/// at least as expensive as the client KDF we would otherwise demand.
+///
+/// 64 MiB with three passes is roughly five times the crate's default
+/// (~180 ms per hash+verify here), and the same numbers are enforced as the
+/// floor on `kdf_params` when key material is uploaded
+/// ([`crate::db::Db::save_user_keys`]) so a weak client cannot quietly lower
+/// the bar. Hashes already stored keep their embedded parameters - verification
+/// reads them from the hash - so no existing account needs migrating.
+pub const LOGIN_KDF_M_KIB: u32 = 65536;
+pub const LOGIN_KDF_T: u32 = 3;
+pub const LOGIN_KDF_P: u32 = 1;
+
+/// Floor for `kdf_params` in `POST /api/keys/setup`: Argon2id at or above the
+/// login cost. Returned verbatim in the rejection so a client that picked the
+/// wrong numbers can show the user what the server expects.
+pub const KDF_FLOOR_MESSAGE: &str =
+    "kdf_params must be argon2id with m >= 65536 KiB, t >= 3, p >= 1 (see /api/keys/setup)";
+
+/// The login hasher: explicit parameters instead of [`Argon2::default`], whose
+/// 19 MiB / t=2 is OWASP's *minimum* rather than DECISION 3's requirement.
+fn login_hasher() -> Result<Argon2<'static>, AppError> {
+    let params = Params::new(LOGIN_KDF_M_KIB, LOGIN_KDF_T, LOGIN_KDF_P, Some(32))
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("argon2 params rejected: {e}")))?;
+    Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
+}
+
+/// Hash a plaintext password using Argon2id at [`LOGIN_KDF_*`] cost.
 pub fn hash_password(password: &str) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
-    argon2
+    login_hasher()?
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
         .map_err(|e| AppError::Internal(anyhow::anyhow!("password hashing failed: {e}")))
 }
 
 /// Verify a plaintext password against an encoded Argon2 hash.
+///
+/// The parameters come from the stored hash, not from [`login_hasher`], so
+/// accounts created before the DECISION 3 raise keep verifying at their own
+/// (lower) cost until their password is next changed.
 pub fn verify_password(password: &str, encoded: &str) -> bool {
     let Ok(parsed) = PasswordHash::new(encoded) else {
         return false;
@@ -31,6 +71,85 @@ pub fn verify_password(password: &str, encoded: &str) -> bool {
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// Basic-auth verification cache
+// ---------------------------------------------------------------------------
+
+/// How long a cached Basic-auth verdict stays valid.
+///
+/// Long enough that a desktop sync client re-authenticates about once a
+/// minute instead of once per request, short enough that a revoked password
+/// stops working within a bounded window (and a *changed* one stops working
+/// immediately - see the hash comparison below).
+const BASIC_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// Upper bound on cached entries, so a flood of distinct credentials cannot
+/// grow the map without limit. Reaching it evicts everything rather than the
+/// oldest item: the cost is one Argon2id run per client, which is the state we
+/// started in anyway.
+const BASIC_CACHE_MAX: usize = 4096;
+
+/// One cached verdict: the stored hash it was checked against, and when.
+struct BasicCacheEntry {
+    password_hash: String,
+    at: Instant,
+}
+
+static BASIC_CACHE: LazyLock<Mutex<HashMap<u64, BasicCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Cheap, non-cryptographic fingerprint of a credential.
+///
+/// Only ever used as a cache key for verdicts that *already verified once*,
+/// never as an authenticator: a hit still has to match the stored password
+/// hash, and reaching a hit at all requires knowing a password that passed
+/// verification for this exact username. It keeps the presented password out
+/// of the map, which is the whole reason for not storing the pair directly.
+fn basic_cache_key(username: &str, password: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    username.hash(&mut hasher);
+    password.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Look for a recent successful verification of `username` + `password`
+/// against `password_hash`.
+fn basic_cache_get(key: u64, password_hash: &str) -> bool {
+    let mut cache = BASIC_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    match cache.get(&key) {
+        Some(entry)
+            if entry.at.elapsed() < BASIC_CACHE_TTL && entry.password_hash == password_hash =>
+        {
+            true
+        }
+        // Expired, or the account's hash changed (password reset, rehash on
+        // login): drop it so the next request pays the real cost once more.
+        Some(_) => {
+            cache.remove(&key);
+            false
+        }
+        None => false,
+    }
+}
+
+/// Record a successful verification.
+fn basic_cache_put(key: u64, password_hash: &str) {
+    let mut cache = BASIC_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= BASIC_CACHE_MAX {
+        cache.clear();
+    }
+    cache.insert(
+        key,
+        BasicCacheEntry {
+            password_hash: password_hash.to_string(),
+            at: Instant::now(),
+        },
+    );
 }
 
 /// Extract the raw session token from the `Cookie` header, if present.
@@ -127,8 +246,16 @@ pub async fn authenticate_basic(
         .await?
         .ok_or(AppError::Unauthorized)?;
 
-    if !verify_password(password, &found.password_hash) {
-        return Err(AppError::Unauthorized);
+    // WebDAV resends these credentials on every single request, so paying the
+    // full DECISION 3 Argon2id cost (~120 ms) for each PROPFIND would make
+    // desktop sync visibly sluggish. A recent, still-valid verdict short-
+    // circuits that; everything else falls through to a real verification.
+    let cache_key = basic_cache_key(username.trim(), password);
+    if !basic_cache_get(cache_key, &found.password_hash) {
+        if !verify_password(password, &found.password_hash) {
+            return Err(AppError::Unauthorized);
+        }
+        basic_cache_put(cache_key, &found.password_hash);
     }
     if !found.user.is_active {
         return Err(AppError::InactiveAccount);
