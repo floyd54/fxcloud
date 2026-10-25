@@ -157,10 +157,15 @@ pub fn token_from_cookie_header(header: Option<&str>) -> Option<String> {
     let header = header?;
     for pair in header.split(';') {
         let mut kv = pair.trim().splitn(2, '=');
-        let key = kv.next()?.trim();
-        let value = kv.next()?.trim();
-        if key == SESSION_COOKIE {
-            return Some(value.to_string());
+        // A token with no `=` (`Cookie: secure; fxcloud_session=…`) is not a
+        // name/value pair at all. Skipping that pair keeps the scan going:
+        // bailing out here would silently drop the session of every client
+        // that sends a valueless cookie before ours.
+        let (Some(key), Some(value)) = (kv.next(), kv.next()) else {
+            continue;
+        };
+        if key.trim() == SESSION_COOKIE {
+            return Some(value.trim().to_string());
         }
     }
     None
@@ -289,6 +294,20 @@ mod tests {
         assert_eq!(
             token_from_cookie_header(Some(&session("solo"))).as_deref(),
             Some("solo")
+        );
+    }
+
+    #[test]
+    fn a_valueless_token_before_ours_does_not_hide_it() {
+        // Regression: the scan used to abort at the first token without `=`,
+        // so `Cookie: secure; fxcloud_session=…` logged the user straight out.
+        assert_eq!(
+            token_from_cookie_header(Some(&format!("secure; {}", session("abc")))).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            token_from_cookie_header(Some(&format!("; {}", session("abc")))).as_deref(),
+            Some("abc")
         );
     }
 
