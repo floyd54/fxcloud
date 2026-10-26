@@ -12,9 +12,12 @@
  *   - the two-phase encrypted upload and decrypt-on-download.
  *
  * Key material lives in `state.session` and nowhere else: no localStorage,
- * no sessionStorage, no cookies, no cached response body (DECISION 7). A
- * reload puts the tab back to `locked`, which is the intended behaviour -
- * each tab proves the passphrase itself.
+ * no sessionStorage, no cookies, no cached response body (DECISION 7). The
+ * single exception is the sign-in handoff below: login.js parks the login
+ * password for the length of one page load so the tab that just signed in
+ * is not asked for it again, and this file deletes it on its first read. A
+ * reload still puts the tab back to `locked` - each tab proves the
+ * passphrase itself.
  */
 (function () {
   "use strict";
@@ -270,6 +273,10 @@
 
   async function init(username) {
     if (username) state.username = username;
+    // Taken first, whatever happens below: the parked secret must not
+    // outlive the document it arrived with, so even a failing key fetch or
+    // an unsupported browser drops it instead of leaving it behind.
+    const parked = takeHandoff();
     if (!window.crypto || !window.crypto.subtle) {
       state.status = "unsupported";
       emit();
@@ -280,6 +287,10 @@
     try {
       const body = await http("/api/keys/me").then((r) => r.json());
       adoptKeys(body.keys, "locked");
+      // Awaited rather than fired: app.js draws the folder as soon as init()
+      // resolves, so a listing rendered before this finished would show every
+      // encrypted row still locked.
+      await adoptHandoff(parked);
     } catch (e) {
       // 404 = no key row yet. Anything else (offline, 5xx) also lands here:
       // showing "setup" is the honest default, and a genuine key row will
@@ -296,6 +307,82 @@
     state.fingerprint = keys ? keys.fingerprint : null;
     state.status = nextStatus;
     emit();
+  }
+
+  // ------------------------------------------------------------------------
+  // The sign-in handoff
+  //
+  // Signing in and opening the app are two page loads, so the string the user
+  // typed does not survive the redirect by itself. login.js parks it in
+  // sessionStorage only for accounts whose key row is wrapped under the login
+  // password; everything here is about taking it exactly once.
+  // ------------------------------------------------------------------------
+
+  const HANDOFF_KEY = "fxcloud.handoff";
+  // Longer than any redirect, shorter than "back to this tab tomorrow": a
+  // value this old is a restored tab rather than a sign-in, and it must not
+  // open anything.
+  const HANDOFF_TTL_MS = 60000;
+
+  /**
+   * Take the parked password and drop it in the same tick.
+   *
+   * Read and remove are adjacent on purpose: a reload during the derivation
+   * below has to find nothing, so the secret exists in storage only between
+   * the sign-in redirect and this call - one page load, which is the
+   * DECISION 7 lifetime with the handoff spliced into it.
+   *
+   * @returns {string|null} the password to try, or null for "ask instead".
+   */
+  function takeHandoff() {
+    let raw = null;
+    try {
+      raw = sessionStorage.getItem(HANDOFF_KEY);
+      sessionStorage.removeItem(HANDOFF_KEY);
+    } catch (_) {
+      return null; // storage unavailable: the pane asks, as it always did
+    }
+    if (!raw) return null;
+    try {
+      const parked = JSON.parse(raw);
+      if (!parked || typeof parked.password !== "string" || !parked.password) return null;
+      if (typeof parked.at !== "number") return null;
+      if (Date.now() - parked.at > HANDOFF_TTL_MS) return null;
+      return parked.password;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * Unlock this tab without a prompt when sign-in already carried the secret.
+   *
+   * `pass` is what init() took from the parking spot; here it either opens
+   * this row or is dropped. Every way that fails is a normal state rather
+   * than an error: nothing was carried (a second tab, a reload, a separate
+   * passphrase), the row says "separate" so the login password is not this
+   * tab's to try, or the string does not open the stored ARK. The tab then
+   * stays `locked` and the pane is the fallback - which is also the path a
+   * stale or tampered handoff takes.
+   *
+   * @returns {Promise<boolean>} true when the tab is unlocked now.
+   */
+  async function adoptHandoff(pass) {
+    if (!pass || !state.keys) return false;
+    try {
+      const params = state.keys.kdf_params || {};
+      if (params.secret === "separate") return false;
+      const badge = $("enc-badge");
+      if (badge) badge.textContent = "Unlocking\u2026";
+      state.session = await FX().unlockAccount(state.keys, pass, derive);
+      state.status = "unlocked";
+      emit();
+      return true;
+    } catch (_) {
+      state.session = null;
+      emit(); // renders the padlock again from the unchanged status
+      return false;
+    }
   }
 
   /**
@@ -353,6 +440,15 @@
 
       setStatus("Deriving keys (Argon2id, 64 MiB)…");
       const account = await FX().generateAccount(pass, derive);
+      // DECISION 3's default only pays off if the next tab can tell which
+      // secret the row is wrapped under: sign-in carries the login password
+      // across the page load and never a separate one. kdf_params is opaque
+      // to the server (ENCRYPTION.md 5.4), so the marker rides inside it and
+      // needs no schema change - and "login" is claimed only after the check
+      // above, where the server agreed this string is the login password.
+      account.payload.kdf_params = Object.assign({}, account.payload.kdf_params, {
+        secret: reuseLogin ? "login" : "separate",
+      });
       let body;
       try {
         body = await http("/api/keys/setup", jsonCall("POST", account.payload)).then((r) =>
@@ -473,6 +569,19 @@
       const session = await FX().openWithRecovery(state.keys, recovery);
       setStatus("Re-wrapping under the new passphrase…");
       const rewrap = await FX().rewrapAccount(session.ark, pass, derive);
+      // The secret just changed, so any earlier marker is void. Claim "login"
+      // only when the server agrees this string is the login password - the
+      // rule setup follows - and "separate" on any doubt, which costs nothing
+      // but the prompt the pane gives anyway.
+      let matchesLogin = false;
+      try {
+        matchesLogin = await verifyLogin(pass);
+      } catch (_) {
+        matchesLogin = false;
+      }
+      rewrap.kdf_params = Object.assign({}, rewrap.kdf_params, {
+        secret: matchesLogin ? "login" : "separate",
+      });
       await http("/api/keys/me", jsonCall("PUT", rewrap));
       const merged = Object.assign({}, state.keys, rewrap);
       state.session = session;

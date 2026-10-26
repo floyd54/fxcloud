@@ -151,6 +151,26 @@ globalThis.confirm = function () {
   return true;
 };
 
+// Node has no sessionStorage, and fxenc.js's sign-in handoff reads and clears
+// exactly this one key. A Map behind the same three methods is the stand-in;
+// anything fxenc.js asks for that this does not model throws, which is the
+// point - a silently missing control is how wiring bugs hide.
+const parkedSecrets = new Map();
+globalThis.sessionStorage = {
+  getItem: function (key) {
+    return parkedSecrets.has(key) ? parkedSecrets.get(key) : null;
+  },
+  setItem: function (key, value) {
+    parkedSecrets.set(key, String(value));
+  },
+  removeItem: function (key) {
+    parkedSecrets.delete(key);
+  },
+  clear: function () {
+    parkedSecrets.clear();
+  },
+};
+
 // Capture the download instead of handing it to a browser.
 let lastBlob = null;
 globalThis.URL.createObjectURL = function (blob) {
@@ -489,6 +509,97 @@ async function main() {
     if (!res.ok) throw new Error("PUT -> " + res.status);
     const back = await rawGet("/api/files/preview?id=" + created.id, false);
     if (back !== "no encryption here") throw new Error("read back " + JSON.stringify(back));
+  });
+
+  // ---- 7. the sign-in handoff: the tab that just signed in must not ask ---
+  //
+  // login.js parks the password for one page load; fxenc.js has to take it
+  // exactly once, decline a wrong, stale or "separate" one without breaking
+  // anything, and leave the pane as the fallback. Every case here fails
+  // *open*: the tab ends up locked and asking, never in an error state.
+  const HANDOFF_KEY = "fxcloud.handoff";
+
+  function park(password, at) {
+    sessionStorage.setItem(HANDOFF_KEY, JSON.stringify({ password: password, at: at }));
+  }
+
+  function handoffLeft() {
+    return sessionStorage.getItem(HANDOFF_KEY);
+  }
+
+  await step("a parked sign-in secret unlocks the tab without the pane", async () => {
+    FXEnc.lockNow();
+    park(PASSPHRASE, Date.now());
+    await FXEnc.init(USERNAME);
+    if (!FXEnc.unlocked()) throw new Error("status=" + FXEnc.status());
+    if (handoffLeft() !== null) throw new Error("the parked secret survived its own read");
+  });
+
+  await step("a wrong parked secret leaves the tab locked and clears the spot", async () => {
+    FXEnc.lockNow();
+    park("not-the-passphrase", Date.now());
+    await FXEnc.init(USERNAME);
+    if (FXEnc.unlocked()) throw new Error("a wrong secret unlocked the tab");
+    if (FXEnc.status() !== "locked") throw new Error("status=" + FXEnc.status());
+    if (handoffLeft() !== null) throw new Error("the spot was not cleared");
+  });
+
+  await step("a stale parked secret is ignored (a restored tab, not a sign-in)", async () => {
+    FXEnc.lockNow();
+    park(PASSPHRASE, Date.now() - 120000);
+    await FXEnc.init(USERNAME);
+    if (FXEnc.unlocked()) throw new Error("a stale secret unlocked the tab");
+    if (handoffLeft() !== null) throw new Error("the spot was not cleared");
+  });
+
+  // The marker decides whether the login password is the right secret for a
+  // row at all: written at setup and at recovery, read on every sign-in, so
+  // it has to survive a round trip through the server's opaque kdf_params.
+  await step("a row marked 'separate' refuses the parked login password", async () => {
+    const res = await realFetch(BASE + "/api/keys/me", {
+      headers: COOKIE ? { Cookie: COOKIE } : {},
+    });
+    if (!res.ok) throw new Error("GET /api/keys/me -> " + res.status);
+    const original = (await res.json()).keys;
+    const marked = JSON.parse(JSON.stringify(original));
+    marked.kdf_params = Object.assign({}, marked.kdf_params, { secret: "separate" });
+
+    const put = async (keys) => {
+      const r = await realFetch(BASE + "/api/keys/me", {
+        method: "PUT",
+        headers: Object.assign(
+          { "Content-Type": "application/json" },
+          COOKIE ? { Cookie: COOKIE } : {}
+        ),
+        body: JSON.stringify({
+          wrapped_ark: keys.wrapped_ark,
+          kdf_salt: keys.kdf_salt,
+          kdf_params: keys.kdf_params,
+        }),
+      });
+      if (!r.ok) throw new Error("PUT /api/keys/me -> " + r.status);
+    };
+
+    try {
+      await put(marked);
+      FXEnc.lockNow();
+      park(PASSPHRASE, Date.now());
+      await FXEnc.init(USERNAME);
+      if (FXEnc.unlocked()) throw new Error("the marker did not stop the handoff");
+      if (FXEnc.status() !== "locked") throw new Error("status=" + FXEnc.status());
+      if (handoffLeft() !== null) throw new Error("the spot was not cleared");
+    } finally {
+      await put(original); // whatever happened, leave the row as it was
+    }
+  });
+
+  await step("the pane still unlocks after a declined handoff", async () => {
+    FXEnc.lockNow();
+    element("enc-unlock-pass").value = PASSPHRASE;
+    await element("enc-unlock-go").press();
+    if (!FXEnc.unlocked()) {
+      throw new Error("status=" + FXEnc.status() + " / " + element("enc-status").textContent);
+    }
   });
 
   console.log(

@@ -390,10 +390,24 @@ and one round trip per remaining grantee (DECISION 4).
   clicked, or when an upload, download or bulk action needs the key. The
   setup/unlock/recovery dialog is the only prompt; there is no unlock step
   bolted onto login, so a user who never touches an encrypted file never
-  sees it. Unlocked keys live **in memory only** for the tab's lifetime;
-  "Lock now" clears them, and so does a reload; no key material in
-  `localStorage`/`sessionStorage`. Consequence: a fresh tab requires
-  re-entering the passphrase (DECISION 7 discusses the UX tradeoff).
+  sees it.
+  **The one exception is the sign-in handoff.** When the row is wrapped
+  under the login password (the DECISION 3 default), `login.js` parks that
+  password in `sessionStorage` for the length of the redirect into the
+  app, and the app page takes it and deletes it in the same tick - so the
+  tab that just signed in unlocks without being asked for a string it was
+  given a moment ago. What makes that safe: the row records which secret
+  it is wrapped under (`kdf_params.secret`, written at setup and at
+  recovery, and `login` is claimed only after the server agreed the string
+  is the login password), so a `separate` row is never parked for; the
+  value is read and removed together, so a reload during the derivation
+  finds nothing; it expires after 60 s, because a value that old is a
+  restored tab rather than a sign-in; and a wrong or tampered one is
+  declined with the pane as the fallback. Unlocked keys live **in memory
+  only** for the tab's lifetime; "Lock now" clears them, and so does a
+  reload; no key material in `localStorage`/`sessionStorage`. Consequence:
+  a second tab, or the same tab after a reload, requires re-entering the
+  passphrase (DECISION 7 discusses the UX tradeoff).
 - **Passphrase change:** derive new KEK, rewrap ARK, upload. O(1), no file
   re-encryption, no share re-wrapping.
 - **Recovery:** if the passphrase is lost, the data is unrecoverable by
@@ -583,11 +597,14 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
    with a download button, and the dialog cannot be dismissed until it is
    acknowledged: *losing both passphrase and recovery key means losing
    every encrypted file*.
-2. **Unlock:** the badge reads "Locked"; clicking it opens a passphrase
-   field. After unlock, no visible difference - except each encrypted row
-   carries a small lock badge, and locked features (WebDAV writes,
-   preview, edit) explain why rather than failing silently. Every new tab
-   starts locked again by design.
+2. **Unlock:** a tab that just signed in with the login password opens the
+   folder without a prompt - sign-in carries that password across the page
+   load and the app takes it once (5.7). In every other case the badge
+   reads "Locked"; clicking it opens a passphrase field. After unlock, no
+   visible difference - except each encrypted row carries a small lock
+   badge, and locked features (WebDAV writes, preview, edit) explain why
+   rather than failing silently. Every reload and every new tab starts
+   locked again by design.
 3. **Upload:** indistinguishable from today; the encryption step happens
    in a Web Worker while a progress bar shows encrypt-then-upload. If the
    account has keys but the tab is locked, the batch stops and asks to
@@ -638,11 +655,15 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   page instead of failing.
 - Keys live in **memory only** - one object in the page that holds the
   opened ARK, root key and private key. Nothing goes to localStorage,
-  sessionStorage, cookies or a cached response body. The worker keeps no
-  state between messages: it is given bytes, it returns bytes, it forgets
-  them. "Lock" therefore just drops the references (and a reload lands back
-  in the locked state, which is the intended behaviour: each tab proves the
-  passphrase itself).
+  sessionStorage, cookies or a cached response body. The single value that
+  does cross a page load is the login password itself, parked by
+  `login.js` for the length of the redirect into the app and deleted by
+  `fxenc.js` on its first read (5.7): the string the user has just typed,
+  never the row's key material, and never for a row marked
+  `secret: separate`. The worker keeps no state between messages: it is
+  given bytes, it returns bytes, it forgets them. "Lock" therefore just
+  drops the references, and because the handoff is consumed once, a reload
+  lands back in the locked state - each tab proves the passphrase itself.
 - WASM dependency for Argon2id is the only new third-party crypto
   dependency; everything else is WebCrypto (audited by the browser
   vendor). No hand-rolled primitives.
@@ -651,7 +672,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **224 checks**. The additions cover the key
+- Testing: the suite now runs **236 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
   `GET /api/keys/<username>` does and does not expose), the encrypted
@@ -691,7 +712,13 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   `decryption failed for chunk 0`. The setup dialog's wiring is pinned
   as well: the pre-selected default of section 5.7, the alternative beside
   it, and the `/api/login` re-check it runs from inside an existing
-  session.
+  session. The sign-in handoff is covered from both ends: the harness
+  parks a secret and asserts that the tab opens without the pane, that a
+  wrong, stale or `separate`-marked row declines it and clears the spot in
+  every case, and that the pane still unlocks afterwards; two pins hold the
+  `login.js` side, because neither of its failure modes throws - the
+  secret has to be parked before the redirect, and never for a row whose
+  passphrase is a separate one.
 
 ---
 
@@ -730,7 +757,7 @@ security story beyond "content at rest is protected".
 | 4 | Re-key on revoke | explicit/optional action, not automatic | implement as recommended |
 | 5 | Key rotation on overwrite | no; explicit rotate action later | implement as recommended |
 | 6 | Malicious-server / key-substitution | fingerprints + TOFU now; signed keys later; reproducible builds out of scope | implement as recommended |
-| 7 | Unlock persistence | memory-only per tab in v1; device keys later | implement as recommended |
+| 7 | Unlock persistence | memory-only per tab in v1; device keys later | implement as recommended - plus the sign-in handoff of 5.7: for a `secret: login` row the login password is parked for the length of one redirect, taken once and cleared on read, so the tab that just signed in is not asked again. Nothing else is ever written, a `separate` row is never parked for, and a reload still locks the tab |
 | 8 | ZIP | client-side for encrypted, server-side stays for plaintext | implement as recommended |
 | 9 | WebDAV | hide/deny-write encrypted files in v1; sync agent later | **must work flawlessly.** Split: interim = encrypted files visible read-only as ciphertext + `PUT` rejected after `FXE1` magic check (never blind); target = `fxcloud sync` agent, promoted to committed phase 5. Detail in 7 + 12 |
 | 10 | Test strategy for client crypto | WebCrypto round-trip harness in CI + API visibility tests | implement as recommended |

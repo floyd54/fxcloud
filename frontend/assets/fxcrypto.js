@@ -508,7 +508,10 @@
         fingerprint: await fingerprint(kp.publicBlob),
       },
       // In-memory only from here on (DECISION 7): nothing below is written to
-      // localStorage or sessionStorage anywhere in this codebase.
+      // localStorage or sessionStorage anywhere in this codebase. The single
+      // value that does cross a page load is the login password that
+      // login.js parks for one navigation; fxenc.js deletes it on its first
+      // read, and it opens this row rather than being the row's key material.
       session: {
         ark: ark,
         rootKey: rootKey,

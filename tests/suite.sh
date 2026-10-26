@@ -1317,6 +1317,21 @@ SAVE_GUARD=$(printf '%s\n' "$SAVE_BODY" | grep -n 'if (editorEntry !== entry) re
   && ok "a save refreshes the folder before it drops the response" \
   || bad "saveEditor() refreshes the listing only while that file is still open"
 
+# Sign-in and the app are two page loads, so login.js has to park the password
+# while its own document still exists - and it has to ask the key row first,
+# because a separate passphrase is never carried (ENCRYPTION.md 5.7). Neither
+# mistake throws anything: both compile, run, and leave the pane asking for
+# the string the user typed a moment ago, so they are pinned here.
+LOGIN_JS=$REPO/frontend/assets/login.js
+CARRY=$(grep -n 'await carrySecretAcrossRedirect(form.password.value);' "$LOGIN_JS" | cut -d: -f1 | head -1)
+REDIRECT=$(grep -n 'window.location.href = "/";' "$LOGIN_JS" | cut -d: -f1 | head -1)
+[ -n "$CARRY" ] && [ -n "$REDIRECT" ] && [ "$CARRY" -lt "$REDIRECT" ] \
+  && ok "sign-in parks the secret before it redirects to the app" \
+  || bad "login.js parks the handoff only after its document is gone"
+grep -q 'params.secret === "separate"' "$LOGIN_JS" \
+  && ok "sign-in never parks a secret for a 'separate' row" \
+  || bad "login.js would carry the login password into a separate-passphrase account"
+
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true
 

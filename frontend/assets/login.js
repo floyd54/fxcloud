@@ -36,6 +36,41 @@
     errorBox.classList.remove("success");
   }
 
+  /**
+   * Carry the password that just signed the user in across the page load.
+   *
+   * Sign-in and the app are two documents, so nothing in memory survives the
+   * redirect below - without this the encryption pane asks for the very
+   * string typed a moment ago, whenever the account's keys are wrapped under
+   * the login password (ENCRYPTION.md 5.7, the DECISION 3 default).
+   *
+   * It is written only when the stored key row says the row is wrapped under
+   * the login password, it lives in sessionStorage for the length of one
+   * navigation, and fxenc.js deletes it on its first read - so a reload, a
+   * second tab or a restored one asks again (DECISION 7). A separate
+   * passphrase is never carried: this page does not know it. Any failure
+   * costs the handoff only; the pane is the fallback, not an error.
+   */
+  async function carrySecretAcrossRedirect(password) {
+    try {
+      const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), 3000) : null;
+      // The session cookie from the sign-in above travels with this request.
+      const res = await fetch("/api/keys/me", ctrl ? { signal: ctrl.signal } : {});
+      if (timer) clearTimeout(timer);
+      if (!res.ok) return; // no key row: nothing is wrapped under anything
+      const body = await res.json();
+      const params = (body.keys && body.keys.kdf_params) || {};
+      if (params.secret === "separate") return;
+      sessionStorage.setItem(
+        "fxcloud.handoff",
+        JSON.stringify({ password: password, at: Date.now() })
+      );
+    } catch (_) {
+      /* no handoff - the pane asks, exactly as it did before this existed */
+    }
+  }
+
   function setLoading(loading) {
     if (loading) {
       submitBtn.disabled = true;
@@ -99,7 +134,9 @@
         return;
       }
 
-      // Success – the session cookie is set; go to the app.
+      // Success – the session cookie is set; go to the app. The handoff has
+      // to be written while this document still exists.
+      await carrySecretAcrossRedirect(form.password.value);
       window.location.href = "/";
     } catch (err) {
       showError("Network error. Is the server running?");
