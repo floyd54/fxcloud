@@ -404,10 +404,13 @@ and one round trip per remaining grantee (DECISION 4).
   finds nothing; it expires after 60 s, because a value that old is a
   restored tab rather than a sign-in; and a wrong or tampered one is
   declined with the pane as the fallback. Unlocked keys live **in memory
-  only** for the tab's lifetime; "Lock now" clears them, and so does a
-  reload; no key material in `localStorage`/`sessionStorage`. Consequence:
-  a second tab, or the same tab after a reload, requires re-entering the
-  passphrase (DECISION 7 discusses the UX tradeoff).
+  only** for the tab's lifetime; "Turn off for this tab" clears them, and
+  so does a reload; no key material in `localStorage`/`sessionStorage`.
+  Consequence: a second tab, or the same tab after a reload, starts
+  **Unencrypted** - new writes are plaintext and the badge says so - and
+  opening one of the account's encrypted files asks for the passphrase
+  again (DECISION 7 discusses the UX tradeoff, DECISION 11 the writing
+  rule that follows from it).
 - **Passphrase change:** derive new KEK, rewrap ARK, upload. O(1), no file
   re-encryption, no share re-wrapping.
 - **Recovery:** if the passphrase is lost, the data is unrecoverable by
@@ -552,7 +555,7 @@ write path ever looks at the first four bytes.
 
 | Feature (code location) | Problem under encryption | Approach for v1 |
 | --- | --- | --- |
-| Upload `POST /api/files/upload` (plaintext path) | n/a - this path is not used once encryption is on | unchanged; it is reachable only while the account has no key record, because once keys exist an upload is never silently downgraded to plaintext |
+| Upload `POST /api/files/upload` (plaintext path) | n/a - not used while the badge reads "Encrypted" | unchanged; the client calls it only while the badge reads "Unencrypted" (no key record yet, or keys not loaded in this tab), decided before anything is created and said out loud in the header - never behind an "Encrypted" badge (DECISION 11) |
 | Encrypted upload (new two-phase path) | the multipart endpoint has nowhere to bind a key, because the client does not know the row's id until after the row exists | **(1)** `POST /api/files/file {parent_id, name}` reserves the row and returns its id - a duplicate name fails here, before a byte is read or encrypted; **(2)** the client encrypts against that id and `PUT /api/files/content?id=<id>&enc=1&key=<base64>` fills it. The wrapped key lands on a row that `create_file` always mints under the *uploader*, so the wrapper is this account's root key even when the destination folder belongs to someone else - no destination check is needed. Cancelling before step 1 creates nothing; a failure during step 2 deletes the half-made row and purges it from trash, so no 0-byte or half-filled row survives |
 | Download `GET /api/files/download` | returns ciphertext | client fetches, decrypts in memory, saves via Blob URL |
 | Preview `GET /api/files/preview` with `Range`, `nosniff`, `sandbox` | server cannot render or slice plaintext it does not have | **client-side preview:** download, decrypt, render from a Blob; for video/audio, decrypt chunk ranges client-side later. Until that lands (phase 2) the server answers **400** for an `enc_version > 0` row rather than `image/png` for ciphertext, and the UI never hands such a row to `<img>` or `<iframe>`: text opens in the editor, which decrypts first, and images/video/audio point at Download. Encrypted files are never served inline |
@@ -597,18 +600,27 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
    with a download button, and the dialog cannot be dismissed until it is
    acknowledged: *losing both passphrase and recovery key means losing
    every encrypted file*.
-2. **Unlock:** a tab that just signed in with the login password opens the
-   folder without a prompt - sign-in carries that password across the page
-   load and the app takes it once (5.7). In every other case the badge
-   reads "Locked"; clicking it opens a passphrase field. After unlock, no
-   visible difference - except each encrypted row carries a small lock
-   badge, and locked features (WebDAV writes, preview, edit) explain why
-   rather than failing silently. Every reload and every new tab starts
-   locked again by design.
+2. **Unlock / the badge:** the badge answers exactly one question - *are
+   new writes encrypted in this tab?* - and reads "Encrypt uploads"
+   before setup, "Unencrypted" when the keys exist but are not loaded
+   (files and uploads are stored as-is), and "Encrypted" once they are in
+   memory. A tab that just signed in with the login password opens the
+   folder as "Encrypted" without a prompt: sign-in carries that password
+   across the page load and the app takes it once (5.7). Otherwise the
+   badge reads "Unencrypted", and clicking it opens a passphrase field -
+   which is also the only way an encrypted row can be opened, since those
+   bytes cannot be read any other way. Each encrypted row carries a small
+   lock badge, and features that need a key (preview, edit, WebDAV writes
+   onto an encrypted row) explain why rather than failing silently. Every
+   reload and every new tab starts Unencrypted by design.
 3. **Upload:** indistinguishable from today; the encryption step happens
-   in a Web Worker while a progress bar shows encrypt-then-upload. If the
-   account has keys but the tab is locked, the batch stops and asks to
-   unlock *before* anything is created - it never quietly writes plaintext.
+   in a Web Worker while a progress bar shows encrypt-then-upload. The
+   batch follows the badge rather than a prompt, and the decision is taken
+   *before* anything is created: an "Encrypted" tab encrypts, an
+   "Unencrypted" tab uploads as-is and the progress line says so. Two
+   properties follow, and both are the point of the rule: plaintext is
+   never written behind an "Encrypted" badge, and no passphrase is ever
+   demanded for a write the badge already describes (DECISION 11).
    Small caveat: the server buffers uploads in memory today (constraint
    7), so very large files are already limited before encryption is
    considered - unchanged by this concept.
@@ -622,7 +634,8 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
 5. **Share** *(phase 3)*: the share dialog additionally shows the
    grantee's key fingerprint; on first share a "key changed?" warning
    appears if a cached public key differs.
-6. **Locked out?** Unlock prompt on every new tab, recovery key accepted
+6. **Locked out?** Every new tab starts Unencrypted; the passphrase turns
+   encryption back on for that tab, and the recovery key is accepted
    instead of the passphrase - it opens the same account root key and
    rewraps the outer shell under a new passphrase in one flow.
 
@@ -661,9 +674,10 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   `fxenc.js` on its first read (5.7): the string the user has just typed,
   never the row's key material, and never for a row marked
   `secret: separate`. The worker keeps no state between messages: it is
-  given bytes, it returns bytes, it forgets them. "Lock" therefore just
-  drops the references, and because the handoff is consumed once, a reload
-  lands back in the locked state - each tab proves the passphrase itself.
+  given bytes, it returns bytes, it forgets them. "Turn off" therefore
+  just drops the references, and because the handoff is consumed once, a
+  reload lands back on Unencrypted - each tab proves the passphrase
+  itself before it encrypts anything again.
 - WASM dependency for Argon2id is the only new third-party crypto
   dependency; everything else is WebCrypto (audited by the browser
   vendor). No hand-rolled primitives.
@@ -672,7 +686,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **236 checks**. The additions cover the key
+- Testing: the suite now runs **242 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
   `GET /api/keys/<username>` does and does not expose), the encrypted
@@ -687,6 +701,10 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   with the wrapped key rotating per save, a reopen that goes through a
   *fresh listing* instead of the object the save handed back, overlapping
   saves of one row, and a new file encrypted before anything can read it.
+  Two further checks hold the badge to its word from both ends: `fxenc.js`
+  has to render "Unencrypted" for a tab whose keys are not loaded and
+  "Encrypted" once they are, and `app.js` may no longer gate a write on
+  `enabled()` at all (DECISION 11).
   It runs twice - once with `Worker` undefined, the documented
   main-thread fallback, and once with a Worker whose message handler is
   the real `fxworker.js` source, cloned on both hops the way a browser
@@ -757,10 +775,11 @@ security story beyond "content at rest is protected".
 | 4 | Re-key on revoke | explicit/optional action, not automatic | implement as recommended |
 | 5 | Key rotation on overwrite | no; explicit rotate action later | implement as recommended |
 | 6 | Malicious-server / key-substitution | fingerprints + TOFU now; signed keys later; reproducible builds out of scope | implement as recommended |
-| 7 | Unlock persistence | memory-only per tab in v1; device keys later | implement as recommended - plus the sign-in handoff of 5.7: for a `secret: login` row the login password is parked for the length of one redirect, taken once and cleared on read, so the tab that just signed in is not asked again. Nothing else is ever written, a `separate` row is never parked for, and a reload still locks the tab |
+| 7 | Unlock persistence | memory-only per tab in v1; device keys later | implement as recommended - plus the sign-in handoff of 5.7: for a `secret: login` row the login password is parked for the length of one redirect, taken once and cleared on read, so the tab that just signed in is not asked again. Nothing else is ever written, a `separate` row is never parked for, and a reload puts the badge back to Unencrypted |
 | 8 | ZIP | client-side for encrypted, server-side stays for plaintext | implement as recommended |
 | 9 | WebDAV | hide/deny-write encrypted files in v1; sync agent later | **must work flawlessly.** Split: interim = encrypted files visible read-only as ciphertext + `PUT` rejected after `FXE1` magic check (never blind); target = `fxcloud sync` agent, promoted to committed phase 5. Detail in 7 + 12 |
 | 10 | Test strategy for client crypto | WebCrypto round-trip harness in CI + API visibility tests | implement as recommended |
+| 11 | Write rule while the keys are not loaded | first cut: a locked tab stops new writes and asks to unlock (9, flow 3) | **revised after v0.0.12 - follow the badge.** The two write paths (`newFile`, `uploadTree`) gate on `unlocked()`, not `enabled()`: an "Unencrypted" tab writes plaintext under a badge that says so, an "Encrypted" tab encrypts. Opening an encrypted row still prompts, because those bytes cannot be read any other way. See 9, flows 2-3 |
 
 ---
 

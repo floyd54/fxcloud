@@ -1332,6 +1332,21 @@ grep -q 'params.secret === "separate"' "$LOGIN_JS" \
   && ok "sign-in never parks a secret for a 'separate' row" \
   || bad "login.js would carry the login password into a separate-passphrase account"
 
+# Whether a new write ends up encrypted follows the badge, not a prompt.
+# Gating these two call sites on enabled() ("this account has a key record")
+# turned every reload into a passphrase request for an ordinary upload, and
+# declining threw the batch away while the header said nothing about what
+# would have happened instead - so a locked tab silently meant "blocked" and
+# an unencrypted one meant nothing in particular. The behaviour and the label
+# are one decision (ENCRYPTION.md 9, flows 2-3, DECISION 11): the labels are
+# asserted by fxenc-harness.js, the write gates are pinned here.
+[ "$(grep -c 'FXEnc\.unlocked()' "$UI")" -ge 2 ] \
+  && ok "new file and upload each decide on FXEnc.unlocked()" \
+  || bad "a write path no longer asks whether this tab is encrypted"
+grep -q 'FXEnc\.enabled()' "$UI" \
+  && bad "app.js still gates a write on FXEnc.enabled() - that is the old prompt" \
+  || ok "no write in app.js is gated on 'the account has keys' any more"
+
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true
 

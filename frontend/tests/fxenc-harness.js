@@ -342,6 +342,14 @@ async function main() {
     FXEnc.status() === "locked" && FXEnc.unlocked() === false && FXEnc.enabled() === true,
     "status=" + FXEnc.status()
   );
+  // The badge answers "are new writes encrypted in this tab?" and the answer
+  // for a tab that has keys but not loaded them is the honest one: this tab
+  // stores files as-is (ENCRYPTION.md 9, flows 2-3, DECISION 11).
+  expect(
+    "the badge calls a tab without keys 'Unencrypted', not 'Locked'",
+    element("enc-badge").textContent === "\uD83D\uDD13 Unencrypted",
+    "badge=" + element("enc-badge").textContent
+  );
 
   // ---- 2. unlock exactly as a user would: type the passphrase, press go ---
   element("enc-unlock-pass").value = PASSPHRASE;
@@ -350,6 +358,11 @@ async function main() {
     "typing the storage passphrase unlocks the tab",
     FXEnc.unlocked() === true,
     "status=" + FXEnc.status() + " / " + element("enc-status").textContent
+  );
+  expect(
+    "the badge flips to 'Encrypted' once the keys are in memory",
+    element("enc-badge").textContent === "\uD83D\uDD12 Encrypted",
+    "badge=" + element("enc-badge").textContent
   );
   expect(
     "whole-file crypto runs on " + (USE_WORKER ? "the real fxworker.js" : "the page fallback"),

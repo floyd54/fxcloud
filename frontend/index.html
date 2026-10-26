@@ -203,10 +203,12 @@
 
       <!-- Every later tab: unlock -->
       <div class="enc-pane" id="enc-pane-unlock" style="display:none">
-        <h3>Encrypted files are locked</h3>
+        <h3>This tab is unencrypted</h3>
         <p class="enc-lead">
-          Enter the storage passphrase to decrypt this session's keys. They
-          stay in this tab's memory only, and a reload locks them again.
+          Enter your storage passphrase to turn encryption on here: new files
+          and uploads are then encrypted in this browser, and this account's
+          encrypted files open. The keys stay in this tab's memory only - a
+          reload puts you back to Unencrypted.
         </p>
         <div class="field">
           <label for="enc-unlock-pass">Storage passphrase</label>
@@ -261,7 +263,7 @@
           <div class="enc-fingerprint" id="enc-info-fp">—</div>
         </div>
         <div class="modal-footer">
-          <button class="btn secondary" id="enc-info-lock" type="button">Lock now</button>
+          <button class="btn secondary" id="enc-info-lock" type="button">Turn off for this tab</button>
           <button class="btn" id="enc-info-close" type="button">Close</button>
         </div>
       </div>

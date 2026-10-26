@@ -248,14 +248,19 @@
         "Client-side encryption is not set up yet. Files you upload are stored " +
         "as-is until you turn it on. Click to set it up.";
     } else if (state.status === "locked") {
-      badge.textContent = "\uD83D\uDD12 Locked";
+      // The badge answers exactly one question: are new writes encrypted in
+      // this tab? "Unencrypted" is the honest answer for a tab whose keys
+      // are not loaded - and it is what every reload lands on, since keys
+      // live in memory only (DECISION 7).
+      badge.textContent = "\uD83D\uDD13 Unencrypted";
       badge.title =
-        "Encrypted files cannot be decrypted in this tab yet. Click to unlock.";
+        "New files and uploads in this tab are stored as-is. Click to turn " +
+        "encryption on here - that also opens this account's encrypted files.";
     } else {
-      badge.textContent = "\uD83D\uDD13 Encrypted";
+      badge.textContent = "\uD83D\uDD12 Encrypted";
       badge.title =
         "Uploads are encrypted in this browser before they leave the device. " +
-        "Click to lock or to see this account's key fingerprint.";
+        "Click to turn it off for this tab or to see this account's key fingerprint.";
     }
   }
 

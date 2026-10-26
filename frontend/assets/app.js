@@ -652,16 +652,14 @@
       }).then((r) => r.json());
       let entry = res.entry;
 
-      // With encryption on, nothing new may land in plaintext: the file is
-      // written as an empty container immediately, so the row is encrypted
-      // from its first second instead of waiting for a conversion that would
-      // otherwise never come. The same rule the upload path already follows.
-      const encrypt = FXEnc.enabled();
-      if (encrypt && !(await FXEnc.requestKeys())) {
-        alert("Encryption is locked - unlock it from the badge, then create the file again.");
-        await discardCreated(entry.id);
-        return;
-      }
+      // The badge decides, and the badge is honest about it: an Encrypted
+      // tab writes the empty container immediately, so the row is encrypted
+      // from its first second instead of waiting for a conversion that
+      // would otherwise never come; an Unencrypted tab creates a plaintext
+      // row without demanding a passphrase for a write the header already
+      // describes. The upload path takes the same decision (ENCRYPTION.md
+      // 9, flows 2 and 3).
+      const encrypt = FXEnc.unlocked();
       if (encrypt) {
         try {
           entry = await FXEnc.writeText(entry, "");
@@ -917,7 +915,7 @@
       entry.enc_version > 0
         ? FXEnc.requestKeys().then((ok) => {
             if (!ok) {
-              throw new Error("encryption is locked - unlock it from the badge to edit this file");
+              throw new Error("this file is encrypted - turn encryption on from the badge to edit it");
             }
             return FXEnc.readText(entry);
           })
@@ -1247,29 +1245,20 @@
 
     // One decision for the whole drop, taken before anything is created.
     //
-    // `enabled()` is true as soon as this account has a key record, and from
-    // that moment on an upload is never *silently* downgraded to plaintext:
-    // the user unlocks, or the batch stops before a single folder is made.
-    // Before setup the feature is simply off, and the badge in the header is
-    // what invites turning it on.
+    // It follows the badge, not a prompt: an Encrypted tab encrypts, an
+    // Unencrypted tab (keys exist, they are simply not loaded here) uploads
+    // as-is and says so in the header. So plaintext is never written behind
+    // an Encrypted badge, and no passphrase is ever demanded for a write the
+    // badge already describes. Before setup the feature is off, and the
+    // badge is what invites turning it on. Opening an encrypted row still
+    // asks - those bytes cannot be read any other way.
     //
     // The destination is deliberately not part of this test. `create_file`
     // always mints the new row under the uploader's id, so the file key is
     // always wrapped with *our* root key and stored on a row we own - which
     // makes it correct inside our own tree, inside a folder someone shared
     // with us, or anywhere else an upload is allowed to land.
-    let encrypt = false;
-    if (FXEnc.enabled()) {
-      const unlocked = await FXEnc.requestKeys();
-      if (!unlocked) {
-        alert(
-          "Encrypted upload cancelled - nothing was sent.\n\n" +
-            "Unlock encryption from the badge in the header and try again."
-        );
-        return;
-      }
-      encrypt = true;
-    }
+    const encrypt = FXEnc.unlocked();
 
     const failures = [];
     const failedDirs = new Set();
