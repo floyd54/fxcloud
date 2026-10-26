@@ -15,7 +15,7 @@ use crate::error::AppError;
 use crate::files::FileService;
 use crate::models::{
     BatchIdsRequest, BatchOutcome, BatchTransferRequest, BlobRef, CreateFileRequest,
-    CreateFolderRequest, FileEntry, RenameRequest, TransferRequest, ZipRequest,
+    CreateFolderRequest, FileEntry, RenameRequest, SetKeyRequest, TransferRequest, ZipRequest,
 };
 use crate::web::state::SharedState;
 
@@ -145,7 +145,10 @@ pub async fn delete(
 /// POST /api/files/move – move an entry into another folder (keeps its name).
 ///
 /// Enforced by the DB layer: UPDATE on the source, CREATE at the destination,
-/// and no moving items across owners.
+/// and no moving items across owners. An encrypted row arrives with its key
+/// record already re-wrapped for its destination (ENCRYPTION.md 5.4), which
+/// is why this route takes the caller-trusted door of `move_entry_rebound`
+/// rather than the key-domain guard WebDAV runs.
 pub async fn move_entry(
     State(state): State<SharedState>,
     user: AuthUser,
@@ -158,7 +161,7 @@ pub async fn move_entry(
         .ok_or(AppError::NotFound)?;
     let moved = state
         .db
-        .move_entry(user.id(), req.id, req.dest_parent, entry.name)
+        .move_entry_rebound(user.id(), req.id, req.dest_parent, entry.name)
         .await?;
     Ok(Json(json!({ "entry": moved })))
 }
@@ -588,6 +591,21 @@ pub async fn save_content(
             if key.is_empty() {
                 return Err(AppError::BadRequest("key is empty".into()));
             }
+            // A share's UPDATE grantee re-saves with the very record they
+            // were handed: the file key does not change on overwrite
+            // (DECISION 5), so the wrapper goes back verbatim and the owner
+            // keeps being able to unwrap it. Only the row's owner may *swap*
+            // that record - the server holds no key and cannot check the
+            // wrapping, and a foreign one would leave the owner holding a
+            // record nobody in their own tree can open (5.5).
+            let same_record = entry.enc_key.as_ref().is_some_and(|current| {
+                BASE64.decode(current.trim()).is_ok_and(|c| c == key)
+            });
+            if entry.owner_id != user.id() && !same_record {
+                return Err(AppError::ForbiddenDetail(
+                    "only the row's owner may change its key record".into(),
+                ));
+            }
             Some((1i64, key))
         }
         (Some(1), None) => {
@@ -641,6 +659,27 @@ pub async fn save_content(
         .entry_for_read(user.id(), q.id)
         .await?
         .ok_or(AppError::NotFound)?;
+    Ok(Json(json!({ "entry": entry })))
+}
+
+/// PUT /api/files/key – store a row's key record, leaving its bytes alone.
+///
+/// Two callers change a record and nothing else (5.5): a folder gaining its
+/// key on the first encrypted write below it, and the re-binding a move or
+/// the share-time migration performs on a row that already has one. Going
+/// through `/files/content` for that would mean re-uploading ciphertext just
+/// to swap a 32-byte wrapper, so it gets its own door - gated on PERM_UPDATE,
+/// the same mask the content write asks for (crypto mirrors the API
+/// permission), and a plaintext file has no record to replace.
+pub async fn put_key(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<SetKeyRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let key = BASE64
+        .decode(req.key.trim())
+        .map_err(|_| AppError::BadRequest("key is not valid base64".into()))?;
+    let entry = state.db.set_enc_key(user.id(), req.id, key).await?;
     Ok(Json(json!({ "entry": entry })))
 }
 
@@ -734,7 +773,10 @@ pub async fn trash_empty(
 /// POST /api/files/batch/move – move several entries into one folder.
 ///
 /// Same rules as the single-item move (permissions, owner crossing, cycle and
-/// name-collision guards), applied per item.
+/// name-collision guards), applied per item - including the caller-trusted
+/// door for encrypted rows (ENCRYPTION.md 5.4): app.js re-binds each keyed
+/// row to the destination before this request and rolls the record back for
+/// every item the server did not move.
 pub async fn batch_move(
     State(state): State<SharedState>,
     user: AuthUser,
@@ -754,7 +796,7 @@ pub async fn batch_move(
                 .ok_or(AppError::NotFound)?;
             state
                 .db
-                .move_entry(user.id(), id, req.dest_parent, entry.name)
+                .move_entry_rebound(user.id(), id, req.dest_parent, entry.name)
                 .await?;
             Ok::<(), AppError>(())
         }

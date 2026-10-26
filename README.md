@@ -24,7 +24,10 @@ with sharing, quotas and WebDAV.
   UI.
 - **Sharing** - share files/folders with other accounts using a permission
   bitmask (read 1, update 2, create 4, delete 8); shares mount in the
-  grantee's root tree and are enforced in the web UI *and* WebDAV.
+  grantee's root tree and are enforced in the web UI *and* WebDAV. When
+  encryption is on, the share also carries a key envelope sealed to the
+  grantee's public key - their fingerprint is shown for out-of-band
+  comparison - so they can unlock and actually open what is inside.
   Details: [API.md](API.md#permissions).
 - **WebDAV** - mount your files with Nextcloud desktop clients, rclone,
   Cyberduck, Windows network drives (see [WebDAV](#webdav)).
@@ -176,7 +179,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 242 checks against a throwaway instance
+./tests/suite.sh    # integration: 287 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

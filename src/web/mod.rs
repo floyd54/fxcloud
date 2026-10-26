@@ -55,7 +55,10 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/files/trash", get(routes::files::trash_list))
         .route("/files/trash/restore", post(routes::files::trash_restore))
         .route("/files/trash/purge", post(routes::files::trash_purge))
-        .route("/files/trash/empty", post(routes::files::trash_empty));
+        .route("/files/trash/empty", post(routes::files::trash_empty))
+        // Store a key record without touching bytes (folders on first
+        // encrypted write, re-binding after a move, share-time migration).
+        .route("/files/key", put(routes::files::put_key));
     // Sharing
     let api = api
         .route("/shares", post(routes::shares::create))

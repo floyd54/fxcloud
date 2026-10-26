@@ -24,6 +24,13 @@ pub enum AppError {
     #[error("forbidden: missing permission")]
     Forbidden,
 
+    /// A permission check passed in a *specific* reason the caller can act
+    /// on (e.g. "only the row's owner may change its key record"). Same
+    /// status as `Forbidden`; the difference is that a user can tell which
+    /// rule stopped them.
+    #[error("forbidden: {0}")]
+    ForbiddenDetail(String),
+
     #[error("account is not activated yet – ask an administrator to activate it")]
     InactiveAccount,
 
@@ -56,7 +63,9 @@ impl AppError {
             }
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden | AppError::InactiveAccount => StatusCode::FORBIDDEN,
+            AppError::Forbidden | AppError::ForbiddenDetail(_) | AppError::InactiveAccount => {
+                StatusCode::FORBIDDEN
+            }
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::QuotaExceeded { .. } => StatusCode::INSUFFICIENT_STORAGE,

@@ -555,6 +555,12 @@ tr.previewable { cursor: pointer; }
 .perm-checks { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
 .perm-checks label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
 
+/* The grantee's key fingerprint (5.5, DECISION 6): shown while picking, in
+   a face that can be read aloud digit by digit; a *changed* key turns it
+   into the warning it is. */
+.share-fp { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+.share-fp.fp-warn { color: var(--danger); }
+
 /* ---------- Move/Copy destination picker ---------- */
 .pick-modal { width: min(500px, calc(100vw - 32px)); }
 .pick-crumb {

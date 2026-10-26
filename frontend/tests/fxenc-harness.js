@@ -14,10 +14,12 @@
  * against a live instance exactly as a browser tab would:
  *
  *   unlock through the pane  -> encryptUpload -> download -> bytes identical
- *   writeText -> readText    -> text identical, wrapped key rotated per save
+ *   writeText -> readText    -> text identical, the file key kept per row
  *   reopening                -> through a fresh listing, not a saved object
  *   overlapping saves        -> never a row whose key and bytes disagree
  *   a brand new file         -> encrypted from its first second
+ *   a folder chain (5.2)     -> the folder gains a record, files chain to it
+ *   a share envelope (5.5)   -> sealed to a peer, opened down to the bytes
  *
  * It runs twice, because those are two different paths. By default `Worker`
  * is undefined here, so every whole-file operation takes the documented
@@ -330,6 +332,18 @@ async function createRow(name) {
   return (await res.json()).entry;
 }
 
+// What app.js transfers with: one batch move, `dest_parent: null` meaning
+// the caller's root.
+async function moveRow(id, destParent) {
+  const res = await realFetch(BASE + "/api/files/batch/move", {
+    method: "POST",
+    headers: Object.assign({ "Content-Type": "application/json" }, COOKIE ? { Cookie: COOKIE } : {}),
+    body: JSON.stringify({ ids: [id], dest_parent: destParent }),
+  });
+  if (!res.ok) throw new Error("POST /api/files/batch/move -> " + res.status);
+  return await res.json();
+}
+
 async function main() {
   const FX = globalThis.FXCrypto;
   if (!FXEnc) throw new Error("fxenc.js did not publish globalThis.FXEnc");
@@ -409,7 +423,68 @@ async function main() {
     });
   }
 
-  // ---- 4. the editor round trip a new .md file depends on -----------------
+  // ---- 4. a file inside a folder follows the chain of 5.2 ----------------
+  //
+  // encryptUpload has to wrap this row's key under the *folder's* key, not
+  // under the root key: that folder key is what a share seals (5.5), so a
+  // file chained any other way would stay unreadable for a grantee. The
+  // folder gains its own record on demand, exactly as 5.2 describes it, and
+  // nothing here creates one up front for a folder nobody wrote into.
+  const dirName = `harness-dir-${TAG}`;
+  const chainName = `harness-chain-${TAG}.bin`;
+  let dirEntry = null;
+  let chainEntry = null;
+
+  await step("uploading into a folder keys the folder and chains the file", async () => {
+    const res = await realFetch(BASE + "/api/files/folder", {
+      method: "POST",
+      headers: Object.assign(
+        { "Content-Type": "application/json" },
+        COOKIE ? { Cookie: COOKIE } : {}
+      ),
+      body: JSON.stringify({ parent_id: null, name: dirName }),
+    });
+    if (!res.ok) throw new Error("POST /api/files/folder -> " + res.status);
+    dirEntry = (await res.json()).entry;
+
+    const file = {
+      name: chainName,
+      // A copy: encryptUpload may transfer its buffer to the worker.
+      arrayBuffer: async function () {
+        return PLAIN.slice().buffer;
+      },
+    };
+    chainEntry = await FXEnc.encryptUpload(file, dirEntry.id, chainName);
+    if (!chainEntry || !chainEntry.id) throw new Error("no entry returned");
+    if (!chainEntry.enc_key) throw new Error("no key record on the file");
+
+    // The folder row as the server holds it *now* - the listing is what a
+    // later breadcrumb walk reads, so the record has to be there, not just
+    // in this tab's cache. A folder is marked by its record alone: unlike a
+    // file it carries no FXE1 version, there are no bytes under it to name
+    // a version for.
+    const folder = JSON.parse(await rawGet("/api/files/info?id=" + dirEntry.id, false)).entry;
+    if (!folder || !folder.enc_key) {
+      throw new Error(
+        "folder record: enc_key=" + (folder && folder.enc_key ? "yes" : "no") +
+          " enc_version=" + (folder && folder.enc_version)
+      );
+    }
+  });
+
+  if (chainEntry) {
+    lastBlob = null;
+    await step("a file under a keyed folder still downloads to the same bytes", async () => {
+      await FXEnc.download(chainEntry);
+      if (!lastBlob) throw new Error("no blob captured from URL.createObjectURL");
+      const got = new Uint8Array(await lastBlob.arrayBuffer());
+      if (!bytesEqual(got, PLAIN)) {
+        throw new Error("got " + got.length + " bytes, want " + PLAIN.length);
+      }
+    });
+  }
+
+  // ---- 5. the editor round trip a new .md file depends on -----------------
   const TEXT1 = "# Notiz\n\nErste Zeile mit Umlauten: aoeu\n\n- eins\n- zwei\n";
   const TEXT2 = "# Notiz (neu)\n\nZweite Fassung.\n";
   let textRow = null;
@@ -430,9 +505,14 @@ async function main() {
     });
 
     const stored1 = textRow.enc_key;
-    await step("a second save re-wraps under a fresh file key", async () => {
+    // 5.4 / DECISION 5: an overwrite passes the row's own key back, it never
+    // rotates it. A fresh key per save would still decrypt - but it would
+    // rotate the very record a share envelope and a grantee's unwrapping
+    // depend on, so the key that first reached this row has to be the one
+    // every later save keeps.
+    await step("a second save keeps the same file key (no rotation)", async () => {
       const saved = await FXEnc.writeText(textRow, TEXT2);
-      if (saved.enc_key === stored1) throw new Error("enc_key did not rotate");
+      if (saved.enc_key !== stored1) throw new Error("enc_key rotated on an overwrite");
       textRow = saved;
       const back = await FXEnc.readText(saved);
       if (back !== TEXT2) throw new Error("second round trip: " + JSON.stringify(back));
@@ -495,7 +575,7 @@ async function main() {
     });
   }
 
-  // ---- 5. the case the user reported: a brand new .md file ---------------
+  // ---- 6. the case the user reported: a brand new .md file ---------------
   await step("a newly created file is encrypted before anything reads it", async () => {
     const created = await createRow(`harness-empty-${TAG}.md`);
     // This is precisely what app.js newFile() now does when encryption is on.
@@ -508,7 +588,7 @@ async function main() {
     if (magicOf(stored) !== "FXE1") throw new Error("stored magic=" + magicOf(stored));
   });
 
-  // ---- 6. a plaintext file keeps working the way it always did ------------
+  // ---- 7. a plaintext file keeps working the way it always did ------------
   await step("a plaintext row still saves and reads in the clear", async () => {
     const created = await createRow(`harness-plain-${TAG}.txt`);
     const res = await realFetch(BASE + "/api/files/content?id=" + created.id, {
@@ -524,7 +604,159 @@ async function main() {
     if (back !== "no encryption here") throw new Error("read back " + JSON.stringify(back));
   });
 
-  // ---- 7. the sign-in handoff: the tab that just signed in must not ask ---
+  // ---- 8. sharing: one envelope per row, opened by the recipient ---------
+  //
+  // The whole point of 5.5: somebody who holds nothing but their own private
+  // key and the envelope ends up with the *exact bytes* of the file. Two
+  // fresh key pairs stand in for the second account - the seal side runs the
+  // way this tab's share dialog does it, the open side runs the way the
+  // grantee's tab does it after `openIncomingShares` (envelope, then one
+  // record per level down to the file).
+  const PEER = await FX.generateKeyPair();
+  const OTHER = await FX.generateKeyPair();
+  const PEER_USER = "harness-peer";
+  const SECRET = new TextEncoder().encode("sealed for one reader only");
+
+  await step("an ECIES envelope opens with the recipient key alone", async () => {
+    const env = await FX.eciesSeal(PEER.publicBlob, SECRET, FX.shareEnvelopeAad(7, PEER_USER));
+    const opened = await FX.eciesOpen(PEER.privateKey, env, FX.shareEnvelopeAad(7, PEER_USER));
+    if (!bytesEqual(opened, SECRET)) throw new Error("the bytes came back different");
+  });
+
+  await step("the wrong recipient key and the wrong share are refused", async () => {
+    const env = await FX.eciesSeal(PEER.publicBlob, SECRET, FX.shareEnvelopeAad(7, PEER_USER));
+    const refusals = [
+      // a different reader entirely (a colleague trying somebody else's blob)
+      () => FX.eciesOpen(OTHER.privateKey, env, FX.shareEnvelopeAad(7, PEER_USER)),
+      // the same envelope replayed against a different row's share
+      () => FX.eciesOpen(PEER.privateKey, env, FX.shareEnvelopeAad(8, PEER_USER)),
+      // a grantee handing a colleague *their* envelope as if it were his
+      () => FX.eciesOpen(PEER.privateKey, env, FX.shareEnvelopeAad(7, "someone-else")),
+    ];
+    let refused = 0;
+    for (const open of refusals) {
+      try {
+        await open();
+      } catch (_) {
+        refused += 1;
+      }
+    }
+    if (refused !== refusals.length) {
+      throw new Error(refused + " of " + refusals.length + " openings were not refused");
+    }
+  });
+
+  // The ephemeral pair is generated in the *recipient's* suite (5.5), so an
+  // account on the other curve is served, not accidentally excluded.
+  await step("a P-256 recipient gets an envelope it can open", async () => {
+    const P = await FX.generateKeyPair(FX.SUITE_P256);
+    if (P.suite !== FX.SUITE_P256) throw new Error("no P-256 pair available here");
+    const env = await FX.eciesSeal(P.publicBlob, SECRET, FX.shareEnvelopeAad(9, PEER_USER));
+    const opened = await FX.eciesOpen(P.privateKey, env, FX.shareEnvelopeAad(9, PEER_USER));
+    if (!bytesEqual(opened, SECRET)) throw new Error("P-256 round trip mismatch");
+  });
+
+  expect(
+    "the fingerprint in the share dialog reads as four blocks of eight",
+    FXEnc.formatFingerprint("0123456789abcdef0123456789abcdef") ===
+      "01234567 89abcdef 01234567 89abcdef",
+    "got " + FXEnc.formatFingerprint("0123456789abcdef0123456789abcdef")
+  );
+
+  await step("the sealed folder key opens a file below it down to the bytes", async () => {
+    if (!dirEntry || !chainEntry) throw new Error("no chained fixture from section 4");
+    // What the share dialog posts: one envelope for the folder row, sealed to
+    // the grantee's published key (shareEnvelope keys the subtree first, so
+    // every row under it unwraps from this one key - 5.2, 5.5).
+    const envelope = await FXEnc.shareEnvelope(dirEntry, PEER_USER, FX.b64encode(PEER.publicBlob));
+    if (!envelope) throw new Error("no envelope for an encrypted folder");
+    // What the grantee's tab does with it: open the envelope, then walk the
+    // child records down from the folder key instead of from a root key they
+    // never held.
+    const folderRaw = await FX.eciesOpen(
+      PEER.privateKey,
+      envelope,
+      FX.shareEnvelopeAad(dirEntry.id, PEER_USER)
+    );
+    const listing = JSON.parse(await rawGet("/api/files?parent=" + dirEntry.id, false));
+    const row = (listing.entries || []).filter((e) => e.name === chainName)[0];
+    if (!row) throw new Error("the chained file is not in its folder's listing");
+    if (!row.enc_key) throw new Error("the chained file has no key record");
+    const fileRaw = await FX.unwrapChildKey(folderRaw, row.id, row.enc_key);
+    const stored = await rawGet("/api/files/download?id=" + row.id, true);
+    const plain = await FX.decryptBytes(row.id, fileRaw, stored);
+    if (!bytesEqual(plain, PLAIN)) {
+      throw new Error("got " + plain.length + " bytes back, want " + PLAIN.length);
+    }
+  });
+
+  await step("a plaintext source needs no envelope at all", async () => {
+    const ptRow = await createRow(`harness-ptshare-${TAG}.txt`);
+    const envelope = await FXEnc.shareEnvelope(ptRow, PEER_USER, FX.b64encode(PEER.publicBlob));
+    if (envelope !== null) throw new Error("a plaintext row got an envelope");
+  });
+
+  // ---- 9. an encrypted row travels: re-bind first, then move (5.4) -------
+  //
+  // Its record is wrapped for the folder it stands in, so app.js re-wraps it
+  // for the destination *before* the row moves - which is also the reason the
+  // JSON move may cross folders at all: the server cannot read keys, and in a
+  // keyed tree every folder carries its own record. What has to hold is the
+  // simple thing: after the trip, in both directions, the same bytes open.
+  await step("an encrypted row moves into a keyed folder and still opens", async () => {
+    const destRes = await realFetch(BASE + "/api/files/folder", {
+      method: "POST",
+      headers: Object.assign(
+        { "Content-Type": "application/json" },
+        COOKIE ? { Cookie: COOKIE } : {}
+      ),
+      body: JSON.stringify({ parent_id: null, name: `harness-dest-${TAG}` }),
+    });
+    if (!destRes.ok) throw new Error("POST /api/files/folder -> " + destRes.status);
+    const dest = (await destRes.json()).entry;
+    if (!chainEntry) throw new Error("no chained fixture from section 4");
+
+    // Exactly the order transferConfirm uses: re-bind, then move. The
+    // re-bind is what gives the destination folder its own record too.
+    await FXEnc.rewrapForParent(chainEntry, dirEntry.id, dest.id);
+    const out = await moveRow(chainEntry.id, dest.id);
+    if (!out.ok || out.ok.indexOf(chainEntry.id) === -1) {
+      throw new Error("the prepared move was refused: " + JSON.stringify(out));
+    }
+
+    // Reopen the way the UI does: a fresh listing under the new parent,
+    // handed to download as a row nobody has seen before.
+    const listed = JSON.parse(await rawGet("/api/files?parent=" + dest.id, false));
+    const movedRow = (listed.entries || []).filter((e) => e.name === chainName)[0];
+    if (!movedRow) throw new Error("the row is not in its new folder");
+    lastBlob = null;
+    await FXEnc.download(movedRow);
+    if (!lastBlob) throw new Error("no blob captured after the move");
+    const afterMove = new Uint8Array(await lastBlob.arrayBuffer());
+    if (!bytesEqual(afterMove, PLAIN)) {
+      throw new Error("got " + afterMove.length + " bytes after the move, want " + PLAIN.length);
+    }
+
+    // And back, so both key domains were crossed in both directions.
+    await FXEnc.rewrapForParent(movedRow, dest.id, dirEntry.id);
+    const back = await moveRow(movedRow.id, dirEntry.id);
+    if (!back.ok || back.ok.indexOf(movedRow.id) === -1) {
+      throw new Error("the return move was refused: " + JSON.stringify(back));
+    }
+    const home = JSON.parse(await rawGet("/api/files?parent=" + dirEntry.id, false));
+    const homeRow = (home.entries || []).filter((e) => e.name === chainName)[0];
+    if (!homeRow) throw new Error("the row did not come back to its folder");
+    lastBlob = null;
+    await FXEnc.download(homeRow);
+    if (!lastBlob) throw new Error("no blob captured after the return");
+    const afterReturn = new Uint8Array(await lastBlob.arrayBuffer());
+    if (!bytesEqual(afterReturn, PLAIN)) {
+      throw new Error("got " + afterReturn.length + " bytes after the return, want " + PLAIN.length);
+    }
+    chainEntry = homeRow; // the fixture stays where section 4 left it
+  });
+
+  // ---- 10. the sign-in handoff: the tab that just signed in must not ask ---
   //
   // login.js parks the password for one page load; fxenc.js has to take it
   // exactly once, decline a wrong, stale or "separate" one without breaking

@@ -175,6 +175,14 @@ impl From<&FileEntry> for BlobRef {
 pub struct Breadcrumb {
     pub id: Option<i64>,
     pub name: String,
+    /// The crumb's key record, wrapped with *its* parent's key (5.4).
+    ///
+    /// The breadcrumb is the trail a read walks to turn stored `enc_key`
+    /// values into a usable key (5.2: every child key is wrapped with its
+    /// parent's), so one request brings the whole chain - the trail ends at
+    /// the entry itself, with its own record last.
+    #[serde(default)]
+    pub enc_key: Option<String>,
 }
 
 /// Payload for creating a new folder.
@@ -250,6 +258,11 @@ pub struct IncomingShare {
     pub owner_username: String,
     pub permissions: i64,
     pub created_at: DateTime<Utc>,
+    /// The source's key record, sealed to *my* public key (5.5). NULL for
+    /// plaintext shares. Only a share I hold carries one for me, and only
+    /// my private key opens it.
+    #[serde(default)]
+    pub envelope: Option<String>,
 }
 
 /// Payload to create a share.
@@ -260,6 +273,11 @@ pub struct CreateShareRequest {
     /// Optional permission mask; defaults to all permissions.
     #[serde(default)]
     pub permissions: Option<i64>,
+    /// ECIES envelope carrying this source's key record for the grantee
+    /// (5.5). Opaque here; only the grantee's browser can open it. Absent
+    /// for plaintext sources, which need no exchange.
+    #[serde(default)]
+    pub envelope: Option<String>,
 }
 
 /// Payload to move or copy an entry into another folder.
@@ -271,6 +289,17 @@ pub struct TransferRequest {
     pub id: i64,
     #[serde(default)]
     pub dest_parent: Option<i64>,
+}
+
+/// Payload for `PUT /api/files/key` - store a row's key record without
+/// touching its bytes (5.5: a folder gaining its key, the re-binding after
+/// a move, the share-time migration of a legacy record).
+#[derive(Debug, Deserialize)]
+pub struct SetKeyRequest {
+    pub id: i64,
+    /// Base64 of the wrapped record, exactly as every other endpoint
+    /// carries it. Empty and undecodable values are refused.
+    pub key: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -294,11 +323,23 @@ pub struct BatchTransferRequest {
 /// Payload to share several entries with one user in a single step.
 #[derive(Debug, Deserialize)]
 pub struct BatchShareRequest {
-    pub file_ids: Vec<i64>,
+    /// One item per source: each row's key record is wrapped for the same
+    /// grantee but under its own id, so the envelope cannot be shared
+    /// between them - a flat id list would have nowhere to carry it (5.5).
+    pub items: Vec<ShareItem>,
     pub username: String,
     /// Optional permission mask; defaults to all permissions.
     #[serde(default)]
     pub permissions: Option<i64>,
+}
+
+/// One source in a batch share, with the envelope for that source.
+#[derive(Debug, Deserialize)]
+pub struct ShareItem {
+    pub file_id: i64,
+    /// See `CreateShareRequest::envelope`.
+    #[serde(default)]
+    pub envelope: Option<String>,
 }
 
 /// Payload to prepare a ZIP download of a selection.

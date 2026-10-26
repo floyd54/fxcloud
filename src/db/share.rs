@@ -19,6 +19,7 @@ impl Db {
         source_id: i64,
         grantee_username: String,
         permissions: i64,
+        envelope: Option<String>,
     ) -> Result<OutgoingShare, AppError> {
         let perms = normalize(permissions);
         self.run(move |conn| {
@@ -67,9 +68,17 @@ impl Db {
 
             let now = Utc::now();
             conn.execute(
-                "INSERT INTO shares (source_id, owner_id, grantee_id, display_name, permissions, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![source_id, owner_id, grantee_id, display_name, perms, now.to_rfc3339()],
+                "INSERT INTO shares (source_id, owner_id, grantee_id, display_name, permissions, created_at, envelope)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    source_id,
+                    owner_id,
+                    grantee_id,
+                    display_name,
+                    perms,
+                    now.to_rfc3339(),
+                    envelope
+                ],
             )
             .map_err(|e| map_share_constraint(e))?;
 
@@ -135,7 +144,7 @@ impl Db {
         self.run(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT s.id, s.source_id, f.name, s.display_name, f.is_dir != 0, f.size,
-                        u.username, s.permissions, s.created_at
+                        u.username, s.permissions, s.created_at, s.envelope
                  FROM shares s
                  JOIN files f ON f.id = s.source_id
                  JOIN users  u ON u.id = s.owner_id
@@ -154,6 +163,7 @@ impl Db {
                         owner_username: r.get(6)?,
                         permissions: r.get(7)?,
                         created_at: parse_ts(&r.get::<_, String>(8)?, 8)?,
+                        envelope: r.get(9)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;

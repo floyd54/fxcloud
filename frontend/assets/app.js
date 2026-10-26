@@ -83,7 +83,11 @@
         const body = await res.json();
         if (body.error) message = body.error;
       } catch (_) {}
-      throw new Error(message);
+      const err = new Error(message);
+      // The status rides along so a caller can tell "404, nothing there"
+      // (the share dialog's "no key to exchange with") from a real failure.
+      err.status = res.status;
+      throw err;
     }
     return res;
   }
@@ -1348,19 +1352,21 @@
   // selection (bulk bar) — both go through the batch endpoints.
   function openTransferDialog(mode, entries) {
     // A copy mints a brand-new row id, and a key record is bound to its row
-    // by `child_id || version` - so the wrapped key could never be opened
-    // against the copy, and there is no re-wrap API yet (ENCRYPTION.md 5.4,
-    // DECISION 4). The server refuses this too; saying so here just means
-    // the reason arrives before a round trip that had no chance of working.
+    // by `child_id || version` (5.4) - so a copied *file's* record could
+    // never be opened against the copy. The server refuses these too; saying
+    // so here just means the reason arrives before a round trip that had no
+    // chance of working. A keyed *folder* copies fine: the copy arrives
+    // unkeyed and gains its own record on the first encrypted write below
+    // it, exactly like the original did.
     if (mode === "copy") {
-      const keyed = entries.filter((e) => e.enc_key || (e.is_dir && folderHasEnc[e.id]));
+      const keyed = entries.filter((e) => (e.is_dir ? folderHasEnc[e.id] : e.enc_key));
       if (keyed.length > 0) {
         const one = keyed.length === 1 ? `“${keyed[0].name}”` : `${keyed.length} item(s)`;
         alert(
           `Cannot copy ${one}.\n\n` +
             "A copy gets a new row id, and re-wrapping a key record for a " +
-            "new row arrives with the key-exchange phase. Move it instead, " +
-            "or download it and upload it again."
+            "new row is not wired into copy yet. Move it instead, or " +
+            "download it and upload it again."
         );
         return;
       }
@@ -1445,7 +1451,25 @@
     const dest = pickStack[pickStack.length - 1];
     const endpoint =
       transfer.mode === "move" ? "/api/files/batch/move" : "/api/files/batch/copy";
+    // Moving an encrypted row re-binds its key record to the destination
+    // folder's key (5.4: the wrapper is the parent's), so it is a keyed
+    // operation in the same sense opening one is. Without keys the row would
+    // arrive and never open again, so the move waits for the unlock prompt.
+    const keyed = transfer.mode === "move" ? transfer.entries.filter((e) => e.enc_key) : [];
+    if (keyed.length > 0 && !(await FXEnc.requestKeys())) {
+      alert("Cannot move an encrypted item while this tab holds no keys.");
+      return;
+    }
+    const oldParent = currentParent;
     try {
+      // Re-bind first, move second: the record has to name the destination
+      // before the row arrives there. The raw key is in hand the whole time,
+      // which is what makes undoing a *rejected* move - a name collision,
+      // say - one local wrap instead of a rescue operation on a row that
+      // nobody can open.
+      for (const entry of keyed) {
+        await FXEnc.rewrapForParent(entry, oldParent, dest.id);
+      }
       const res = await api(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1455,6 +1479,22 @@
         }),
       });
       const out = await res.json();
+      // Anything the server did not move goes back to naming its old parent
+      // (partial batches report the rest in `failed`).
+      const movedIds = new Set(out.ok || []);
+      for (const entry of keyed) {
+        if (movedIds.has(entry.id)) continue;
+        try {
+          await FXEnc.rewrapForParent(entry, dest.id, oldParent);
+        } catch (e) {
+          alert(
+            `"${entry.name}" could not be moved (${e.message}), and its key ` +
+              "record could not be put back either.\n\n" +
+              "Its record now names the destination folder - move it there " +
+              "once the move is allowed, and it opens again."
+          );
+        }
+      }
       closeTransferDialog();
       // 409 (name exists), 403 (missing permission), 400 (into itself, …)
       reportOutcome(out);
@@ -1582,6 +1622,9 @@
       sel.innerHTML = "<option disabled>Cannot load users</option>";
       sel.disabled = true;
     });
+    // The fingerprint appears with the dialog, not with the confirm: it is
+    // there to be compared while choosing, not after deciding.
+    showShareFingerprint();
 
     if (entries.length === 1) {
       // Existing shares only make sense item by item.
@@ -1659,6 +1702,92 @@
     }
   }
 
+  // ---------- key exchange (ENCRYPTION.md 5.5, DECISION 6) ----------
+
+  // Trust on first use for *public* fingerprints: what is remembered here
+  // is a hash of a published key - useful to nobody who steals it - and it
+  // is the one thing this app keeps in localStorage. No key material ever
+  // goes here (7, 11): the record below opens nothing.
+  const PEER_FP_KEY = "fxcloud.peerfp";
+
+  function cachedFingerprints() {
+    try {
+      return JSON.parse(localStorage.getItem(PEER_FP_KEY) || "{}");
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function rememberFingerprint(username, fingerprint) {
+    const all = cachedFingerprints();
+    all[username] = fingerprint;
+    try {
+      localStorage.setItem(PEER_FP_KEY, JSON.stringify(all));
+    } catch (_) {
+      /* private mode: TOFU then holds for this dialog, not across tabs */
+    }
+  }
+
+  /**
+   * Show the picked grantee's fingerprint as soon as they are picked - it is
+   * meant to be compared *before* anything is handed over, not after.
+   */
+  async function showShareFingerprint() {
+    const sel = document.getElementById("share-username");
+    const fpEl = document.getElementById("share-fp");
+    if (!sel || !fpEl) return;
+    const username = sel.value.trim();
+    if (!username) {
+      fpEl.textContent = "";
+      return;
+    }
+    try {
+      const body = await api(`/api/keys/${encodeURIComponent(username)}`).then((r) => r.json());
+      fpEl.textContent =
+        `${username}'s key fingerprint: ` +
+        FXEnc.formatFingerprint(body.key.fingerprint);
+      fpEl.classList.remove("fp-warn");
+    } catch (_) {
+      fpEl.textContent =
+        `${username} has no encryption set up - encrypted items stay unreadable for them.`;
+    }
+  }
+
+  /**
+   * The TOFU step before sealing anything to this user (DECISION 6): first
+   * use is confirmed and remembered, a *changed* fingerprint is spelled out
+   * as the risk it is. @returns {Promise<boolean>} false cancels the share.
+   */
+  async function confirmFingerprint(username, fingerprint) {
+    const shown = FXEnc.formatFingerprint(fingerprint);
+    const known = cachedFingerprints()[username];
+    if (known && known !== fingerprint) {
+      const fpEl = document.getElementById("share-fp");
+      if (fpEl) {
+        fpEl.textContent =
+          `key changed: ${shown} (was ${FXEnc.formatFingerprint(known)})`;
+        fpEl.classList.add("fp-warn");
+      }
+      return confirm(
+        `${username}'s key fingerprint CHANGED.\n\n` +
+          `Before: ${FXEnc.formatFingerprint(known)}\n` +
+          `Now:    ${shown}\n\n` +
+          "A change is normal after a recovery or a new device - and it is " +
+          "also how a server in the middle would hand someone else its own " +
+          "key. Compare the new fingerprint with them out of band before " +
+          "sharing anything encrypted. Continue?"
+      );
+    }
+    rememberFingerprint(username, fingerprint);
+    if (known) return true; // unchanged: nothing new to compare
+    return confirm(
+      `${username}'s key fingerprint:\n\n    ${shown}\n\n` +
+        "Compare it with what they see in their own fxcloud (badge, then " +
+        '"Show key info") if you want to be sure nobody sits in the middle. ' +
+        "It is remembered from now on, so a later change will be flagged. Continue?"
+    );
+  }
+
   async function shareAdd() {
     if (shareEntries.length === 0) return;
     const username = document.getElementById("share-username").value.trim();
@@ -1670,13 +1799,54 @@
         if (cb.checked) mask |= Number(cb.value);
       });
     try {
+      // Key exchange first (5.5): the grantee's public key decides whether
+      // an envelope can be sealed at all, and its fingerprint is what the
+      // two of you compare out of band before trusting it.
+      let pubkey = null;
+      try {
+        const keyInfo = await api(`/api/keys/${encodeURIComponent(username)}`).then((r) =>
+          r.json()
+        );
+        pubkey = keyInfo.key.public_key;
+        if (!(await confirmFingerprint(username, keyInfo.key.fingerprint))) return;
+      } catch (e) {
+        if (e.status !== 404) throw e;
+        // 404: no key row for this account. Plaintext shares still work and
+        // cost nothing; anything encrypted below would stay unreadable for
+        // them, so that much has to be said out loud.
+        const keyed = shareEntries.filter((e) => FXEnc.isEncrypted(e) || e.is_dir);
+        if (
+          keyed.length > 0 &&
+          !confirm(
+            `${username} has no encryption set up, so encrypted items ` +
+              "cannot be opened from their side.\n\nShare anyway?"
+          )
+        ) {
+          return;
+        }
+      }
+      // Sealing needs this tab's keys. A folder may hold encrypted rows no
+      // listing has shown us, so a folder share counts as keyed work too -
+      // exactly like opening one would.
+      const needsKeys = shareEntries.some((e) => FXEnc.isEncrypted(e) || e.is_dir);
+      if (needsKeys && !(await FXEnc.requestKeys())) {
+        alert("Sharing was cancelled: with locked keys no envelope can be sealed.");
+        return;
+      }
+      // One envelope per item, never per selection: each record is wrapped
+      // to its own row id, so two rows never share a blob (5.5).
+      const items = [];
+      for (const entry of shareEntries) {
+        const envelope = pubkey ? await FXEnc.shareEnvelope(entry, username, pubkey) : null;
+        items.push({ file_id: entry.id, envelope: envelope || undefined });
+      }
       // One request for the whole selection (a single item is just an array
       // of one, so both paths stay identical).
       const res = await api("/api/shares/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          file_ids: shareEntries.map((e) => e.id),
+          items,
           username,
           permissions: mask,
         }),
@@ -1716,6 +1886,9 @@
   document.getElementById("share-close-btn").addEventListener("click", closeShareDialog);
   document.getElementById("share-username").addEventListener("keydown", (e) => {
     if (e.key === "Enter") shareAdd();
+  });
+  document.getElementById("share-username").addEventListener("change", () => {
+    showShareFingerprint();
   });
   shareModal.addEventListener("click", (e) => {
     if (e.target === shareModal) closeShareDialog();

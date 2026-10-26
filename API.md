@@ -14,14 +14,15 @@ allowed -> `403`. Only `register` and `login` are public.
 | GET    | `/api/me`               | -                                  | Current user + `quota_bytes` / `used_bytes` |
 | GET    | `/api/users`            | -                                  | Accounts to share with (everyone but you: `username`, `display_name`, `is_active`) |
 | GET    | `/api/files`            | `?parent=<id>` (omit for root)     | List folder contents (dir rows carry `subtree_bytes`) |
-| GET    | `/api/files/breadcrumb` | `?id=<folderId>`                   | Breadcrumb trail            |
+| GET    | `/api/files/breadcrumb` | `?id=<folderId>`                   | Breadcrumb trail (starts with an id-less `Home` crumb; every keyed level carries its `enc_key`) |
 | POST   | `/api/files/folder`     | `{parent_id, name}`                | Create folder               |
 | POST   | `/api/files/file`       | `{parent_id, name}`                | Create empty file (409 on duplicates) |
 | POST   | `/api/files/folder/ensure` | `{parent_id, name}`             | Get-or-create folder (idempotent; powers folder uploads) |
 | POST   | `/api/files/upload`     | multipart: `parent`, `file`        | Upload file                 |
 | GET    | `/api/files/download`   | `?id=<fileId>`                     | Download file               |
 | GET    | `/api/files/preview`    | `?id=<fileId>` (+ optional `Range`) | Inline preview (206/416 ranges; `CSP: sandbox` for HTML/SVG) |
-| PUT    | `/api/files/content`    | `?id=<fileId>`, body = raw text    | Overwrite file content (editor save; quota-checked, 507 when full) |
+| PUT    | `/api/files/content`    | `?id=<fileId>`, body = raw text    | Overwrite file content (editor save; quota-checked, 507 when full). Encrypted rows add `&enc=1&key=<base64 file key>` and require an `FXE1` body; a `key` requires `enc=1`, `enc=1` requires a key, and `enc=0` is refused on an encrypted row (ENCRYPTION.md 5.4) |
+| PUT    | `/api/files/key`        | `{id, key}`                        | Store an entry's key record (a folder gaining its chain key, the re-bind a move or share performs). `key` is base64, PERM_UPDATE required, plaintext file = 400 (ENCRYPTION.md 5.4/5.5) |
 | GET    | `/api/files/info`       | `?id=<entryId>`                    | One entry + viewer rights   |
 | POST   | `/api/files/rename`     | `{id, name}`                       | Rename entry                |
 | POST   | `/api/files/delete`     | `{id}`                             | Delete (recursive for dirs) |
@@ -36,8 +37,8 @@ allowed -> `403`. Only `register` and `login` are public.
 | POST   | `/api/files/trash/restore` | `{id}`                           | Bring a trashed entry back (suffix on name clash) |
 | POST   | `/api/files/trash/purge` | `{id}`                            | Delete one trashed entry for good |
 | POST   | `/api/files/trash/empty` | -                                 | Delete the caller's whole trash now |
-| POST   | `/api/shares`           | `{file_id, username, permissions?}`| Share with a user           |
-| POST   | `/api/shares/batch`     | `{file_ids, username, permissions?}` | Share a selection with one user |
+| POST   | `/api/shares`           | `{file_id, username, permissions?, envelope?}` | Share with a user (`envelope` = opaque key envelope sealed to the grantee, ENCRYPTION.md 5.5; empty or > 8192 chars = 400) |
+| POST   | `/api/shares/batch`     | `{items: [{file_id, envelope?}], username, permissions?}` | Share a selection with one user (one envelope per item; the old `file_ids` body no longer deserializes) |
 | DELETE | `/api/shares/:id`       | -                                  | Revoke share (owner/grantee)|
 | GET    | `/api/shares/outgoing`  | `?file_id=<id>` (optional filter)  | Shares I created            |
 | GET    | `/api/shares/incoming`  | -                                  | Shares given to me          |
@@ -68,7 +69,7 @@ delete):
 | Bit  | Value | Meaning                                   |
 | ---- | ----- | ----------------------------------------- |
 | READ | 1     | View/download, list folder contents       |
-| UPDATE | 2   | Overwrite file content, rename/move       |
+| UPDATE | 2   | Overwrite file content, rename/move, store a key record (`PUT /api/files/key`) |
 | CREATE | 4   | Add files/folders inside a shared folder  |
 | DELETE | 8   | Delete the item (or children of a folder) |
 | SHARE | 16   | Reserved for re-sharing (not wired up yet)|
@@ -78,6 +79,15 @@ A share appears in the grantee's root file tree under a unique display name
 creates inside a shared folder lands in the *owner's* tree. Children inherit
 access through the covering share, and the same rules apply to the REST API
 and to WebDAV.
+
+For accounts with encryption on, the share carries one extra piece: the
+**key envelope**, sealed client-side to the grantee's public key before the
+request goes. The server stores it opaque, checks only that it is present
+when given and at most 8192 characters, and hands it back on
+`/api/shares/incoming` - that blob plus the grantee's own private key is
+what makes a shared encrypted folder readable. See ENCRYPTION.md 5.5 for
+the format, the AAD and the walk a grantee performs with it; PERM_UPDATE is
+what gates every write to a key record, mirroring the API permission.
 
 Moves and copies take `dest_parent: null` for your own root, keep the
 original name (`409` on collision), refuse crossing owners, and enforce the

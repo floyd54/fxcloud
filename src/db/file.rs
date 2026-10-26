@@ -495,13 +495,18 @@ impl Db {
             let mut current = Some(id);
             let mut top_owner: Option<i64> = None;
             while let Some(cid) = current {
-                let (name, parent, owner): (String, Option<i64>, i64) = conn.query_row(
-                    "SELECT name, parent_id, owner_id FROM files WHERE id = ?1",
-                    params![cid],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )?;
+                let (name, parent, owner, enc_key): (String, Option<i64>, i64, Option<Vec<u8>>) =
+                    conn.query_row(
+                        "SELECT name, parent_id, owner_id, enc_key FROM files WHERE id = ?1",
+                        params![cid],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )?;
                 top_owner = Some(owner);
-                trail.push(Breadcrumb { id: Some(cid), name });
+                trail.push(Breadcrumb {
+                    id: Some(cid),
+                    name,
+                    enc_key: enc_key.map(|b| BASE64.encode(b)),
+                });
                 current = parent;
             }
             trail.reverse();
@@ -520,7 +525,16 @@ impl Db {
                 }
             }
             // Prepend the implicit root.
-            trail.insert(0, Breadcrumb { id: None, name: "Home".to_string() });
+            trail.insert(
+                0,
+                Breadcrumb {
+                    id: None,
+                    name: "Home".to_string(),
+                    // The synthetic root has no row and therefore no key
+                    // record: a read starts from the session's root key.
+                    enc_key: None,
+                },
+            );
             Ok(trail)
         })
         .await
@@ -589,12 +603,54 @@ impl Db {
     ///
     /// Foreign entries require UPDATE on the source and CREATE at the
     /// destination; moving an item across owners is refused (use COPY).
+    /// Move a row within one owner's tree (UPDATE on the source, CREATE at
+    /// the destination, never across owners).
+    ///
+    /// This is the key-blind door: WebDAV MOVE takes it and holds no keys
+    /// (DECISION 9 - treat encrypted rows as opaque), so a keyed row may
+    /// only travel between parents that already carry the same key record.
+    /// Anything else would produce a row whose record no longer opens, and
+    /// the move refuses rather than doing that silently.
     pub async fn move_entry(
         &self,
         user_id: i64,
         id: i64,
         new_parent: Option<i64>,
         new_name: String,
+    ) -> Result<FileEntry, AppError> {
+        self.move_entry_inner(user_id, id, new_parent, new_name, true)
+            .await
+    }
+
+    /// The JSON move: the caller re-wrapped the row's key record for its
+    /// destination *before* asking (ENCRYPTION.md 5.4 - app.js re-binds,
+    /// moves, and puts the record back if the move is refused), so only the
+    /// metadata travels now.
+    ///
+    /// The server cannot read keys and so cannot verify that wrap. This is
+    /// the position `PUT /files/key` already takes for the same caller:
+    /// PERM_UPDATE is the check, the crypto stays the client's. Keeping the
+    /// key-domain guard here would refuse exactly the moves the client
+    /// prepared - in a keyed tree every folder carries its own record, so
+    /// every destination differs from every source (5.4).
+    pub async fn move_entry_rebound(
+        &self,
+        user_id: i64,
+        id: i64,
+        new_parent: Option<i64>,
+        new_name: String,
+    ) -> Result<FileEntry, AppError> {
+        self.move_entry_inner(user_id, id, new_parent, new_name, false)
+            .await
+    }
+
+    async fn move_entry_inner(
+        &self,
+        user_id: i64,
+        id: i64,
+        new_parent: Option<i64>,
+        new_name: String,
+        guard_key_domains: bool,
     ) -> Result<FileEntry, AppError> {
         self.run(move |conn| {
             validate_name(&new_name)?;
@@ -610,18 +666,18 @@ impl Db {
                     "cannot move an item across owners".into(),
                 ));
             }
-            // A key record is wrapped under the *source* parent's key, so a
-            // move is a pure metadata operation only while both parents carry
-            // the same key record (ENCRYPTION.md 5.4). No folder has one today
-            // - everything wraps against the account root - so this never
-            // fires yet; it exists so that the moment folders are keyed a move
-            // refuses instead of producing a row that no longer decrypts.
+            // A key record is wrapped under the *source* parent's key, so for
+            // a caller that holds no keys a move is a pure metadata operation
+            // only while both parents carry the same key record
+            // (ENCRYPTION.md 5.4). The JSON routes arrive with the record
+            // already re-wrapped for the destination and skip this; WebDAV,
+            // which cannot re-wrap, is exactly what it is here for.
             let (keyed, src_parent): (Option<Vec<u8>>, Option<i64>) = conn.query_row(
                 "SELECT enc_key, parent_id FROM files WHERE id = ?1",
                 params![id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
-            if keyed.is_some() {
+            if guard_key_domains && keyed.is_some() {
                 let key_of = |parent: Option<i64>| -> rusqlite::Result<Option<Vec<u8>>> {
                     match parent {
                         None => Ok(None),
@@ -767,14 +823,19 @@ impl Db {
         .await
     }
 
-    /// Names of every entry at or below `id` that carries a key record.
+    /// Names of every *file* at or below `id` that carries a key record.
     ///
     /// A copy mints new row ids, and a key record's AAD binds it to the id it
-    /// was wrapped for (ENCRYPTION.md 5.4), so none of these can survive being
-    /// copied: the result would look perfectly healthy and never decrypt. The
-    /// fix is a client-side re-wrap of each record under the destination key,
-    /// which has no API yet - this helper is what lets the copy paths refuse
-    /// loudly instead of handing back a row that silently fails to open.
+    /// was wrapped for (ENCRYPTION.md 5.4), so a copied record could never be
+    /// opened: the result would look perfectly healthy and never decrypt. The
+    /// client therefore refuses loudly instead of handing back a row that
+    /// silently fails to open; `PUT /api/files/key` is the re-wrap API such a
+    /// copy will build on once copy is taught to re-bind.
+    ///
+    /// Folders are excluded on purpose. Their records are wrapped with their
+    /// *parent's* key and re-created for a copy (a fresh folder is keyed
+    /// lazily on the first encrypted write below it), so a keyed folder of
+    /// plaintext files must keep copying exactly like an unkeyed one.
     pub async fn subtree_keyed_names(&self, id: i64) -> Result<Vec<String>, AppError> {
         self.run(move |conn| {
             let mut stmt = conn.prepare(
@@ -785,12 +846,57 @@ impl Db {
                  )
                  SELECT name FROM files
                   WHERE id IN (SELECT id FROM subtree) AND enc_key IS NOT NULL
-                  ORDER BY is_dir DESC, name COLLATE NOCASE ASC",
+                    AND is_dir = 0
+                  ORDER BY name COLLATE NOCASE ASC",
             )?;
             let names = stmt
                 .query_map(params![id], |r| r.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(names)
+        })
+        .await
+    }
+
+    /// Store a row's key record, replacing whatever it held (ENCRYPTION.md
+    /// 5.5), without touching the row's bytes.
+    ///
+    /// Permission is PERM_UPDATE, the same mask the content write asks for:
+    /// the owner re-binding a record after a move or during the share-time
+    /// migration, and a share's UPDATE grantee re-binding one they hold the
+    /// raw key for (the crypto mirrors the API permission, it does not
+    /// replace it). The server cannot check the wrapping - it holds no key -
+    /// but a caller with UPDATE can already overwrite the bytes, so this
+    /// hands out no new capability. A plaintext file has no record to
+    /// replace and is refused; a folder may gain one at any time, because
+    /// folders start unkeyed and are keyed on the first encrypted write
+    /// below them.
+    pub async fn set_enc_key(
+        &self,
+        user_id: i64,
+        id: i64,
+        key: Vec<u8>,
+    ) -> Result<FileEntry, AppError> {
+        self.run(move |conn| {
+            if key.is_empty() {
+                return Err(AppError::BadRequest("key is empty".into()));
+            }
+            let tree_owner = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
+            let (is_dir, enc_version): (bool, i64) = conn
+                .query_row(
+                    "SELECT is_dir != 0, enc_version FROM files WHERE id = ?1 AND owner_id = ?2",
+                    params![id, tree_owner],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .ok_or(AppError::NotFound)?;
+            if !is_dir && enc_version == 0 {
+                return Err(AppError::BadRequest("this file is not encrypted".into()));
+            }
+            conn.execute(
+                "UPDATE files SET enc_key = ?1 WHERE id = ?2 AND owner_id = ?3",
+                params![key, id, tree_owner],
+            )?;
+            get_entry_by_id(conn, id)
         })
         .await
     }

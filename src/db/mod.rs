@@ -115,6 +115,15 @@ impl Db {
                      WHERE name = 'enc_key'",
                 ),
             ),
+            (
+                "008_share_envelopes",
+                include_str!("../../migrations/008_share_envelopes.sql"),
+                // Skip once `shares.envelope` exists.
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('shares')
+                     WHERE name = 'envelope'",
+                ),
+            ),
         ];
         let conn = self.pool.get()?;
         for (name, sql, guard) in MIGRATIONS {

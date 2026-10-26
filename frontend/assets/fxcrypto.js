@@ -391,18 +391,32 @@
 
   /**
    * DECISION 1: try X25519 first, fall back to P-256. Which one a given
-   * browser gets is recorded in the leading byte of `public_key`, so the
-   * share envelopes of phase 3 can dispatch on it instead of guessing.
+   * browser gets is recorded in the leading byte of `public_key`, so a share
+   * envelope dispatches on it instead of guessing.
+   *
+   * `preferredSuite` pins the curve for an *ephemeral* pair (5.5): a seal
+   * generates its throwaway pair in the recipient's suite, so a P-256
+   * account never has to hold an X25519 key it could not read either. A
+   * browser that cannot produce the pinned suite fails loudly here rather
+   * than sealing to a curve the recipient cannot open.
    */
-  async function generateKeyPair() {
+  async function generateKeyPair(preferredSuite) {
     var kp;
     var suite;
-    try {
+    if (preferredSuite === SUITE_X25519) {
       kp = await subtle().generateKey({ name: "X25519" }, true, ["deriveBits"]);
       suite = SUITE_X25519;
-    } catch (_) {
+    } else if (preferredSuite === SUITE_P256) {
       kp = await subtle().generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
       suite = SUITE_P256;
+    } else {
+      try {
+        kp = await subtle().generateKey({ name: "X25519" }, true, ["deriveBits"]);
+        suite = SUITE_X25519;
+      } catch (_) {
+        kp = await subtle().generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+        suite = SUITE_P256;
+      }
     }
     var raw = new Uint8Array(await subtle().exportKey("raw", kp.publicKey));
     var pkcs8 = new Uint8Array(await subtle().exportKey("pkcs8", kp.privateKey));
@@ -461,6 +475,106 @@
     var s = String(hex).toLowerCase();
     if (s.length !== 32) return s;
     return s.slice(0, 8) + " " + s.slice(8, 16) + " " + s.slice(16, 24) + " " + s.slice(24, 32);
+  }
+
+  // ---- key exchange (ECIES, ENCRYPTION.md 5.5) --------------------------
+
+  /**
+   * HKDF labels for one envelope's key-agreement step. Fixed labels, no
+   * per-share salt: the shared secret is already fresh (a new ephemeral
+   * pair per envelope) and the AAD binds the result to one share, so
+   * nothing here has to be unique per wrap.
+   */
+  var SHARE_HKDF_SALT = utf8("fx1:share-kek:v1");
+  var SHARE_HKDF_INFO = utf8("fx1:share:v1");
+
+  /** Raw point length behind a suite byte (a published blob is suite || point). */
+  function publicKeyLen(suite) {
+    if (suite === SUITE_X25519) return 32;
+    if (suite === SUITE_P256) return 65; // uncompressed point: "04" || x || y
+    throw new Error("unknown key suite " + suite);
+  }
+
+  /**
+   * AAD binding one envelope to its share (5.5): the source row and the
+   * grantee it was sealed for, plus the key-record version so a future
+   * record format cannot be replayed as this one.
+   *
+   * Both bindings do real work. A stored envelope cannot be replayed against
+   * a second share of the same source, and a grantee cannot hand a colleague
+   * *their* envelope as if it had been sealed for the colleague - re-sharing
+   * means re-wrapping the record they hold, which is the only honest way to
+   * hand it on (5.5: the crypto mirrors the permission, it does not replace
+   * it).
+   */
+  function shareEnvelopeAad(sourceId, grantee) {
+    return concat(u64be(sourceId), utf8(String(grantee)), new Uint8Array([KEY_RECORD_VERSION]));
+  }
+
+  /**
+   * Seal one key record to a recipient's published key (5.5).
+   *
+   * ECIES: ephemeral ECDH in the *recipient's* suite -> HKDF-SHA-256 ->
+   * AES-256-GCM. One envelope carries exactly one wrapped record - a folder
+   * key or a file key, never a whole subtree - because the recipient walks
+   * the child records down from it with the parent-wraps-child scheme (5.2).
+   *
+   * The result is `suite || ephPub || iv(12) || ct`, where the leading suite
+   * byte doubles as the ephemeral public key's own prefix: the reader picks
+   * the curve from the blob itself, so sender and recipient never negotiate
+   * anything out of band.
+   */
+  async function eciesSeal(recipientPublicBlob, plaintext, aad) {
+    if (!recipientPublicBlob || recipientPublicBlob.length < 2) {
+      throw new Error("recipient public key is too short");
+    }
+    // Parse before generating anything: garbage suite bytes fail here with a
+    // clear message instead of producing an envelope nobody can open.
+    publicKeyLen(recipientPublicBlob[0]);
+    var recipient = await importPublicKey(recipientPublicBlob);
+    var eph = await generateKeyPair(recipientPublicBlob[0]);
+    var shared = await ecdhBits(eph.privateKey, recipient);
+    var wrapKey = await hkdf(shared, SHARE_HKDF_SALT, SHARE_HKDF_INFO, KEY_LEN);
+    return b64encode(concat(eph.publicBlob, await wrap(wrapKey, plaintext, aad)));
+  }
+
+  /**
+   * Open a sealed envelope with my own private key. Throws the same message
+   * as an unwrappable key record: "not mine" and "tampered" are one answer
+   * on purpose, because telling them apart would tell a prober something.
+   */
+  async function eciesOpen(privateKey, envelopeB64, aad) {
+    var blob = b64decode(envelopeB64);
+    var pubLen;
+    try {
+      pubLen = publicKeyLen(blob[0]);
+    } catch (_) {
+      throw new Error("could not unwrap this key - wrong passphrase, or the data was altered");
+    }
+    if (blob.length < 1 + pubLen + NONCE_LEN + TAG_LEN) {
+      throw new Error("could not unwrap this key - wrong passphrase, or the data was altered");
+    }
+    var ephPub = await importPublicKey(blob.subarray(0, 1 + pubLen));
+    var gcm = blob.subarray(1 + pubLen);
+    var shared = await ecdhBits(privateKey, ephPub);
+    var wrapKey = await hkdf(shared, SHARE_HKDF_SALT, SHARE_HKDF_INFO, KEY_LEN);
+    return unwrap(wrapKey, gcm, aad);
+  }
+
+  /**
+   * ECDH over a private key of mine and a public key of theirs (the
+   * ephemeral one when opening, the recipient's when sealing). `deriveBits`
+   * names the *algorithm of the private key* and carries the peer key along;
+   * the curve lives on the key objects, so this reads it off mine.
+   */
+  async function ecdhBits(privateKey, peerPublic) {
+    var name = privateKey.algorithm && privateKey.algorithm.name;
+    if (name !== "X25519" && name !== "ECDH") {
+      throw new Error("unsupported key agreement suite " + name);
+    }
+    return new Uint8Array(
+      await subtle().deriveBits({ name: name, public: peerPublic }, privateKey, 256)
+    );
   }
 
   // ---- account setup / unlock -------------------------------------------
@@ -692,6 +806,15 @@
     generateKeyPair: generateKeyPair,
     importPublicKey: importPublicKey,
     importPrivateKey: importPrivateKey,
+    // Suite bytes, so a test can pin the *other* curve (5.5: the ephemeral
+    // pair follows the recipient's suite, and only the caller can name it).
+    SUITE_X25519: SUITE_X25519,
+    SUITE_P256: SUITE_P256,
+
+    // key exchange (5.5)
+    shareEnvelopeAad: shareEnvelopeAad,
+    eciesSeal: eciesSeal,
+    eciesOpen: eciesOpen,
 
     // account lifecycle
     generateAccount: generateAccount,

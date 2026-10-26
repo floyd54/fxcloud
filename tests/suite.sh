@@ -301,12 +301,12 @@ RC=$(reqcode GET /api/me "$JA")
   || bad "session dead after the re-check: $RC"
 
 note "alice shares [a.txt, docs] with bob (read-only) in one call"
-OUT=$(req POST /api/shares/batch "$JA" "{\"file_ids\":[$A,$DOC],\"username\":\"bob\",\"permissions\":1}")
+OUT=$(req POST /api/shares/batch "$JA" "{\"items\":[{\"file_id\":$A},{\"file_id\":$DOC}],\"username\":\"bob\",\"permissions\":1}")
 echo "$OUT"
 echo "$OUT" | grep -q '"ok":\[3,1\]' && ok "two shares created in one request" || bad "unexpected: $OUT"
 
 note "alice shares the same two again -> both conflict"
-OUT=$(req POST /api/shares/batch "$JA" "{\"file_ids\":[$A,$DOC],\"username\":\"bob\",\"permissions\":1}")
+OUT=$(req POST /api/shares/batch "$JA" "{\"items\":[{\"file_id\":$A},{\"file_id\":$DOC}],\"username\":\"bob\",\"permissions\":1}")
 echo "$OUT"
 FAILED=$(printf '%s' "$OUT" | perl -MJSON::PP -0777 -ne 'print scalar @{decode_json($_)->{failed}}')
 [ "$FAILED" = "2" ] && ok "duplicate shares reported as failures" || bad "expected 2 failures: $OUT"
@@ -427,8 +427,8 @@ for p in batch/delete batch/move batch/copy; do
   CODE=$(reqcode POST "/api/files/$p" "$JA" '{"ids":[]}')
   [ "$CODE" = "400" ] && ok "$p with empty ids -> 400" || bad "expected 400 from $p, got $CODE"
 done
-CODE=$(reqcode POST "/api/shares/batch" "$JA" '{"file_ids":[],"username":"bob"}')
-[ "$CODE" = "400" ] && ok "shares/batch with empty ids -> 400" || bad "expected 400, got $CODE"
+CODE=$(reqcode POST "/api/shares/batch" "$JA" '{"items":[],"username":"bob"}')
+[ "$CODE" = "400" ] && ok "shares/batch with nothing selected -> 400" || bad "expected 400, got $CODE"
 
 note "selection over the 1 GiB cap -> 400 with size"
 sqlite3 "$DATA/fxcloud.db" "UPDATE files SET size=2147483648 WHERE id=$A;"
@@ -646,7 +646,7 @@ RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" -H 'Content-Type: te
 [ "$RC" = "400" ] && ok "save to a folder -> 400" || bad "expected 400 for folder, got $RC"
 
 note "a write share lets the grantee save, the owner sees it"
-req POST /api/shares/batch "$JA" "{\"file_ids\":[$EDID],\"username\":\"bob\",\"permissions\":3}" >/dev/null
+req POST /api/shares/batch "$JA" "{\"items\":[{\"file_id\":$EDID}],\"username\":\"bob\",\"permissions\":3}" >/dev/null
 RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JB" -H 'Content-Type: text/plain' \
   --data-binary 'written by bob' "$BASE/api/files/content?id=$EDID")
 [ "$RC" = "200" ] && ok "write share -> save allowed" || bad "expected 200 for write share, got $RC"
@@ -1141,6 +1141,175 @@ curl -s -o "$ROOT/enc-got.bin" -b "$JA" "$BASE/api/files/download?id=$EID"
   && ok "still decryptable after a rename and a move (AAD is id + version only)" \
   || bad "decryption broke after rename/move"
 
+# ---- key exchange: envelopes and folder key records (5.2 / 5.5) --------
+# A grantee has to be able to *open* what a share points at, so the server
+# stores two things it cannot read: one envelope per item (5.5) and the key
+# records of a folder chain (5.2). Every check below is one the client's
+# walk down that chain - or the share dialog sealing into it - depends on.
+note "key exchange: an envelope rides with the share (5.5)"
+
+# A fresh encrypted row, shared the way the dialog shares now: one envelope
+# per item, sealed for the grantee's published key before the request goes.
+printf 'sealed for bob, opened with his own key\n' > "$ROOT/src/keyguard.txt"
+RC=$(reqsave POST /api/files/file "$JA" "$ROOT/k.json" "{\"parent_id\":$DOC,\"name\":\"keyguard.txt\"}")
+KGID=$(jget "$(cat "$ROOT/k.json")" entry.id)
+[ "$RC" = "200" ] && [ -n "$KGID" ] \
+  && ok "the key-exchange fixture row is reserved" \
+  || bad "create: $RC $(cat "$ROOT/k.json")"
+GKEY=$("$NODE" "$FXTOOL" encrypt "$FXS" "$KGID" "$ROOT/src/keyguard.txt" "$ROOT/kg-cipher.bin" 2>"$ROOT/fx.err")
+RC=$(curl -s -o "$ROOT/k.json" -w '%{http_code}' -X PUT -b "$JA" -c "$JA" \
+  -H 'Content-Type: application/octet-stream' --data-binary "@$ROOT/kg-cipher.bin" \
+  "$BASE/api/files/content?id=$KGID&enc=1&key=$(urlencode "$GKEY")")
+[ "$RC" = "200" ] && [ -n "$GKEY" ] \
+  && ok "the fixture lands encrypted, record and ciphertext on the same row" \
+  || bad "fixture upload: $RC key='$GKEY' $(cat "$ROOT/k.json")"
+
+ENV1='ZXZfZW52ZWxvcGVfMDAxMjM0NTY3ODk'
+BIG=$(printf 'a%.0s' $(seq 1 9000))
+
+# Checked before the loop, so one oversized blob cannot leave half of a
+# selection shared without it.
+RC=$(reqsave POST /api/shares/batch "$JA" "$ROOT/k.json" \
+  "{\"items\":[{\"file_id\":$KGID,\"envelope\":\"$BIG\"}],\"username\":\"bob\",\"permissions\":3}")
+[ "$RC" = "400" ] && grep -q "8192" "$ROOT/k.json" \
+  && ok "an oversized envelope is refused before anything is shared (8 KiB cap)" \
+  || bad "big envelope: $RC $(cat "$ROOT/k.json")"
+
+OUT=$(req POST /api/shares/batch "$JA" \
+  "{\"items\":[{\"file_id\":$KGID,\"envelope\":\"$ENV1\"}],\"username\":\"bob\",\"permissions\":3}")
+echo "$OUT"
+printf '%s' "$OUT" | grep -q '"ok":\[' \
+  && ok "an item may carry an envelope into the batch request" \
+  || bad "batch with envelope: $OUT"
+
+BINC=$(req GET /api/shares/incoming "$JB")
+BENV=$(printf '%s' "$BINC" | perl -MJSON::PP -0777 -ne '
+  for my $s (@{decode_json($_)->{shares} || []}) {
+    next unless defined $s->{file_id} && $s->{file_id} == '"$KGID"';
+    print defined $s->{envelope} ? $s->{envelope} : "";
+    last;
+  }')
+[ "$BENV" = "$ENV1" ] && ok "the envelope reaches the grantee's inbox byte for byte" \
+  || bad "incoming envelope: '$BENV' want '$ENV1'"
+AENV=$(printf '%s' "$BINC" | perl -MJSON::PP -0777 -ne '
+  for my $s (@{decode_json($_)->{shares} || []}) {
+    next unless defined $s->{file_id} && $s->{file_id} == '"$A"';
+    print defined $s->{envelope} ? $s->{envelope} : "";
+    last;
+  }')
+[ -z "$AENV" ] && ok "a share sent without an envelope stays without one" \
+  || bad "the plaintext share grew an envelope: '$AENV'"
+
+# The body shape moved with the exchange: `items` names the row *and* its
+# envelope, so the retired field cannot silently be shared without one. The
+# JSON extractor reads a schema mismatch as 422 rather than 400 - what
+# matters here is that the request never reaches a single share.
+RC=$(reqsave POST /api/shares/batch "$JA" "$ROOT/k.json" \
+  "{\"file_ids\":[$A],\"username\":\"bob\",\"permissions\":1}")
+[ "$RC" = "422" ] \
+  && ok "the retired file_ids body is refused (items is the shape now)" \
+  || bad "legacy batch body: $RC $(cat "$ROOT/k.json")"
+
+note "PUT /api/files/key: the folder record the chain is built from (5.2)"
+# A folder gains its record lazily - on the first encrypted write below it,
+# or when a share migrates the subtree - and this is the door for that.
+KTF=$(jget "$(req POST /api/files/folder "$JA" '{"name":"keytest"}')" entry.id)
+printf 'plaintext inside a keyed folder\n' > "$ROOT/src/innerplain.txt"
+PLAINID=$(jget "$(up "$JA" "$KTF" innerplain.txt)" entry.id)
+[ -n "$KTF" ] && [ -n "$PLAINID" ] \
+  && ok "a folder fixture with a plaintext file inside it" \
+  || bad "fixtures: folder=$KTF child=$PLAINID"
+KVAL=$(printf 'chain-key-for-the-keytest-folder' | base64 | tr -d '\n')
+
+RC=$(reqsave PUT /api/files/key "$JA" "$ROOT/k.json" "{\"id\":$KTF,\"key\":\"$KVAL\"}")
+[ "$RC" = "200" ] && ok "the owner may give a folder its key record" \
+  || bad "put key: $RC $(cat "$ROOT/k.json")"
+[ "$(jget "$(cat "$ROOT/k.json")" entry.enc_key)" = "$KVAL" ] \
+  && ok "the answer carries the folder with exactly that record" \
+  || bad "body: $(cat "$ROOT/k.json")"
+RC=$(reqsave PUT /api/files/key "$JA" "$ROOT/k.json" "{\"id\":$KTF,\"key\":\"nicht-base64!\"}")
+[ "$RC" = "400" ] && grep -q "base64" "$ROOT/k.json" \
+  && ok "a key record that is not base64 -> 400" \
+  || bad "bad key: $RC $(cat "$ROOT/k.json")"
+
+# The walk the client performs starts at Home and unwraps one record per
+# keyed level (5.2); a crumb without its record would stop the walk one
+# level early and leave the fallback to guess.
+BC=$(req GET "/api/files/breadcrumb?id=$KTF" "$JA")
+BC0=$(printf '%s' "$BC" | perl -MJSON::PP -0777 -ne '
+  my $b = decode_json($_)->{breadcrumbs} || [];
+  print defined $b->[0]{id} ? "id" : "home";')
+[ "$BC0" = "home" ] && ok "the breadcrumb starts with the id-less Home crumb" \
+  || bad "breadcrumb head: $BC"
+BCK=$(printf '%s' "$BC" | perl -MJSON::PP -0777 -ne '
+  for my $c (@{decode_json($_)->{breadcrumbs} || []}) {
+    next unless defined $c->{id} && $c->{id} == '"$KTF"';
+    print defined $c->{enc_key} ? $c->{enc_key} : "";
+    last;
+  }')
+[ "$BCK" = "$KVAL" ] && ok "the keyed crumb carries its record down the trail" \
+  || bad "crumb record: '$BCK' want '$KVAL'"
+
+# The crypto mirrors the API permission (5.5): READ lets a grantee read
+# every record in the trail, UPDATE is what writes one.
+req POST /api/shares "$JA" "{\"file_id\":$KTF,\"username\":\"bob\",\"permissions\":1}" >/dev/null
+RC=$(reqsave PUT /api/files/key "$JB" "$ROOT/k.json" \
+  "{\"id\":$KTF,\"key\":\"Ym9iLWZha2VieXRlcy1oZXJl\"}")
+[ "$RC" = "403" ] && ok "a read-only grantee cannot write a folder's key record" \
+  || bad "grantee put key: $RC $(cat "$ROOT/k.json")"
+
+# A plaintext file has no record to replace, so the server says so instead
+# of storing one the client would later believe in (DECISION 10).
+RC=$(reqsave PUT /api/files/key "$JA" "$ROOT/k.json" "{\"id\":$PLAINID,\"key\":\"$KVAL\"}")
+[ "$RC" = "400" ] && grep -q "not encrypted" "$ROOT/k.json" \
+  && ok "a plaintext file refuses a key record (400 naming the reason)" \
+  || bad "plaintext key: $RC $(cat "$ROOT/k.json")"
+
+# The copy gate looks at *files* (5.4): a folder that carries a record but
+# holds only plaintext copies fine - and like every copy it arrives unkeyed.
+RC=$(reqsave POST /api/files/copy "$JA" "$ROOT/k.json" "{\"id\":$KTF,\"dest_parent\":$DOC}")
+CPI=$(jget "$(cat "$ROOT/k.json")" entry.id)
+[ "$RC" = "200" ] && [ -n "$CPI" ] \
+  && ok "a keyed folder of plaintext files still copies" \
+  || bad "copy: $RC $(cat "$ROOT/k.json")"
+CINFO=$(req GET "/api/files/info?id=$CPI" "$JA")
+[ "$(jget "$CINFO" entry.enc_version)" = "0" ] && [ -z "$(jget "$CINFO" entry.enc_key)" ] \
+  && ok "the copy arrives unkeyed, like every copy" \
+  || bad "copy record: $CINFO"
+
+# The JSON move is the key-aware door (5.4): the client re-binds the row's
+# record to the destination before asking, so the server must not compare
+# key domains it cannot read - in a keyed tree every folder carries its own
+# record, and that guard would refuse exactly the prepared move.
+OUT=$(req POST /api/files/batch/move "$JA" "{\"ids\":[$KGID],\"dest_parent\":$KTF}")
+printf '%s' "$OUT" | grep -q "\"ok\":\[$KGID\]" \
+  && ok "a prepared JSON move of an encrypted row into a keyed folder lands" \
+  || bad "json move: $OUT"
+# WebDAV holds no keys to re-wrap with (DECISION 9), so the same travel
+# refuses there rather than leaving a row whose record no longer opens.
+RC=$(curl -s -o "$ROOT/k.json" -w '%{http_code}' -X MOVE -u "$DAVU" \
+  -H "Destination: $BASE/dav/keyguard.txt" "$BASE/dav/keytest/keyguard.txt")
+[ "$RC" = "409" ] && ok "DAV MOVE of that row back out of the keyed folder -> 409" \
+  || bad "dav move: $RC $(cat "$ROOT/k.json")"
+
+note "a grantee re-saves the record they were handed, never another one"
+# Bob holds UPDATE on the row above (permissions 3) and may write its
+# content - but the server cannot read keys, so only the row's owner may
+# swap the record that unlocks it (5.5): an identical record passes
+# through, a foreign one is refused by name.
+OTHERKEY=$(printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' | base64 | tr -d '\n')
+RC=$(curl -s -o "$ROOT/kg2.json" -w '%{http_code}' -X PUT -b "$JB" -c "$JB" \
+  -H 'Content-Type: application/octet-stream' --data-binary "@$ROOT/kg-cipher.bin" \
+  "$BASE/api/files/content?id=$KGID&enc=1&key=$(urlencode "$OTHERKEY")")
+[ "$RC" = "403" ] && grep -q "only the row's owner may change its key record" "$ROOT/kg2.json" \
+  && ok "a grantee saving a different key record -> 403 naming why" \
+  || bad "record swap: $RC $(cat "$ROOT/kg2.json")"
+RC=$(curl -s -o "$ROOT/kg2.json" -w '%{http_code}' -X PUT -b "$JB" -c "$JB" \
+  -H 'Content-Type: application/octet-stream' --data-binary "@$ROOT/kg-cipher.bin" \
+  "$BASE/api/files/content?id=$KGID&enc=1&key=$(urlencode "$GKEY")")
+[ "$RC" = "200" ] && ok "the same grantee passing their own record back -> 200" \
+  || bad "identical record: $RC $(cat "$ROOT/kg2.json")"
+
 note "the WebCrypto round-trip harness (DECISION 10)"
 if [ -x "$NODE" ] || command -v "$NODE" >/dev/null 2>&1; then
   if "$NODE" "$REPO/frontend/tests/crypto-roundtrip.js" > "$ROOT/crypto.log" 2>&1; then
@@ -1346,6 +1515,39 @@ grep -q 'params.secret === "separate"' "$LOGIN_JS" \
 grep -q 'FXEnc\.enabled()' "$UI" \
   && bad "app.js still gates a write on FXEnc.enabled() - that is the old prompt" \
   || ok "no write in app.js is gated on 'the account has keys' any more"
+
+# The share dialog's two halves - sealing an envelope per item and the key
+# it seals to - exist only as call sites in app.js: drop either and the
+# request still succeeds, with a grantee who receives a share they can look
+# at and never open. The retired body shape is pinned as gone, because the
+# server now answers it with 400 (5.5).
+grep -q 'file_ids' "$UI" \
+  && bad "app.js still posts the retired file_ids field" \
+  || ok "app.js no longer posts the retired file_ids field"
+grep -q 'FXEnc\.shareEnvelope(' "$UI" && grep -q '^\s*items,$' "$UI" \
+  && ok "the dialog seals one envelope per item and posts them as items" \
+  || bad "shareAdd() does not seal an envelope per item into the items body"
+grep -q 'id="share-fp"' "$ENC_HTML" && grep -q 'showShareFingerprint()' "$UI" \
+  && ok "the grantee's fingerprint is shown while they are picked (DECISION 6)" \
+  || bad "the share dialog never shows the grantee's key fingerprint"
+grep -q 'fxcloud.peerfp' "$UI" \
+  && ok "the one thing in localStorage is a public fingerprint, nothing else" \
+  || bad "the TOFU record is not where ENCRYPTION.md 11 says it is"
+[ "$(grep -c 'FXEnc\.requestKeys()' "$UI")" -ge 2 ] \
+  && ok "sharing and moving keyed rows both wait for the unlock prompt" \
+  || bad "a keyed share or move no longer asks for keys first"
+
+# A move re-binds the record *before* the row travels: the record has to
+# name the destination by the time the row stands there, and a rejected
+# move then has one local wrap to undo. After the move would open the row
+# against a parent it is not under yet - which reads as a dead file much
+# later, not as an error now (5.4).
+MOVE_BODY=$(awk '/^  async function transferConfirm\(\)/,/^  }$/' "$UI")
+REBIND=$(printf '%s\n' "$MOVE_BODY" | grep -n 'FXEnc\.rewrapForParent(entry, oldParent, dest\.id);' | cut -d: -f1 | head -1)
+POST=$(printf '%s\n' "$MOVE_BODY" | grep -n 'await api(endpoint, {' | cut -d: -f1 | head -1)
+[ -n "$REBIND" ] && [ -n "$POST" ] && [ "$REBIND" -lt "$POST" ] \
+  && ok "an encrypted move re-binds the record before the row moves" \
+  || bad "transferConfirm() does not re-bind before the move request (rebind=$REBIND post=$POST)"
 
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true
