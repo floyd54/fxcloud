@@ -756,7 +756,49 @@ async function main() {
     chainEntry = homeRow; // the fixture stays where section 4 left it
   });
 
-  // ---- 10. the sign-in handoff: the tab that just signed in must not ask ---
+  // ---- 10. an encrypted row previews: decrypt here, render from a blob ---
+  //
+  // Phase 2 (ENCRYPTION.md 12): images, video, audio, PDF and HTML used to
+  // be refused on an encrypted row, because the preview endpoint answers
+  // 400 on ciphertext. previewBlob() walks download's route - container,
+  // row key, worker - and returns the plaintext as a Blob whose type is
+  // chosen for the *renderer*, which is the one place it must differ from
+  // mimeForDownload: a previewed HTML file reaches the sandboxed frame as
+  // text/html, while a saved one is still forced to octet-stream so it
+  // cannot script a browser straight off disk.
+  await step("an encrypted row previews to its own bytes and render type", async () => {
+    const cases = [
+      { name: `harness-pix-${TAG}.png`, type: "image/png" },
+      { name: `harness-doc-${TAG}.pdf`, type: "application/pdf" },
+      { name: `harness-page-${TAG}.html`, type: "text/html" },
+    ];
+    for (const c of cases) {
+      const f = {
+        name: c.name,
+        // A copy: previewBlob may transfer the buffer to the worker.
+        arrayBuffer: async function () {
+          return PLAIN.slice().buffer;
+        },
+      };
+      const row = await FXEnc.encryptUpload(f, null, c.name);
+      const blob = await FXEnc.previewBlob(row);
+      if (!blob) throw new Error(c.name + ": no blob returned");
+      if (blob.type !== c.type) throw new Error(c.name + ": type=" + blob.type + " want " + c.type);
+      const got = new Uint8Array(await blob.arrayBuffer());
+      if (!bytesEqual(got, PLAIN)) {
+        throw new Error(c.name + ": got " + got.length + " bytes, want " + PLAIN.length);
+      }
+    }
+    // The download map still calls the same HTML file octet-stream: the
+    // renderer type is for a blob URL that only this tab can open, and a
+    // download that would run on double-click keeps its harder answer.
+    const dlType = globalThis.FXCrypto.mimeForDownload("x.html");
+    if (dlType !== "application/octet-stream") {
+      throw new Error("downloads of html should stay octet-stream, got " + dlType);
+    }
+  });
+
+  // ---- 11. the sign-in handoff: the tab that just signed in must not ask ---
   //
   // login.js parks the password for one page load; fxenc.js has to take it
   // exactly once, decline a wrong, stale or "separate" one without breaking

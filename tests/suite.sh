@@ -1549,6 +1549,35 @@ POST=$(printf '%s\n' "$MOVE_BODY" | grep -n 'await api(endpoint, {' | cut -d: -f
   && ok "an encrypted move re-binds the record before the row moves" \
   || bad "transferConfirm() does not re-bind before the move request (rebind=$REBIND post=$POST)"
 
+# An encrypted preview happens in this tab: fetch the container, the worker
+# decrypts, the frame renders a blob URL. None of that leaves a trace the
+# server checks above could see - dropping the decrypt branch would leave
+# <img>/<iframe> happily rendering ciphertext, and the sandbox that the
+# server's CSP header used to carry would move with it, since a blob URL
+# never reaches a server header. So the preview decision (12, phase 2) is
+# pinned here, at the only place that can still see it.
+grep -q 'FXEnc\.previewBlob(' "$UI" \
+  && ok "an encrypted preview pulls and decrypts the container in the tab" \
+  || bad "app.js does not preview encrypted rows through fxenc.js"
+grep -q 'previewBlob: previewBlob' "$ENC_JS" \
+  && ok "fxenc.js exports previewBlob beside download" \
+  || bad "fxenc.js does not export previewBlob"
+grep -q 'mimeForPreview: mimeForPreview' "$REPO/frontend/assets/fxcrypto.js" \
+  && ok "the renderer type is its own map, not the download's" \
+  || bad "fxcrypto.js does not export mimeForPreview"
+grep -q 'arrives in a later phase' "$UI" \
+  && bad "app.js still defers the encrypted preview to a later phase" \
+  || ok "no preview is refused with 'arrives in a later phase' any more"
+grep -q 'entry\.enc_version === 0 &&' "$UI" \
+  && bad "the row click still refuses encrypted rows" \
+  || ok "a clickable preview row is no longer gated on plaintext"
+grep -q 'setAttribute("sandbox", "")' "$UI" \
+  && ok "a previewed HTML frame carries its own sandbox (blob URLs skip server CSP)" \
+  || bad "the encrypted HTML preview renders without a sandbox"
+grep -q 'URL\.revokeObjectURL(previewUrl)' "$UI" \
+  && ok "closing the lightbox releases the decrypted blob URL" \
+  || bad "a decrypted preview URL outlives the lightbox"
+
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true
 

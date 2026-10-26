@@ -642,7 +642,7 @@ else is `403 only the row's owner may change its key record`.
 | Upload `POST /api/files/upload` (plaintext path) | n/a - not used while the badge reads "Encrypted" | unchanged; the client calls it only while the badge reads "Unencrypted" (no key record yet, or keys not loaded in this tab), decided before anything is created and said out loud in the header - never behind an "Encrypted" badge (DECISION 11) |
 | Encrypted upload (new two-phase path) | the multipart endpoint has nowhere to bind a key, because the client does not know the row's id until after the row exists | **(1)** `POST /api/files/file {parent_id, name}` reserves the row and returns its id - a duplicate name fails here, before a byte is read or encrypted; **(2)** the client encrypts against that id and `PUT /api/files/content?id=<id>&enc=1&key=<base64>` fills it. The wrapped key lands on a row that `create_file` always mints under the *uploader*, so the wrapper is this account's root key even when the destination folder belongs to someone else - no destination check is needed. Cancelling before step 1 creates nothing; a failure during step 2 deletes the half-made row and purges it from trash, so no 0-byte or half-filled row survives |
 | Download `GET /api/files/download` | returns ciphertext | client fetches, decrypts in memory, saves via Blob URL |
-| Preview `GET /api/files/preview` with `Range`, `nosniff`, `sandbox` | server cannot render or slice plaintext it does not have | **client-side preview:** download, decrypt, render from a Blob; for video/audio, decrypt chunk ranges client-side later. Until that lands (phase 2) the server answers **400** for an `enc_version > 0` row rather than `image/png` for ciphertext, and the UI never hands such a row to `<img>` or `<iframe>`: text opens in the editor, which decrypts first, and images/video/audio point at Download. Encrypted files are never served inline |
+| Preview `GET /api/files/preview` with `Range`, `nosniff`, `sandbox` | server cannot render or slice plaintext it does not have | **client-side preview: shipped.** The tab pulls the container from the download endpoint (the one route that serves ciphertext), the worker decrypts it, and the frame renders the plaintext from a Blob URL - images, video and audio in their own elements, PDF in the browser's own viewer, HTML in a frame that carries `sandbox=""` itself, because a Blob URL never reaches the server's `sandbox` header. While the bytes are still in flight the lightbox says "Decrypting preview..." rather than showing a half-built frame, and the "new tab" link is hidden: the URL only lives in this tab. The MIME type is chosen for the renderer (`mimeForPreview`), while a saved file keeps the harder octet-stream answer for HTML/SVG, so a download can never run on double-click. Server side unchanged: the preview endpoint still answers **400** for an `enc_version > 0` row rather than `image/png` for ciphertext, and encrypted files are never served inline. Still open: byte-range seeking inside a large video (decrypt the needed chunk ranges client-side) - today the whole file is decrypted into memory first, which bounds how big a video can usefully be previewed |
 | Text editor `PUT /api/files/content` | reads and writes plaintext | **text editor round-trip: shipped.** The client decrypts on open - through the download endpoint, because `/api/files/preview` refuses ciphertext - encrypts on save and PUTs `enc=1&key=`; the server treats it as an opaque content update (same quota/mtime logic), and its 409 still guards the bare plaintext save. A file created while encryption is on is written as an empty container straight away, so a new row is never plaintext even briefly (`newFile()`), and a save keeps the row's file key, so envelopes sealed to it stay valid (DECISION 5). Key and bytes are written under a per-row lock, so two saves landing at the same moment cannot interleave into one save's `enc_key` beside another save's ciphertext: that state unwraps happily - the key is still bound to this row and the passphrase is right - and only fails the next time the file is opened, as `decryption failed for chunk 0` |
 | Server-side ZIP `POST/GET /api/files/zip` | cannot zip plaintext it lacks | **client-side ZIP** for encrypted selections (JSZip-style, worker-based); keep server ZIP for plaintext files. DECISION 8 |
 | WebDAV `GET`/`PUT`/`PROPFIND` | desktop clients do not encrypt | DECIDED (9): goal stays *flawless WebDAV*, delivered in two steps. Interim (v1): encrypted files are exposed **read-only as ciphertext** (visible, not hidden - the user sees the file exists) and `PUT` onto an `enc_version > 0` row is **rejected after validating the `FXE1` magic** - the server can do that without decrypting. Not blind-reject: a desktop client writing plaintext over a ciphertext row would otherwise destroy the file. The error body names the fix (web UI or sync agent). COPY refuses a subtree that contains a keyed file (a copy gets a new row id), and MOVE refuses a keyed row whose destination carries a different key record - WebDAV holds no keys to re-wrap with, so refusing beats a row that will not open again, while the web UI re-binds first (5.4). Target: `fxcloud sync` agent (see phases) makes DAV transparent again |
@@ -714,9 +714,12 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
    original name. **Edit** works the same way for text files: opening
    decrypts, saving re-encrypts, and a file created while encryption is on
    is stored as an empty container at once - so "everything new is
-   encrypted" holds without any conversion step. **Preview** of images,
-   video and audio still arrives in phase 2; until then those menu entries
-   are hidden on an encrypted row and the editor does not take them either.
+   encrypted" holds without any conversion step. **Preview** works on an
+   encrypted row now too: the tab pulls the container, the worker decrypts
+   it, and the frame renders the plaintext from a Blob URL - images, video
+   and audio in their own elements, PDF in the browser's own viewer, HTML
+   in a `sandbox`ed frame - while the "new tab" link stays hidden, because
+   that URL only lives in this tab (5.3).
 5. **Share** *(phase 3, shipped)*: the dialog lists accounts as before and
    adds three things. The grantee's **key fingerprint** appears the moment
    they are picked - four blocks of eight hex digits, meant to be read out
@@ -791,7 +794,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **287 checks**. The additions cover the key
+- Testing: the suite now runs **296 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
   `GET /api/keys/<username>` does and does not expose), the encrypted
@@ -820,9 +823,11 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   file under it, an ECIES envelope opened by the recipient alone while the
   wrong recipient, the wrong row and the wrong grantee are each refused,
   the sealed folder key walked down to the file's actual bytes by a peer
-  key that never saw the owner's root key, and an encrypted row moved both
-  ways through a re-bind-before-move trip that still decrypts after it.
-  Two further checks hold the badge to its word from both ends: `fxenc.js`
+  key that never saw the owner's root key, an encrypted row moved both
+  ways through a re-bind-before-move trip that still decrypts after it,
+  and a preview (5.3) that pulls each of an image, a PDF and an HTML file
+  and gets back the same bytes typed for the renderer, while the download
+  of that same HTML name stays octet-stream. Two further checks hold the badge to its word from both ends: `fxenc.js`
   has to render "Unencrypted" for a tab whose keys are not loaded and
   "Encrypted" once they are, and `app.js` may no longer gate a write on
   `enabled()` at all (DECISION 11).
@@ -875,7 +880,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
 | --- | --- | --- |
 | 0 | This concept reviewed and DECISIONs answered | **done** - see section 13 |
 | 1 | Key setup, unlock, encrypt-on-upload, decrypt-on-download; **login KDF params raised (condition of DECISION 3)**; recovery key mandatory at setup; UI limited to the header badge plus the setup / unlock / recovery dialog - no preview, no client-side ZIP | **released since v0.0.9** |
-| 2 | Text editor round-trip (**shipped**: decrypt on open, encrypt on save, and a file created while encryption is on stored encrypted from its first second), client-side preview for images/video/audio, client-side ZIP | makes daily use possible |
+| 2 | Text editor round-trip (**shipped**: decrypt on open, encrypt on save, and a file created while encryption is on stored encrypted from its first second), client-side preview for images/video/audio/PDF/HTML (**shipped**: the tab decrypts and renders from a Blob URL, section 7), client-side ZIP - still one download per row rather than one archive (the server's ZIP refuses ciphertext, so an encrypted selection decrypts each row in the tab and saves it; a real in-browser ZIP writer stays open) | makes daily use possible |
 | 3 | Sharing: key exchange, envelopes, fingerprints, revoke | **done** - shipped in this release: folder-key hierarchy filled in lazily (5.4), share-time subtree migration and one envelope per share row (5.5), fingerprint shown while picking + TOFU with a changed-key warning (DECISION 6), owner-only swap of a key record, re-bind-before-move. Folder re-key on revoke stays phase 6 (DECISION 4) | G3 satisfied |
 | 4 | Migration tool ("Encrypt existing files"), per-folder encrypt toggle, recovery-key UX refinements | G5 satisfied |
 | 5 | **`fxcloud sync` agent** - local daemon doing encrypt/decrypt between Finder/Explorer and the unchanged DAV API; this is what makes WebDAV *flawless* (DECISION 9), so it is a committed deliverable, not "later, independent" | largest single item; own milestone |

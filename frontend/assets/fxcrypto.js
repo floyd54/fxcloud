@@ -745,13 +745,16 @@
     txt: "text/plain", csv: "text/csv", md: "text/markdown", json: "application/json",
     pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
     gif: "image/gif", webp: "image/webp", avif: "image/avif", bmp: "image/bmp",
-    ico: "image/x-icon", svg: "image/svg+xml",
-    mp3: "audio/mpeg", m4a: "audio/mp4", ogg: "audio/ogg", wav: "audio/wav",
+    ico: "image/x-icon", svg: "image/svg+xml", apng: "image/apng",
+    mp3: "audio/mpeg", m4a: "audio/mp4", ogg: "audio/ogg", oga: "audio/ogg",
+    opus: "audio/opus", wav: "audio/wav", aac: "audio/aac", flac: "audio/flac",
     mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime",
+    ogv: "video/ogg", m4v: "video/x-m4v",
     zip: "application/zip", gz: "application/gzip", tar: "application/x-tar",
     doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     css: "text/css", js: "text/javascript", xml: "text/xml",
+    html: "text/html", htm: "text/html",
   };
   var RENDERED_AS_DOCUMENT = { html: 1, htm: 1, xhtml: 1, svg: 1, xml: 1 };
 
@@ -759,6 +762,21 @@
     var ext = String(name).split(".").pop();
     ext = ext === String(name) ? "" : ext.toLowerCase();
     if (RENDERED_AS_DOCUMENT[ext]) return "application/octet-stream";
+    return MIME_BY_EXT[ext] || "application/octet-stream";
+  }
+
+  /**
+   * The *renderable* type for a name - what a preview hands the browser
+   * (phase 2, ENCRYPTION.md 12). The download path deliberately disagrees
+   * (mimeForDownload above): a saved HTML or SVG file must not execute when
+   * it is reopened from disk, so downloads call those octet-stream. A
+   * preview is the opposite case - the bytes only ever live in a blob URL in
+   * this tab - so the renderer gets the real type, and the sandbox moves to
+   * the frame instead of to a server header.
+   */
+  function mimeForPreview(name) {
+    var ext = String(name).split(".").pop();
+    ext = ext === String(name) ? "" : ext.toLowerCase();
     return MIME_BY_EXT[ext] || "application/octet-stream";
   }
 
@@ -785,6 +803,7 @@
     fingerprint: fingerprint,
     formatFingerprint: formatFingerprint,
     mimeForDownload: mimeForDownload,
+    mimeForPreview: mimeForPreview,
 
     // primitives
     deriveKek: deriveKek,

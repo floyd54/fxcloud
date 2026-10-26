@@ -212,16 +212,12 @@
 
       if (!trashView && entry.is_dir) {
         tr.addEventListener("click", () => openFolder(entry.id, perms));
-      } else if (
-        !trashView &&
-        (perms & PERM_READ) &&
-        entry.enc_version === 0 &&
-        previewKind(entry.name)
-      ) {
-        // Browser-viewable files open in the lightbox directly. An encrypted
-        // row stays inert on click: rendering ciphertext through <img> or
-        // <iframe> would only produce a broken frame, and decrypting into a
-        // preview is phase 2 (ENCRYPTION.md section 12).
+      } else if (!trashView && (perms & PERM_READ) && previewKind(entry.name)) {
+        // Browser-viewable files open in the lightbox directly, encrypted
+        // rows included since phase 2 (ENCRYPTION.md 12): openPreview
+        // decrypts those into an in-memory blob URL first, so ciphertext
+        // never reaches <img>/<iframe>. Rows whose kind this browser cannot
+        // render stay inert on click; Download decrypts them to disk.
         tr.classList.add("previewable");
         tr.addEventListener("click", () => openPreview(entry));
       }
@@ -364,11 +360,11 @@
         items.push(["Open", () => openFolder(entry.id, perms)]);
       }
       if (!entry.is_dir && (perms & PERM_READ)) {
-        // Text files open in the editor, encrypted ones included - the editor
-        // decrypts on the way in. Images, video and audio stay plaintext-only
-        // until phase 2 can decrypt those too (ENCRYPTION.md section 12).
         const entryKind = previewKind(entry.name);
-        if (entryKind && (entry.enc_version === 0 || entryKind === "text")) {
+        // Every renderable kind previews, encrypted rows included: the tab
+        // decrypts one into a blob URL (phase 2, ENCRYPTION.md 12), so the
+        // menu no longer splits by encryption state. Text keeps "Edit".
+        if (entryKind) {
           items.push([entryKind === "text" ? "Edit" : "Preview", () => openPreview(entry)]);
         }
         items.push(["Download", () => downloadFile(entry.id, entry.name, entry)]);
@@ -791,27 +787,68 @@
     return null;
   }
 
-  function openPreview(entry) {
+  // A decrypted preview lives on an object URL: only this tab can open it,
+  // it dies with the tab, and a fresh one replaces it on every preview. One
+  // at a time, released on close - the file bytes leave the worker with the
+  // URL, so keeping the pair alive after the lightbox shuts would hold the
+  // whole plaintext in memory for nothing.
+  let previewUrl = null;
+  let previewEntry = null;
+
+  function releasePreviewUrl() {
+    if (!previewUrl) return;
+    URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+  }
+
+  function previewElement(kind, src, name) {
+    let el;
+    if (kind === "image") {
+      el = document.createElement("img");
+      el.src = src;
+      el.alt = name;
+    } else if (kind === "video") {
+      el = document.createElement("video");
+      el.controls = true;
+      el.src = src;
+    } else if (kind === "audio") {
+      el = document.createElement("audio");
+      el.controls = true;
+      el.src = src;
+    } else {
+      // PDF (the browser's own viewer) and HTML both render in a frame.
+      el = document.createElement("iframe");
+      el.src = src;
+      el.title = name;
+    }
+    el.className = `preview-${kind}`;
+    return el;
+  }
+
+  function previewFailed(body, why) {
+    body.innerHTML = "";
+    const msg = document.createElement("div");
+    msg.className = "empty-small";
+    msg.textContent = why
+      ? `Preview failed: ${why} - use Download instead.`
+      : "Preview failed - the file may be unavailable. Use Download instead.";
+    body.appendChild(msg);
+  }
+
+  async function openPreview(entry) {
     const kind = previewKind(entry.name);
     if (!kind || entry.is_dir) return;
-    // Text is the one kind this tab can open on an encrypted row, because the
-    // editor decrypts on the way in. Everything else would hand ciphertext to
-    // <img>/<iframe> and fail opaquely, so it keeps the Download answer until
-    // a decrypt-and-blob preview arrives with phase 2.
-    if (entry.enc_version > 0 && kind !== "text") {
-      alert(
-        "This file is encrypted. Preview of images, video and audio arrives in a " +
-          "later phase - use Download to decrypt it into a local copy."
-      );
-      return;
-    }
+    previewEntry = entry;
+    releasePreviewUrl();
     document.getElementById("preview-name").textContent = entry.name;
     const src = `/api/files/preview?id=${entry.id}`;
+    const encrypted = entry.enc_version > 0;
     const newtab = document.getElementById("preview-newtab");
     // That endpoint refuses ciphertext, so an encrypted row has no tab to
-    // open in - hide the link rather than hand out a URL that answers 400.
-    newtab.style.display = entry.enc_version > 0 ? "none" : "";
-    newtab.href = entry.enc_version > 0 ? "#" : src;
+    // open in - a decrypted blob URL only lives in this one - and the link
+    // is hidden rather than handed a URL that answers 400.
+    newtab.style.display = encrypted ? "none" : "";
+    newtab.href = encrypted ? "#" : src;
 
     const body = document.getElementById("preview-body");
     body.innerHTML = "";
@@ -824,34 +861,42 @@
     }
     closeEditor();
     body.style.display = "";
-    let el;
-    if (kind === "image") {
-      el = document.createElement("img");
-      el.src = src;
-      el.alt = entry.name;
-    } else if (kind === "video") {
-      el = document.createElement("video");
-      el.controls = true;
-      el.src = src;
-    } else if (kind === "audio") {
-      el = document.createElement("audio");
-      el.controls = true;
-      el.src = src;
-    } else {
-      // PDF (the browser's own viewer), HTML (sandboxed server-side) and
-      // text all render fine in a plain frame.
-      el = document.createElement("iframe");
-      el.src = src;
-      el.title = entry.name;
+
+    // Phase 2 (ENCRYPTION.md 12): the tab pulls the container itself, the
+    // worker decrypts it and the frame renders the plaintext from an object
+    // URL - the same bytes Download would save, held only while the preview
+    // is open. Before the bytes arrive the lightbox says so rather than
+    // guessing at a half-finished frame.
+    if (encrypted) {
+      const holder = document.createElement("div");
+      holder.className = "empty-small";
+      holder.textContent = "Decrypting preview...";
+      body.appendChild(holder);
+      previewModal.style.display = "flex";
+      try {
+        if (!(await FXEnc.requestKeys())) {
+          throw new Error("this file is encrypted - turn encryption on from the badge to preview it");
+        }
+        const blob = await FXEnc.previewBlob(entry);
+        if (previewEntry !== entry) return; // closed or replaced meanwhile
+        previewUrl = URL.createObjectURL(blob);
+        body.innerHTML = "";
+        const el = previewElement(kind, previewUrl, entry.name);
+        // The plaintext route is sandboxed by the server's CSP header, which
+        // a blob URL never reaches: the frame has to carry the sandbox
+        // itself, so previewed HTML cannot script the fxcloud tab.
+        if (kind === "html") el.setAttribute("sandbox", "");
+        body.appendChild(el);
+      } catch (e) {
+        if (previewEntry === entry) previewFailed(body, e.message);
+      }
+      return;
     }
-    el.className = `preview-${kind}`;
+
+    const el = previewElement(kind, src, entry.name);
     if (kind === "image" || kind === "video" || kind === "audio") {
       el.addEventListener("error", () => {
-        body.innerHTML = "";
-        const msg = document.createElement("div");
-        msg.className = "empty-small";
-        msg.textContent = "Preview failed - the file may be unavailable. Use Download instead.";
-        body.appendChild(msg);
+        if (previewEntry === entry) previewFailed(body, "");
       });
     }
     body.appendChild(el);
@@ -862,6 +907,8 @@
     // An edited file keeps its changes until the user says otherwise.
     if (editorEntry && editorDirty() && !confirm("Discard unsaved changes?")) return;
     previewModal.style.display = "none";
+    previewEntry = null;
+    releasePreviewUrl();
     const body = document.getElementById("preview-body");
     body.innerHTML = "";
     body.style.display = "";

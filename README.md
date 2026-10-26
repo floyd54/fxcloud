@@ -21,7 +21,9 @@ with sharing, quotas and WebDAV.
   a lightbox inside the app (HTML/SVG are sandboxed server-side, byte
   ranges make media seeking work). Text files open in a built-in editor
   with live Markdown preview; new text files are created directly in the
-  UI.
+  UI. Encrypted files open the same way: the tab decrypts them into a
+  Blob URL, so images, video, audio, PDF and HTML preview with encryption
+  on, and an encrypted text file edits just like a plaintext one.
 - **Sharing** - share files/folders with other accounts using a permission
   bitmask (read 1, update 2, create 4, delete 8); shares mount in the
   grantee's root tree and are enforced in the web UI *and* WebDAV. When
@@ -179,7 +181,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 287 checks against a throwaway instance
+./tests/suite.sh    # integration: 296 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

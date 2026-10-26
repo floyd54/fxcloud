@@ -977,6 +977,27 @@
   }
 
   /**
+   * Fetch, decrypt and hand back the plaintext as a Blob - the phase 2
+   * preview (ENCRYPTION.md 12): images, video, audio, PDF and HTML open in
+   * the lightbox instead of being refused. The walk is `download`'s - the
+   * container comes from the download endpoint (the only route that serves
+   * ciphertext), the row key resolves, the worker decrypts - and only the
+   * last step differs: the bytes stay in memory for a renderer instead of
+   * being saved under a name, so the MIME type is mimeForPreview's (the
+   * real, renderable type - an HTML preview must reach the frame as HTML
+   * and be sandboxed there, not forced to octet-stream by the download map).
+   * The caller owns the object URL and its lifetime.
+   */
+  async function previewBlob(entry) {
+    if (state.status !== "unlocked") throw new Error("unlock encryption to preview this file");
+    const res = await http("/api/files/download?id=" + entry.id);
+    const body = new Uint8Array(await res.arrayBuffer());
+    const fileKey = await resolveFileKey(entry);
+    const out = await heavy("decryptBytes", [entry.id, fileKey, body], [body.buffer]);
+    return new Blob([out.bytes], { type: FX().mimeForPreview(entry.name) });
+  }
+
+  /**
    * Read an encrypted row back as text for the editor.
    *
    * `/api/files/preview` refuses ciphertext outright - it has no plaintext
@@ -1168,6 +1189,7 @@
     readText: readText,
     writeText: writeText,
     download: download,
+    previewBlob: previewBlob,
     // key hierarchy + sharing (5.2 / 5.5), used by the share dialog and the
     // move path in app.js
     shareEnvelope: shareEnvelope,
