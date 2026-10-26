@@ -68,8 +68,16 @@ impl Db {
     /// count the migration has already been applied and is skipped.
     fn migrate(&self) -> anyhow::Result<()> {
         const MIGRATIONS: &[(&str, &str, Option<&str>)] = &[
-            ("001_init", include_str!("../../migrations/001_init.sql"), None),
-            ("002_shares", include_str!("../../migrations/002_shares.sql"), None),
+            (
+                "001_init",
+                include_str!("../../migrations/001_init.sql"),
+                None,
+            ),
+            (
+                "002_shares",
+                include_str!("../../migrations/002_shares.sql"),
+                None,
+            ),
             (
                 "003_user_active",
                 include_str!("../../migrations/003_user_active.sql"),
@@ -122,6 +130,15 @@ impl Db {
                 Some(
                     "SELECT COUNT(*) FROM pragma_table_info('shares')
                      WHERE name = 'envelope'",
+                ),
+            ),
+            (
+                "009_user_theme",
+                include_str!("../../migrations/009_user_theme.sql"),
+                // Skip once `users.theme` exists.
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('users')
+                     WHERE name = 'theme'",
                 ),
             ),
         ];

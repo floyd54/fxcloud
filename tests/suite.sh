@@ -27,6 +27,7 @@ DATA=$ROOT/data
 BIN=${FXCLOUD_TEST_BIN:-$REPO/target/debug/fxcloud}
 JA=$ROOT/alice.jar
 JB=$ROOT/bob.jar
+JD=$ROOT/dave.jar   # the user-settings section changes this account's password
 
 mkdir -p "$ROOT"
 echo "binary: $BIN"
@@ -548,6 +549,70 @@ echo "$U" | grep -Eq '"id":|"quota_bytes":|"password' \
   && bad "private fields leaked to other users" || ok "only picker fields in the payload"
 RC=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/users")
 [ "$RC" = "401" ] && ok "GET /api/users without session -> 401" || bad "expected 401, got $RC"
+
+# ---- user settings (topbar menu: name, theme, password) ----
+note "user settings: display name and theme (PUT /api/me)"
+
+# A fresh account starts on the light theme, in the DB and in the payload.
+ME=$(req GET /api/me "$JA")
+[ "$(jget "$ME" theme)" = "light" ] && ok "new account defaults to the light theme" || bad "default theme: $ME"
+THEME_DB=$(sqlite3 "$DATA/fxcloud.db" "SELECT theme FROM users WHERE username='alice';")
+[ "$THEME_DB" = "light" ] && ok "theme stored in the DB" || bad "users.theme is '$THEME_DB'"
+
+RC=$(reqcode PUT /api/me "$JA" '{"theme":"dark"}')
+ME=$(req GET /api/me "$JA")
+[ "$RC" = "200" ] && [ "$(jget "$ME" theme)" = "dark" ] \
+  && ok "PUT /api/me saves the dark theme" || bad "theme save failed (rc=$RC): $ME"
+THEME_DB=$(sqlite3 "$DATA/fxcloud.db" "SELECT theme FROM users WHERE username='alice';")
+[ "$THEME_DB" = "dark" ] && ok "dark theme persisted to the DB" || bad "users.theme is '$THEME_DB'"
+
+RC=$(reqcode PUT /api/me "$JA" '{"theme":"neon"}')
+[ "$RC" = "400" ] && ok "an unknown theme is refused (400)" || bad "expected 400 for theme=neon, got $RC"
+ME=$(req GET /api/me "$JA")
+[ "$(jget "$ME" theme)" = "dark" ] && ok "the refused theme changed nothing" || bad "theme clobbered: $ME"
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET theme='light' WHERE username='alice';" >/dev/null
+
+RC=$(reqcode PUT /api/me "$JA" '{"display_name":"Alice Cooper"}')
+ME=$(req GET /api/me "$JA")
+[ "$RC" = "200" ] && [ "$(jget "$ME" display_name)" = "Alice Cooper" ] \
+  && ok "PUT /api/me saves the display name" || bad "display name save failed (rc=$RC): $ME"
+U=$(req GET /api/users "$JB")
+echo "$U" | grep -q '"display_name":"Alice Cooper"' \
+  && ok "the new display name shows up for others" || bad "share dialog still sees the old name: $U"
+
+RC=$(reqcode PUT /api/me "$JA" '{"display_name":"   "}')
+[ "$RC" = "400" ] && ok "an empty display name is refused (400)" || bad "expected 400 for a blank name, got $RC"
+RC=$(reqcode PUT /api/me "$JA" '{}')
+[ "$RC" = "400" ] && ok "an empty settings body is refused (400)" || bad "expected 400 for {}, got $RC"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+  -d '{"theme":"dark"}' "$BASE/api/me")
+[ "$RC" = "401" ] && ok "PUT /api/me without session -> 401" || bad "expected 401, got $RC"
+req PUT /api/me "$JA" '{"display_name":"alice"}' >/dev/null   # back to the plain name
+
+note "user settings: password change (PUT /api/me/password)"
+# A fresh, activated account so the checks cannot disturb alice's or bob's
+# password - the rest of the suite signs in with those.
+req POST /api/register "$JD" '{"username":"dave","password":"correct-horse"}' >/dev/null
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET is_active=1 WHERE username='dave';" >/dev/null
+RC=$(reqcode POST /api/login "$JD" '{"username":"dave","password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "dave signs in before the change" || bad "dave cannot log in (rc=$RC)"
+
+RC=$(reqcode PUT /api/me/password "$JD" '{"current_password":"wrong-password","new_password":"another-horse"}')
+[ "$RC" = "401" ] && ok "a wrong current password is refused (401)" || bad "expected 401, got $RC"
+RC=$(reqcode PUT /api/me/password "$JD" '{"current_password":"correct-horse","new_password":"short"}')
+[ "$RC" = "400" ] && ok "a short new password is refused (400)" || bad "expected 400, got $RC"
+RC=$(reqcode PUT /api/me/password "$JD" '{"current_password":"correct-horse","new_password":"another-horse"}')
+[ "$RC" = "200" ] && ok "the password changes (200)" || bad "expected 200, got $RC"
+
+RC=$(reqcode POST /api/login "$JD" '{"username":"dave","password":"correct-horse"}')
+[ "$RC" = "401" ] && ok "the old password no longer signs in" || bad "old password still works (rc=$RC)"
+RC=$(reqcode POST /api/login "$JD" '{"username":"dave","password":"another-horse"}')
+[ "$RC" = "200" ] && ok "the new password signs in" || bad "new password refused (rc=$RC)"
+RC=$(reqcode PUT /api/me/password "$JD" '{"current_password":"another-horse","new_password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "dave's password restored for later checks" || bad "restore failed (rc=$RC)"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+  -d '{"current_password":"correct-horse","new_password":"another-horse"}' "$BASE/api/me/password")
+[ "$RC" = "401" ] && ok "PUT /api/me/password without session -> 401" || bad "expected 401, got $RC"
 
 # ---- inline preview (lightbox) ----
 note "browser-viewable files open inline (GET /api/files/preview)"

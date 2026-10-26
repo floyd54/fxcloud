@@ -13,6 +13,11 @@ with sharing, quotas and WebDAV.
   sessions. The first account on a fresh instance becomes your login;
   later accounts are activated with one SQL statement (see
   [Managing users & quotas](#managing-users--quotas)).
+- **User settings** - the name in the top bar opens a menu: account facts
+  (username, member since, storage used), a display name you can change
+  yourself, a light/dark theme and a password change that asks for the
+  current password first. Everything is stored per account on the server,
+  so it follows you to every device.
 - **File explorer** - folders with breadcrumbs and recursive sizes,
   create/upload (files *or* whole folder trees via drag & drop, empty
   subfolders included), rename, move/copy, delete, multi-select with
@@ -140,6 +145,8 @@ location / {
 There is no user-administration UI yet; both switches live in the database
 (no restart required). On a systemd deployment the file is
 `/home/fxcloud/data/fxcloud.db`, in development `./data/fxcloud.db`:
+*Display name, theme and password are not on this list: every user changes
+those themselves in the app, via the menu behind their name in the top bar.*
 
 ```bash
 DB=/home/fxcloud/data/fxcloud.db
@@ -181,7 +188,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 296 checks against a throwaway instance
+./tests/suite.sh    # integration: 315 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

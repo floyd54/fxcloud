@@ -46,7 +46,42 @@ body {
   margin-left: 7px;
 }
 .topbar .spacer { flex: 1; }
-.topbar .user { font-size: 14px; opacity: 0.95; }
+
+/* Topbar user menu: the name is the button, the items live in a dropdown
+   below it (settings + sign out). */
+.user-menu { position: relative; }
+.user-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.user-btn .caret { font-size: 10px; opacity: 0.8; }
+.user-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.18);
+}
+.user-dropdown button {
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 11px;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.user-dropdown button:hover { background: var(--row-hover); }
 .topbar .storage {
   font-size: 13px;
   opacity: 0.75;
@@ -740,3 +775,77 @@ textarea#enc-rcv-key:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(0, 130, 201, 0.12);
 }
+
+/* ---------- user settings (topbar menu) ---------- */
+.settings-modal { width: min(480px, calc(100vw - 32px)); }
+.settings-section { margin-bottom: 18px; }
+.settings-section h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+}
+.settings-info { display: flex; flex-direction: column; gap: 5px; font-size: 14px; }
+.settings-info .label {
+  display: inline-block;
+  min-width: 110px;
+  color: var(--muted);
+}
+.settings-form { display: flex; gap: 8px; }
+.settings-form input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--panel);
+  color: var(--text);
+}
+.settings-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 130, 201, 0.12);
+}
+#set-pass-form { flex-direction: column; }
+.theme-picker { display: flex; gap: 8px; }
+.theme-picker button {
+  padding: 7px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.theme-picker button:hover { border-color: var(--accent); }
+.theme-picker button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.settings-status { min-height: 18px; margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+.settings-status.error { color: var(--danger); }
+
+/* ---------- dark theme ----------
+   Only the palette flips; every component below reads the same variables,
+   so one block repaints the whole app. Applied via data-theme on <html>,
+   stored per account (migration 009_user_theme). */
+[data-theme="dark"] {
+  --bg: #14161b;
+  --panel: #1c1f26;
+  --border: #2a2e37;
+  --text: #e6e9ee;
+  --muted: #8b93a1;
+  --row-hover: #22262e;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+[data-theme="dark"] body { background: var(--bg); color: var(--text); }
+/* The preview iframe and the editor's markdown pane sit on paper-white on
+   purpose in light mode; in dark mode they follow the panel so a full-page
+   white flash does not burn the eyes. */
+[data-theme="dark"] .preview-body iframe { background: var(--panel); }
+[data-theme="dark"] .editor-md { background: var(--panel); color: var(--text); }
+[data-theme="dark"] .icon.folder { background: #4a3d13; }

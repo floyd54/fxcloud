@@ -27,6 +27,8 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/login", post(routes::auth::login))
         .route("/logout", post(routes::auth::logout))
         .route("/me", get(routes::auth::me))
+        .route("/me", put(routes::auth::update_me))
+        .route("/me/password", put(routes::auth::change_password))
         // Account discovery for the share dialog
         .route("/users", get(routes::auth::list_users))
         // Files
@@ -65,7 +67,10 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/shares/batch", post(routes::shares::create_batch))
         .route("/shares/outgoing", get(routes::shares::outgoing))
         .route("/shares/incoming", get(routes::shares::incoming))
-        .route("/shares/{id}", axum::routing::delete(routes::shares::revoke));
+        .route(
+            "/shares/{id}",
+            axum::routing::delete(routes::shares::revoke),
+        );
 
     // Client-side encryption key material (ENCRYPTION.md section 6).
     // `/keys/me` is static, so it wins over `/keys/{username}` on that one

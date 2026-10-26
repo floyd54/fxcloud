@@ -29,6 +29,7 @@ fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         is_active: row.get("is_active")?,
         created_at: parse_ts(&created_at, 0)?,
         quota_bytes: row.get("quota_bytes")?,
+        theme: row.get("theme")?,
     })
 }
 
@@ -40,7 +41,7 @@ impl Db {
     ) -> Result<Option<UserWithHash>, AppError> {
         self.run(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, username, display_name, is_active, created_at, quota_bytes, password_hash
+                "SELECT id, username, display_name, is_active, created_at, quota_bytes, theme, password_hash
                  FROM users WHERE username = ?1",
             )?;
             let found = stmt
@@ -60,10 +61,66 @@ impl Db {
     pub async fn find_user_by_id(&self, id: i64) -> Result<Option<User>, AppError> {
         self.run(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, username, display_name, is_active, created_at, quota_bytes FROM users WHERE id = ?1",
+                "SELECT id, username, display_name, is_active, created_at, quota_bytes, theme FROM users WHERE id = ?1",
             )?;
             let found = stmt.query_row(params![id], row_to_user).optional()?;
             Ok(found)
+        })
+        .await
+    }
+
+    /// Save the user's own settings from the user menu: display name and UI
+    /// theme. Only fields the caller passes as `Some` are written, so the two
+    /// halves of the menu (name form, theme picker) can save independently.
+    /// The theme value is validated against the two known themes here rather
+    /// than trusted from the request body.
+    pub async fn update_settings(
+        &self,
+        id: i64,
+        display_name: Option<String>,
+        theme: Option<String>,
+    ) -> Result<User, AppError> {
+        if let Some(theme) = &theme {
+            if theme != "light" && theme != "dark" {
+                return Err(AppError::BadRequest(
+                    "theme must be 'light' or 'dark'".into(),
+                ));
+            }
+        }
+        self.run(move |conn| {
+            if let Some(name) = display_name {
+                conn.execute(
+                    "UPDATE users SET display_name = ?2 WHERE id = ?1",
+                    params![id, name],
+                )?;
+            }
+            if let Some(theme) = theme {
+                conn.execute(
+                    "UPDATE users SET theme = ?2 WHERE id = ?1",
+                    params![id, theme],
+                )?;
+            }
+            let mut stmt = conn.prepare(
+                "SELECT id, username, display_name, is_active, created_at, quota_bytes, theme
+                 FROM users WHERE id = ?1",
+            )?;
+            stmt.query_row(params![id], row_to_user)
+                .optional()?
+                .ok_or_else(|| AppError::NotFound)
+        })
+        .await
+    }
+
+    /// Replace the password hash after the user menu verified the current
+    /// password. Sessions stay valid on purpose: the caller is already signed
+    /// in, and every other tab of this account keeps working after the change.
+    pub async fn set_password(&self, id: i64, password_hash: String) -> Result<(), AppError> {
+        self.run(move |conn| {
+            conn.execute(
+                "UPDATE users SET password_hash = ?2 WHERE id = ?1",
+                params![id, password_hash],
+            )?;
+            Ok(())
         })
         .await
     }
@@ -102,10 +159,8 @@ impl Db {
         password_hash: String,
         display_name: String,
     ) -> Result<User, AppError> {
-        self.run(move |conn| {
-            insert_user(conn, &username, &password_hash, &display_name)
-        })
-        .await
+        self.run(move |conn| insert_user(conn, &username, &password_hash, &display_name))
+            .await
     }
 }
 
@@ -145,17 +200,20 @@ pub fn insert_user(
     })?;
 
     let id = conn.last_insert_rowid();
-    let quota_bytes: i64 = conn.query_row(
-        "SELECT quota_bytes FROM users WHERE id = ?1",
+    let (quota_bytes, theme): (i64, String) = conn.query_row(
+        "SELECT quota_bytes, theme FROM users WHERE id = ?1",
         params![id],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     Ok(User {
         id,
         username: username.to_string(),
         display_name: display_name.to_string(),
         is_active,
-        created_at: now.parse().map_err(|_| AppError::Internal(anyhow::anyhow!("bad timestamp")))?,
+        created_at: now
+            .parse()
+            .map_err(|_| AppError::Internal(anyhow::anyhow!("bad timestamp")))?,
         quota_bytes,
+        theme,
     })
 }

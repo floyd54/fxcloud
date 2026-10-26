@@ -19,6 +19,15 @@ pub struct User {
     /// `004_user_quota`) applies to every account; raise or lower it with
     /// `UPDATE users SET quota_bytes = …` until an admin UI exists.
     pub quota_bytes: i64,
+    /// UI theme chosen in the user menu: "light" or "dark". The web app reads
+    /// it from `GET /api/me` and applies it as `data-theme` on `<html>`; the
+    /// server only stores and validates it (migration `009_user_theme`).
+    #[serde(default = "default_theme")]
+    pub theme: String,
+}
+
+fn default_theme() -> String {
+    "light".to_string()
 }
 
 /// One row of `GET /api/users` — the accounts the share dialog offers as
@@ -220,6 +229,29 @@ pub struct RegisterRequest {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+}
+
+/// Settings saved from the user menu (`PUT /api/me`).
+///
+/// Both fields are optional so each half of the menu - the name form and the
+/// theme picker - saves on its own without resending the other's value.
+#[derive(Debug, Default, Deserialize)]
+pub struct UpdateMeRequest {
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub theme: Option<String>,
+}
+
+/// Password change from the user menu (`PUT /api/me/password`).
+///
+/// The current password has to be sent along: the session cookie only proves
+/// "someone signed in", not "the same person still knows the password", and a
+/// hijacked tab should not be able to lock the owner out of their own account.
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
 }
 
 /// A share row (a grant from an owner to a grantee).

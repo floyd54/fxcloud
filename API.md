@@ -11,7 +11,9 @@ allowed -> `403`. Only `register` and `login` are public.
 | POST   | `/api/register`         | `{username, password, display_name?}` | Create account (202 `pending_activation` while inactive; the first account signs in) |
 | POST   | `/api/login`            | `{username, password}`             | Sign in (`403` when the account is inactive) |
 | POST   | `/api/logout`           | -                                  | Sign out                    |
-| GET    | `/api/me`               | -                                  | Current user + `quota_bytes` / `used_bytes` |
+| GET    | `/api/me`               | -                                  | Current user + `quota_bytes` / `used_bytes` / `theme` |
+| PUT    | `/api/me`               | `{display_name?}` and/or `{theme}` | Save the settings from the user menu; theme must be `light` or `dark`, display name non-empty (max 100 chars); returns the updated user (400 when the body changes nothing) |
+| PUT    | `/api/me/password`      | `{current_password, new_password}` | Change the signed-in user's password (401 when the current one is wrong, 400 when the new one is shorter than 8 characters); the session stays open |
 | GET    | `/api/users`            | -                                  | Accounts to share with (everyone but you: `username`, `display_name`, `is_active`) |
 | GET    | `/api/files`            | `?parent=<id>` (omit for root)     | List folder contents (dir rows carry `subtree_bytes`) |
 | GET    | `/api/files/breadcrumb` | `?id=<folderId>`                   | Breadcrumb trail (starts with an id-less `Home` crumb; every keyed level carries its `enc_key`) |

@@ -12,8 +12,16 @@
     <div class="spacer"></div>
     <button class="enc-badge" id="enc-badge" type="button" style="display:none"></button>
     <span class="storage" id="storage-label" title="storage used of quota"></span>
-    <span class="user" id="user-label"></span>
-    <button id="logout-btn" type="button">Sign out</button>
+    <div class="user-menu">
+      <button class="user-btn" id="user-menu-btn" type="button"
+              aria-haspopup="true" aria-expanded="false">
+        <span id="user-label"></span><span class="caret">▾</span>
+      </button>
+      <div class="user-dropdown" id="user-dropdown" style="display:none">
+        <button type="button" id="user-settings-btn">Settings</button>
+        <button type="button" id="logout-btn">Sign out</button>
+      </div>
+    </div>
   </header>
 
   <main class="container">
@@ -104,6 +112,55 @@
       <div class="modal-footer">
         <button class="btn secondary" id="transfer-cancel" type="button">Cancel</button>
         <button class="btn" id="transfer-confirm" type="button">Move here</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- User settings (opened from the topbar menu) -->
+  <div class="modal-backdrop" id="settings-modal" style="display:none">
+    <div class="modal settings-modal">
+      <h3>Settings</h3>
+
+      <section class="settings-section">
+        <h4>Account</h4>
+        <div class="settings-info">
+          <div><span class="label">Username</span><span id="set-username"></span></div>
+          <div><span class="label">Member since</span><span id="set-since"></span></div>
+          <div><span class="label">Storage</span><span id="set-storage"></span></div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h4>Display name</h4>
+        <form id="set-name-form" class="settings-form">
+          <input type="text" id="set-name-input" maxlength="100" autocomplete="name" />
+          <button class="btn" type="submit">Save</button>
+        </form>
+      </section>
+
+      <section class="settings-section">
+        <h4>Theme</h4>
+        <div class="theme-picker" id="theme-picker">
+          <button type="button" id="theme-light">Light</button>
+          <button type="button" id="theme-dark">Dark</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h4>Password</h4>
+        <form id="set-pass-form" class="settings-form">
+          <input type="password" id="set-pass-current" placeholder="Current password"
+                 autocomplete="current-password" />
+          <input type="password" id="set-pass-new" placeholder="New password (min 8 characters)"
+                 autocomplete="new-password" />
+          <button class="btn" type="submit">Change password</button>
+        </form>
+      </section>
+
+      <p class="settings-status" id="set-status"></p>
+
+      <div class="modal-footer">
+        <button class="btn secondary" id="set-close-btn" type="button">Close</button>
       </div>
     </div>
   </div>

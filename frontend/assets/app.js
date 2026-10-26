@@ -29,6 +29,9 @@
   // The signed-in username, handed to the encryption module for the
   // recovery-key file's header.
   let meName = null;
+  // The last /api/me payload, shown in the settings dialog (account facts)
+  // and updated in place when a setting is saved.
+  let meData = null;
 
   // Multi-selection: id -> entry, as shown in the current listing.
   const selected = new Map();
@@ -509,8 +512,14 @@
     const res = await api("/api/me").then((r) => r.json());
     meId = res.id;
     meName = res.username;
+    // The whole /api/me payload stays around: the settings dialog shows the
+    // same account facts (name, since, storage) without a second fetch.
+    meData = res;
     document.getElementById("user-label").textContent =
       res.display_name || res.username;
+    // The theme is part of the account, so it applies before anything else
+    // renders - the rows below are painted with it, not around it.
+    applyTheme(res.theme);
     const storage = document.getElementById("storage-label");
     if (storage && res.used_bytes != null && res.quota_bytes != null) {
       storage.textContent = `${fmtBytes(res.used_bytes)} of ${fmtBytes(res.quota_bytes)}`;
@@ -1920,6 +1929,134 @@
     window.location.href = "/login";
   }
 
+  // ---------- user menu + settings ----------
+  //
+  // The topbar name is a menu: settings behind it, sign-out at the bottom.
+  // The settings live in one dialog with three parts - the account facts
+  // (read-only), the display name and the theme (both PUT /api/me) and the
+  // password (PUT /api/me/password, current password required so a borrowed
+  // tab cannot lock the owner out).
+  const settingsModal = document.getElementById("settings-modal");
+
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
+  }
+
+  function setUserMenu(open) {
+    document.getElementById("user-dropdown").style.display = open ? "" : "none";
+    document.getElementById("user-menu-btn").setAttribute("aria-expanded", String(open));
+  }
+
+  function setSettingsStatus(text, isError) {
+    const el = document.getElementById("set-status");
+    el.textContent = text || "";
+    el.className = isError ? "settings-status error" : "settings-status";
+  }
+
+  function markThemeChoice(theme) {
+    document.getElementById("theme-light").classList.toggle("active", theme !== "dark");
+    document.getElementById("theme-dark").classList.toggle("active", theme === "dark");
+  }
+
+  function openSettings() {
+    setUserMenu(false);
+    if (!meData) return;
+    document.getElementById("set-username").textContent = meData.username;
+    document.getElementById("set-since").textContent = new Date(
+      meData.created_at
+    ).toLocaleDateString();
+    document.getElementById("set-storage").textContent =
+      meData.used_bytes != null
+        ? `${fmtBytes(meData.used_bytes)} of ${fmtBytes(meData.quota_bytes)}`
+        : "";
+    document.getElementById("set-name-input").value =
+      meData.display_name || meData.username;
+    markThemeChoice(meData.theme || "light");
+    setSettingsStatus("");
+    settingsModal.style.display = "flex";
+  }
+
+  function closeSettings() {
+    settingsModal.style.display = "none";
+  }
+
+  // Save the display name. The topbar label and the menu update at once -
+  // the server answered with the saved row, so nothing here has to guess.
+  async function saveDisplayName(name) {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setSettingsStatus("Display name cannot be empty.", true);
+      return;
+    }
+    try {
+      const res = await api("/api/me", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ display_name: trimmed }),
+      });
+      meData = await res.json();
+      document.getElementById("user-label").textContent =
+        meData.display_name || meData.username;
+      document.getElementById("set-name-input").value =
+        meData.display_name || meData.username;
+      setSettingsStatus("Display name saved.");
+    } catch (e) {
+      setSettingsStatus(e.message, true);
+    }
+  }
+
+  // The theme applies on click, before the server round trip: a setting that
+  // repaints the whole page should not wait for the network. If the save is
+  // refused the page snaps back to the stored value, so the visible theme
+  // never drifts from what the account has.
+  async function saveTheme(theme) {
+    applyTheme(theme);
+    markThemeChoice(theme);
+    try {
+      const res = await api("/api/me", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ theme }),
+      });
+      meData = await res.json();
+      setSettingsStatus("Theme saved.");
+    } catch (e) {
+      applyTheme(meData && meData.theme);
+      markThemeChoice((meData && meData.theme) || "light");
+      setSettingsStatus(e.message, true);
+    }
+  }
+
+  async function savePassword(current, next) {
+    if (next.length < 8) {
+      setSettingsStatus("New password must be at least 8 characters.", true);
+      return;
+    }
+    // Deliberately not api(): a wrong current password is a 401, and api()
+    // reads any 401 as "session over" and bounces to /login. Here the 401
+    // means "that password is wrong" - it belongs under the form.
+    try {
+      const res = await fetch("/api/me/password", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ current_password: current, new_password: next }),
+      });
+      if (!res.ok) {
+        let message = `Request failed (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body.error) message = body.error;
+        } catch (_) {}
+        throw new Error(message);
+      }
+      document.getElementById("set-pass-current").value = "";
+      document.getElementById("set-pass-new").value = "";
+      setSettingsStatus("Password changed.");
+    } catch (e) {
+      setSettingsStatus(e.message, true);
+    }
+  }
+
   // ---------- wire up ----------
   document.getElementById("new-folder-btn").addEventListener("click", newFolder);
   document.getElementById("new-file-btn").addEventListener("click", newFile);
@@ -1928,6 +2065,37 @@
     folderInput.click()
   );
   document.getElementById("logout-btn").addEventListener("click", logout);
+  // User menu + settings.
+  document.getElementById("user-menu-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const dd = document.getElementById("user-dropdown");
+    setUserMenu(dd.style.display === "none");
+  });
+  // Close the dropdown on outside clicks and Escape (same as the row menu).
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".user-menu")) setUserMenu(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") setUserMenu(false);
+  });
+  document.getElementById("user-settings-btn").addEventListener("click", openSettings);
+  document.getElementById("set-close-btn").addEventListener("click", closeSettings);
+  settingsModal.addEventListener("click", (e) => {
+    if (e.target === settingsModal) closeSettings();
+  });
+  document.getElementById("set-name-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    saveDisplayName(document.getElementById("set-name-input").value);
+  });
+  document.getElementById("theme-light").addEventListener("click", () => saveTheme("light"));
+  document.getElementById("theme-dark").addEventListener("click", () => saveTheme("dark"));
+  document.getElementById("set-pass-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    savePassword(
+      document.getElementById("set-pass-current").value,
+      document.getElementById("set-pass-new").value
+    );
+  });
   // Share dialog.
   document.getElementById("share-add-btn").addEventListener("click", shareAdd);
   document.getElementById("share-close-btn").addEventListener("click", closeShareDialog);
