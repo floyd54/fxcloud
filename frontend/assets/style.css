@@ -70,7 +70,12 @@ body {
   border-radius: 8px;
   box-shadow: 0 6px 22px rgba(0, 0, 0, 0.18);
 }
-.user-dropdown button {
+/* The dropdown sits inside the blue topbar DOM-wise (via .user-menu), so
+   these selectors have to out-specify `.topbar button` - same specificity,
+   and that rule comes later in the file. Without the extra .topbar prefix
+   the dropdown items would paint white text onto the white panel and be
+   invisible in light mode. */
+.topbar .user-dropdown button {
   text-align: left;
   background: transparent;
   border: none;
@@ -81,7 +86,7 @@ body {
   cursor: pointer;
   transition: background 0.15s;
 }
-.user-dropdown button:hover { background: var(--row-hover); }
+.topbar .user-dropdown button:hover { background: var(--row-hover); }
 .topbar .storage {
   font-size: 13px;
   opacity: 0.75;
