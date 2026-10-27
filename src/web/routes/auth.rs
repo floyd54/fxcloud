@@ -125,10 +125,22 @@ pub async fn register(
 /// instead; both branches answer the same 401 for a wrong value, and a
 /// passphrase-only account presenting its password (or the reverse) fails
 /// identically, so neither response says which credential was tried.
+///
+/// The selector itself is validated *before* the account lookup: an unknown
+/// mode is a client error whether or not the user exists, and answering it
+/// only for existing accounts (400 = the name is taken, 401 = it is not)
+/// would hand out account existence for free.
 pub async fn login(
     State(state): State<SharedState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, AppError> {
+    let mode = req.mode.as_deref().unwrap_or("password");
+    if !matches!(mode, "password" | "passphrase") {
+        return Err(AppError::BadRequest(
+            "mode must be 'password' or 'passphrase'".into(),
+        ));
+    }
+
     let username = req.username.trim().to_lowercase();
     let found = state
         .db
@@ -136,14 +148,12 @@ pub async fn login(
         .await?
         .ok_or(AppError::Unauthorized)?;
 
-    let verified = match req.mode.as_deref().unwrap_or("password") {
+    let verified = match mode {
         "password" => verify_password(&req.password, &found.password_hash),
         "passphrase" => verify_passphrase(&req.password, found.passphrase_hash.as_deref()),
-        _ => {
-            return Err(AppError::BadRequest(
-                "mode must be 'password' or 'passphrase'".into(),
-            ))
-        }
+        // Unreachable: validated above. A failed credential, so a future edit
+        // that weakens the check can never authenticate anyone with it.
+        _ => false,
     };
     if !verified {
         return Err(AppError::Unauthorized);

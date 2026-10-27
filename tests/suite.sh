@@ -646,6 +646,10 @@ RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"co
 [ "$RC" = "401" ] && ok "the password is not accepted where a passphrase is asked for" || bad "password accepted in passphrase mode (rc=$RC)"
 RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"correct-horse","mode":"token"}')
 [ "$RC" = "400" ] && ok "an unknown credential mode is refused (400)" || bad "mode=token gave $RC"
+# ...and it is refused *before* the account lookup: answering 400 only for
+# existing names would turn the selector into an existence oracle.
+RC=$(reqcode POST /api/login "$ROOT/x.jar" '{"username":"no-such-user-here","password":"whatever","mode":"token"}')
+[ "$RC" = "400" ] && ok "an unknown mode is refused for an unknown account too (no 400/401 oracle)" || bad "expected 400 for an unknown mode on an unknown account, got $RC"
 
 # An account that exists by now and has never set a passphrase (alice -
 # registered at the top, her password is untouched by every check in

@@ -841,7 +841,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **427 checks**. The additions cover the key
+- Testing: the suite now runs **428 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
   `GET /api/keys/<username>` does and does not expose), the encrypted
