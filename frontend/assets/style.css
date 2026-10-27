@@ -834,6 +834,67 @@ textarea#enc-rcv-key:focus {
 .settings-status { min-height: 18px; margin: 10px 0 0; font-size: 13px; color: var(--muted); }
 .settings-status.error { color: var(--danger); }
 
+/* ---------- user administration ---------- */
+.admin-modal { width: min(760px, 94vw); }
+.admin-table-wrap { max-height: 55vh; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.admin-table th, .admin-table td { padding: 10px 12px; font-size: 13.5px; }
+/* Rows here are not clickable (unlike the file list), so the generic
+   `tbody tr { cursor: pointer }` is undone. */
+.admin-table tbody tr { cursor: default; }
+.admin-table .admin-actions-col { width: 1%; white-space: nowrap; }
+.admin-user-name { display: flex; flex-direction: column; gap: 2px; }
+.admin-user-name .uname { font-weight: 600; }
+.admin-user-name .udisplay { color: var(--muted); font-size: 12.5px; }
+.admin-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.admin-badge.on  { background: #e6f4ea; color: #1e7e34; }
+.admin-badge.off { background: #fdecea; color: #c0392b; }
+.admin-badge.admin { background: #e8f0fe; color: #1a56c4; }
+.admin-badge.member { background: #eef0f2; color: var(--muted); }
+.admin-quota-cell { white-space: nowrap; }
+.admin-quota-cell .used { color: var(--muted); font-size: 12.5px; }
+.admin-row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.admin-row-actions .btn { padding: 5px 10px; font-size: 12.5px; }
+.admin-quota-input {
+  width: 90px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+}
+.admin-quota-input:focus { outline: none; border-color: var(--accent); }
+
+/* Temporary-password dialog (result of an admin password reset) */
+.reset-modal { width: min(460px, 92vw); }
+.reset-user { margin: 6px 0 0; font-size: 14px; }
+.reset-hint { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+.reset-pass-box {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+.reset-pass-box code {
+  flex: 1;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  word-break: break-all;
+  user-select: all;
+}
+
 /* ---------- dark theme ----------
    Only the palette flips; every component below reads the same variables,
    so one block repaints the whole app. Applied via data-theme on <html>,

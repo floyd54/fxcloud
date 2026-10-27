@@ -15,6 +15,9 @@ allowed -> `403`. Only `register` and `login` are public.
 | PUT    | `/api/me`               | `{display_name?}` and/or `{theme}` | Save the settings from the user menu; theme must be `light` or `dark`, display name non-empty (max 100 chars); returns the updated user (400 when the body changes nothing) |
 | PUT    | `/api/me/password`      | `{current_password, new_password}` | Change the signed-in user's password (401 when the current one is wrong, 400 when the new one is shorter than 8 characters); the session stays open |
 | GET    | `/api/users`            | -                                  | Accounts to share with (everyone but you: `username`, `display_name`, `is_active`) |
+| GET    | `/api/admin/users`      | -                                  | **Admin only (403 otherwise).** Every account for the administration table: `id`, `username`, `display_name`, `is_active`, `is_admin`, `quota_bytes`, `used_bytes`, `created_at` |
+| PUT    | `/api/admin/users/:id`  | `{is_active?}`, `{is_admin?}`, `{quota_bytes?}` | **Admin only.** Partial update of one account; only the fields present are written. Refuses self-deactivation (400), deactivating/demoting the last active admin (400) and a negative quota (400); returns the updated row |
+| POST   | `/api/admin/users/:id/password` | -                        | **Admin only.** Reset the account's password; returns `{username, temporary_password}` with a one-time generated password (16 chars) for the next sign-in |
 | GET    | `/api/files`            | `?parent=<id>` (omit for root)     | List folder contents (dir rows carry `subtree_bytes`) |
 | GET    | `/api/files/breadcrumb` | `?id=<folderId>`                   | Breadcrumb trail (starts with an id-less `Home` crumb; every keyed level carries its `enc_key`) |
 | POST   | `/api/files/folder`     | `{parent_id, name}`                | Create folder               |
@@ -49,8 +52,9 @@ allowed -> `403`. Only `register` and `login` are public.
 
 Every user row carries an `is_active` flag. Accounts after the first start
 inactive; the flag is checked on every request, so deactivating a user cuts
-access off immediately (open sessions and WebDAV mounts included). What the
-API answers:
+access off immediately (open sessions and WebDAV mounts included). An
+administrator flips the flag in the **User administration** dialog (or with
+`PUT /api/admin/users/:id`). What the API answers:
 
 - **Login, inactive account** (correct password) -> `403` with
   *"account is not activated yet - ask an administrator to activate it"*.

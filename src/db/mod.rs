@@ -141,6 +141,15 @@ impl Db {
                      WHERE name = 'theme'",
                 ),
             ),
+            (
+                "010_user_admin",
+                include_str!("../../migrations/010_user_admin.sql"),
+                // Skip once `users.is_admin` exists.
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('users')
+                     WHERE name = 'is_admin'",
+                ),
+            ),
         ];
         let conn = self.pool.get()?;
         for (name, sql, guard) in MIGRATIONS {

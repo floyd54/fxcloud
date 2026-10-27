@@ -7,23 +7,31 @@ pub struct User {
     pub id: i64,
     pub username: String,
     pub display_name: String,
-    /// Accounts are created inactive and must be enabled (directly in the
-    /// database until a user-administration UI exists) before their owner can
-    /// sign in. Deactivating a user cuts off access immediately, including
-    /// sessions that are already open.
+    /// Accounts are created inactive and must be enabled before their owner
+    /// can sign in. Deactivating a user cuts off access immediately,
+    /// including sessions that are already open. Administrators flip this in
+    /// the user-administration dialog (or directly in the database).
     #[serde(default)]
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     /// Storage quota in bytes. Content beyond it is rejected with
     /// `507 Insufficient Storage`. The schema default (1 GiB, see migration
-    /// `004_user_quota`) applies to every account; raise or lower it with
-    /// `UPDATE users SET quota_bytes = …` until an admin UI exists.
+    /// `004_user_quota`) applies to every account; administrators raise or
+    /// lower it per account in the user-administration dialog.
     pub quota_bytes: i64,
     /// UI theme chosen in the user menu: "light" or "dark". The web app reads
     /// it from `GET /api/me` and applies it as `data-theme` on `<html>`; the
     /// server only stores and validates it (migration `009_user_theme`).
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Administrator flag (migration `010_user_admin`). Only these accounts
+    /// get the "user administration" menu entry and may call the
+    /// `/api/admin/users` endpoints; every other request is rejected with
+    /// 403 by the `AdminUser` extractor. The very first account is created
+    /// with the flag on, and the migration promotes the oldest already-active
+    /// account on upgrades.
+    #[serde(default)]
+    pub is_admin: bool,
 }
 
 fn default_theme() -> String {
@@ -39,6 +47,29 @@ pub struct UserOption {
     pub display_name: String,
     #[serde(default)]
     pub is_active: bool,
+}
+
+/// One row of `GET /api/admin/users` -- the user-administration table.
+///
+/// Carries everything the admin dialog needs per account: the numeric `id`
+/// (for the `PUT`/`POST` subroutes), the labels, and the three administrated
+/// properties `is_active`, `is_admin` and `quota_bytes`, plus `used_bytes`
+/// so the dialog can show consumption against the quota. Unlike
+/// [`UserOption`] this exposes ids and quotas, so it is only ever serialized
+/// behind the `AdminUser` extractor (`src/web/middleware.rs`), never to
+/// ordinary accounts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminUser {
+    pub id: i64,
+    pub username: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub is_active: bool,
+    #[serde(default)]
+    pub is_admin: bool,
+    pub quota_bytes: i64,
+    pub used_bytes: i64,
+    pub created_at: DateTime<Utc>,
 }
 
 /// A file-system entry (file or directory) owned by a user.
@@ -252,6 +283,27 @@ pub struct UpdateMeRequest {
 pub struct ChangePasswordRequest {
     pub current_password: String,
     pub new_password: String,
+}
+
+/// Partial update of one account from the user-administration dialog
+/// (`PUT /api/admin/users/:id`).
+///
+/// Every field is optional so the dialog can change one property at a time
+/// without resending the others. The server validates the *combination*:
+/// it refuses a change that would deactivate or demote the last active
+/// administrator, and refuses an administrator deactivating themselves
+/// (see `src/web/routes/admin.rs`).
+#[derive(Debug, Default, Deserialize)]
+pub struct AdminUpdateUserRequest {
+    /// Activate or deactivate the account (`is_active`).
+    #[serde(default)]
+    pub is_active: Option<bool>,
+    /// Grant or revoke the administrator flag (`is_admin`).
+    #[serde(default)]
+    pub is_admin: Option<bool>,
+    /// Set the storage quota in bytes.
+    #[serde(default)]
+    pub quota_bytes: Option<i64>,
 }
 
 /// A share row (a grant from an owner to a grantee).

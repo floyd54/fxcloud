@@ -218,6 +218,37 @@ impl FromRequestParts<SharedState> for AuthUser {
     }
 }
 
+/// Administrator variant of [`AuthUser`], used by the user-administration
+/// routes under `/api/admin`.
+///
+/// Resolves the session exactly like `AuthUser` (same 401 on a missing,
+/// invalid or expired cookie, same rejection for a deactivated account) and
+/// additionally requires `is_admin`. A signed-in account without the flag is
+/// rejected with `403 Forbidden` -- authenticated, but not permitted.
+pub struct AdminUser(pub User);
+
+impl AdminUser {
+    pub fn id(&self) -> i64 {
+        self.0.id
+    }
+}
+
+impl FromRequestParts<SharedState> for AdminUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &SharedState,
+    ) -> Result<Self, Self::Rejection> {
+        // Reuse the normal auth resolution, then gate on the admin flag.
+        let AuthUser(user) = AuthUser::from_request_parts(parts, state).await?;
+        if !user.is_admin {
+            return Err(AppError::Forbidden);
+        }
+        Ok(AdminUser(user))
+    }
+}
+
 /// Authenticate a request via HTTP Basic auth (used by WebDAV clients).
 ///
 /// Returns the logged-in user on success; `Err(AppError::Unauthorized)` on any

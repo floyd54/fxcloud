@@ -626,6 +626,88 @@ RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application
   -d '{"current_password":"correct-horse","new_password":"another-horse"}' "$BASE/api/me/password")
 [ "$RC" = "401" ] && ok "PUT /api/me/password without session -> 401" || bad "expected 401, got $RC"
 
+# ---- user administration ----
+note "user administration: the first account is the administrator"
+
+# Pull one field of one account out of the /api/admin/users array.
+afield() { # afield <list-json> <username> <key>
+  printf '%s' "$1" | perl -MJSON::PP -0777 -e '
+    my ($u, $k) = @ARGV;
+    my $l = decode_json(do { local $/; <STDIN> });
+    for my $x (@$l) {
+      next unless $x->{username} eq $u;
+      my $v = $x->{$k};
+      print defined $v ? $v : "";
+      last;
+    }' "$2" "$3"
+}
+
+ME=$(req GET /api/me "$JA")
+[ "$(jget "$ME" is_admin)" = "1" ] \
+  && ok "the first account (alice) is an administrator" \
+  || bad "alice should be an admin (is_admin=$(jget "$ME" is_admin))"
+ME=$(req GET /api/me "$JB")
+[ "$(jget "$ME" is_admin)" = "0" ] \
+  && ok "a later account (bob) is not an administrator" \
+  || bad "bob should not be an admin"
+
+note "user administration: non-admins are refused (403)"
+RC=$(reqcode GET /api/admin/users "$JD")
+[ "$RC" = "403" ] && ok "a signed-in non-admin gets 403 on /api/admin/users" || bad "expected 403, got $RC"
+
+note "user administration: the admin lists every account"
+LIST=$(req GET /api/admin/users "$JA")
+[ "$(jget "$LIST" 0.username)" != "" ] && ok "GET /api/admin/users returns the accounts" || bad "empty admin list"
+[ "$(afield "$LIST" alice is_admin)" = "1" ] && ok "the list marks alice as admin" || bad "alice not marked admin"
+[ "$(afield "$LIST" bob is_active)" = "1" ] && ok "the list carries bob's active flag" || bad "bob active flag missing"
+[ "$(afield "$LIST" bob quota_bytes)" != "" ] && ok "the list carries the quota" || bad "quota missing"
+[ "$(afield "$LIST" bob used_bytes)" != "" ] && ok "the list carries storage usage" || bad "used_bytes missing"
+
+note "user administration: activate a new account through the API"
+req POST /api/register "$ROOT/erin.jar" '{"username":"erin","password":"correct-horse"}' >/dev/null
+LIST=$(req GET /api/admin/users "$JA")
+ERIN=$(afield "$LIST" erin id)
+RC=$(reqcode POST /api/login "$ROOT/erin.jar" '{"username":"erin","password":"correct-horse"}')
+[ "$RC" = "403" ] && ok "a freshly registered account cannot sign in yet" || bad "expected 403 for inactive erin, got $RC"
+RC=$(reqcode PUT "/api/admin/users/$ERIN" "$JA" '{"is_active":true}')
+[ "$RC" = "200" ] && ok "the administrator activates the account (200)" || bad "activate failed (rc=$RC)"
+RC=$(reqcode POST /api/login "$ROOT/erin.jar" '{"username":"erin","password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "the activated account can sign in" || bad "erin still cannot log in (rc=$RC)"
+
+note "user administration: set a quota and keep the safety rules"
+LIST=$(req GET /api/admin/users "$JA")
+DAVE=$(afield "$LIST" dave id)
+ALICE=$(afield "$LIST" alice id)
+RC=$(reqcode PUT "/api/admin/users/$DAVE" "$JA" '{"quota_bytes":2147483648}')
+[ "$RC" = "200" ] && ok "the quota is set (200)" || bad "quota set failed (rc=$RC)"
+LIST=$(req GET /api/admin/users "$JA")
+[ "$(afield "$LIST" dave quota_bytes)" = "2147483648" ] && ok "the new quota is stored" || bad "quota not stored"
+RC=$(reqcode PUT "/api/admin/users/$DAVE" "$JA" '{"quota_bytes":-5}')
+[ "$RC" = "400" ] && ok "a negative quota is refused (400)" || bad "expected 400 for negative quota, got $RC"
+RC=$(reqcode PUT "/api/admin/users/$ALICE" "$JA" '{"is_active":false}')
+[ "$RC" = "400" ] && ok "an admin cannot deactivate themselves (400)" || bad "expected 400 for self-deactivate, got $RC"
+RC=$(reqcode PUT "/api/admin/users/$ALICE" "$JA" '{"is_admin":false}')
+[ "$RC" = "400" ] && ok "the last admin cannot be demoted (400)" || bad "expected 400 for last-admin demote, got $RC"
+
+note "user administration: manage the admin role"
+RC=$(reqcode PUT "/api/admin/users/$DAVE" "$JA" '{"is_admin":true}')
+[ "$RC" = "200" ] && ok "the admin promotes another account (200)" || bad "promote failed (rc=$RC)"
+LIST=$(req GET /api/admin/users "$JA")
+[ "$(afield "$LIST" dave is_admin)" = "1" ] && ok "the promoted account is now an admin" || bad "dave not admin"
+
+note "user administration: password reset hands back a temporary password"
+RESET=$(req POST "/api/admin/users/$DAVE/password" "$JA")
+TMP=$(jget "$RESET" temporary_password)
+[ "${#TMP}" = "16" ] && ok "the reset returns a 16-character temporary password" || bad "temp password length ${#TMP}, expected 16"
+RC=$(reqcode POST /api/login "$JD" '{"username":"dave","password":"'"$TMP"'"}')
+[ "$RC" = "200" ] && ok "the temporary password signs in" || bad "temp password refused (rc=$RC)"
+RC=$(reqcode POST /api/login "$JD" '{"username":"dave","password":"correct-horse"}')
+[ "$RC" = "401" ] && ok "the old password no longer signs in" || bad "old password still works (rc=$RC)"
+
+note "user administration: reset on a missing account -> 404"
+RC=$(reqcode POST /api/admin/users/99999/password "$JA")
+[ "$RC" = "404" ] && ok "resetting a missing account is 404" || bad "expected 404, got $RC"
+
 # ---- inline preview (lightbox) ----
 note "browser-viewable files open inline (GET /api/files/preview)"
 printf 'Hello, preview world! 0123456789' > "$ROOT/src/note.txt"   # 32 bytes
@@ -1743,6 +1825,31 @@ grep -q 'setAttribute("sandbox", "")' "$UI" \
 grep -q 'URL\.revokeObjectURL(previewUrl)' "$UI" \
   && ok "closing the lightbox releases the decrypted blob URL" \
   || bad "a decrypted preview URL outlives the lightbox"
+
+# ---- user administration UI ----
+note "user administration UI"
+IDX=$REPO/frontend/index.html
+grep -q 'id="user-admin-btn"' "$IDX" \
+  && ok "the user menu carries a User administration entry" \
+  || bad "no #user-admin-btn in index.html"
+grep -q 'id="admin-modal"' "$IDX" \
+  && ok "the user-administration dialog exists" \
+  || bad "no #admin-modal in index.html"
+grep -q 'id="reset-modal"' "$IDX" \
+  && ok "the temporary-password dialog exists" \
+  || bad "no #reset-modal in index.html"
+grep -q 'res\.is_admin ? "" : "none"' "$UI" \
+  && ok "the admin menu entry is gated on the is_admin flag" \
+  || bad "the User administration entry is not gated on is_admin"
+grep -q 'function openAdmin()' "$UI" && grep -q '/api/admin/users' "$UI" \
+  && ok "the dialog loads the accounts from /api/admin/users" \
+  || bad "the admin dialog does not reach /api/admin/users"
+grep -q 'temporary_password' "$UI" \
+  && ok "the reset dialog shows the generated temporary password" \
+  || bad "the temporary password is not surfaced in the UI"
+grep -q 'quota_bytes' "$UI" \
+  && ok "the dialog can change the quota" \
+  || bad "no quota control in the admin dialog"
 
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true

@@ -19,6 +19,7 @@
       </button>
       <div class="user-dropdown" id="user-dropdown" style="display:none">
         <button type="button" id="user-settings-btn">Settings</button>
+        <button type="button" id="user-admin-btn" style="display:none">User administration</button>
         <button type="button" id="logout-btn">Sign out</button>
       </div>
     </div>
@@ -161,6 +162,53 @@
 
       <div class="modal-footer">
         <button class="btn secondary" id="set-close-btn" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- User administration (admin accounts only, opened from the topbar menu) -->
+  <div class="modal-backdrop" id="admin-modal" style="display:none">
+    <div class="modal admin-modal">
+      <h3>User administration</h3>
+
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Status</th>
+              <th>Role</th>
+              <th>Quota</th>
+              <th class="admin-actions-col"></th>
+            </tr>
+          </thead>
+          <tbody id="admin-rows"></tbody>
+        </table>
+      </div>
+
+      <p class="settings-status" id="admin-status"></p>
+
+      <div class="modal-footer">
+        <button class="btn secondary" id="admin-close-btn" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Password reset result (generated temporary password) -->
+  <div class="modal-backdrop" id="reset-modal" style="display:none">
+    <div class="modal reset-modal">
+      <h3>Temporary password</h3>
+      <p class="reset-user" id="reset-user"></p>
+      <p class="reset-hint">
+        Give this password to the user. It works for the next sign-in only --
+        the user should change it in Settings right away.
+      </p>
+      <div class="reset-pass-box">
+        <code id="reset-pass"></code>
+        <button class="btn secondary" id="reset-copy-btn" type="button">Copy</button>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="reset-close-btn" type="button">Done</button>
       </div>
     </div>
   </div>

@@ -146,8 +146,21 @@ location / {
 
 ## Managing users & quotas
 
-There is no user-administration UI yet; both switches live in the database
-(no restart required). On a systemd deployment the file is
+The **first account** created on an instance becomes its administrator: it is
+activated immediately and carries the `is_admin` flag. Every account created
+after that starts inactive and non-admin. An administrator opens **User
+administration** from the menu behind their name in the top bar to:
+
+* **activate / deactivate** accounts (takes effect instantly: sessions and
+  WebDAV included; an admin cannot deactivate themselves),
+* **grant / revoke the administrator role** (the last active administrator can
+  neither be deactivated nor demoted),
+* **set the storage quota** per account,
+* **reset a password**, which hands back a one-time generated temporary
+  password for the user's next sign-in.
+
+The same switches are still available directly in the database (no restart
+required). On a systemd deployment the file is
 `/home/fxcloud/data/fxcloud.db`, in development `./data/fxcloud.db`:
 *Display name, theme and password are not on this list: every user changes
 those themselves in the app, via the menu behind their name in the top bar.*
@@ -156,11 +169,14 @@ those themselves in the app, via the menu behind their name in the top bar.*
 DB=/home/fxcloud/data/fxcloud.db
 
 # overview
-sqlite3 "$DB" "SELECT id, username, is_active, quota_bytes FROM users ORDER BY id;"
+sqlite3 "$DB" "SELECT id, username, is_active, is_admin, quota_bytes FROM users ORDER BY id;"
 
 # activate / deactivate (takes effect instantly: sessions + WebDAV included)
 sqlite3 "$DB" "UPDATE users SET is_active = 1 WHERE username = 'max';"
 sqlite3 "$DB" "UPDATE users SET is_active = 0 WHERE username = 'max';"
+
+# administrator role
+sqlite3 "$DB" "UPDATE users SET is_admin = 1 WHERE username = 'max';"
 
 # quota (bytes; 1073741824 = 1 GiB, the default for every account)
 sqlite3 "$DB" "UPDATE users SET quota_bytes = 2147483648 WHERE username = 'alice';"
@@ -192,7 +208,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 334 checks against a throwaway instance
+./tests/suite.sh    # integration: 363 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

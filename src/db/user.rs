@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::AppError;
-use crate::models::{User, UserOption};
+use crate::models::{AdminUser, User, UserOption};
 
 use super::Db;
 
@@ -30,8 +30,18 @@ fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         created_at: parse_ts(&created_at, 0)?,
         quota_bytes: row.get("quota_bytes")?,
         theme: row.get("theme")?,
+        // Guarded by migration 010_user_admin, so an older database that
+        // somehow skipped it fails loudly here rather than silently denying.
+        is_admin: row.get("is_admin")?,
     })
 }
+
+/// The full column list that [`row_to_user`] reads, kept in one place so a
+/// new column is added in a single edit. `password_hash` is deliberately
+/// absent: the sign-in path selects it separately and it never leaves the
+/// auth layer.
+const USER_COLUMNS: &str =
+    "id, username, display_name, is_active, created_at, quota_bytes, theme, is_admin";
 
 impl Db {
     /// Look up a user by username, including their stored password hash.
@@ -40,10 +50,9 @@ impl Db {
         username: String,
     ) -> Result<Option<UserWithHash>, AppError> {
         self.run(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, username, display_name, is_active, created_at, quota_bytes, theme, password_hash
-                 FROM users WHERE username = ?1",
-            )?;
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {USER_COLUMNS}, password_hash FROM users WHERE username = ?1",
+            ))?;
             let found = stmt
                 .query_row(params![username], |row| {
                     Ok(UserWithHash {
@@ -60,9 +69,8 @@ impl Db {
     /// Fetch a single user by id.
     pub async fn find_user_by_id(&self, id: i64) -> Result<Option<User>, AppError> {
         self.run(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, username, display_name, is_active, created_at, quota_bytes, theme FROM users WHERE id = ?1",
-            )?;
+            let mut stmt =
+                conn.prepare(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?1",))?;
             let found = stmt.query_row(params![id], row_to_user).optional()?;
             Ok(found)
         })
@@ -100,10 +108,8 @@ impl Db {
                     params![id, theme],
                 )?;
             }
-            let mut stmt = conn.prepare(
-                "SELECT id, username, display_name, is_active, created_at, quota_bytes, theme
-                 FROM users WHERE id = ?1",
-            )?;
+            let mut stmt =
+                conn.prepare(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?1",))?;
             stmt.query_row(params![id], row_to_user)
                 .optional()?
                 .ok_or_else(|| AppError::NotFound)
@@ -121,6 +127,101 @@ impl Db {
                 params![id, password_hash],
             )?;
             Ok(())
+        })
+        .await
+    }
+
+    /// Every account for the user-administration table, with the fields the
+    /// admin dialog renders plus each account's storage consumption so the
+    /// quota column can be shown against what is actually used.
+    ///
+    /// Only reachable behind the `AdminUser` extractor (`src/web/middleware.rs`);
+    /// this is the one place that serializes ids and quotas to a caller other
+    /// than the owner.
+    pub async fn list_admin_users(&self) -> Result<Vec<AdminUser>, AppError> {
+        self.run(move |conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {USER_COLUMNS},
+                        (SELECT COALESCE(SUM(size), 0) FROM files
+                          WHERE owner_id = users.id AND deleted_at IS NULL) AS used_bytes
+                   FROM users ORDER BY username",
+            ))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(AdminUser {
+                        id: row.get("id")?,
+                        username: row.get("username")?,
+                        display_name: row.get("display_name")?,
+                        is_active: row.get("is_active")?,
+                        is_admin: row.get("is_admin")?,
+                        quota_bytes: row.get("quota_bytes")?,
+                        used_bytes: row.get("used_bytes")?,
+                        created_at: {
+                            let s: String = row.get("created_at")?;
+                            parse_ts(&s, 0)?
+                        },
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Flip the `is_active` flag for one account (the "activate"/"deactivate"
+    /// action in the admin dialog). Sign-in checks this flag, so deactivating
+    /// cuts off new sign-ins; sessions already open keep working until they
+    /// expire -- see the sign-in path for the exact semantics.
+    pub async fn set_user_active(&self, id: i64, active: bool) -> Result<(), AppError> {
+        self.run(move |conn| {
+            conn.execute(
+                "UPDATE users SET is_active = ?2 WHERE id = ?1",
+                params![id, active],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Grant or revoke the administrator flag for one account. The caller in
+    /// `src/web/routes/admin.rs` refuses the operation when it would leave the
+    /// instance with no active administrator, so this helper does not second-
+    /// guess the decision.
+    pub async fn set_user_admin(&self, id: i64, admin: bool) -> Result<(), AppError> {
+        self.run(move |conn| {
+            conn.execute(
+                "UPDATE users SET is_admin = ?2 WHERE id = ?1",
+                params![id, admin],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Set the storage quota (bytes) for one account. Content beyond it is
+    /// rejected with `507 Insufficient Storage`.
+    pub async fn set_user_quota(&self, id: i64, quota_bytes: i64) -> Result<(), AppError> {
+        self.run(move |conn| {
+            conn.execute(
+                "UPDATE users SET quota_bytes = ?2 WHERE id = ?1",
+                params![id, quota_bytes],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// How many accounts are both active and administrators. The admin routes
+    /// use this to refuse demoting or deactivating the last administrator,
+    /// which would leave the instance unmanageable.
+    pub async fn count_active_admins(&self) -> Result<i64, AppError> {
+        self.run(move |conn| {
+            let n: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE is_active = 1 AND is_admin = 1",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(n)
         })
         .await
     }
@@ -167,11 +268,13 @@ impl Db {
 /// Synchronous helper so other modules (e.g. first-run setup) can create users.
 ///
 /// New accounts are inserted with `is_active = 0`: they can be used only after
-/// an administrator flips them on directly in the database
-/// (`UPDATE users SET is_active = 1 WHERE username = '…';`) — there is no user
-/// administration UI yet. The single exception is bootstrap: when the instance
-/// has no users at all, the account being created is the operator's own first
-/// login, so it is activated right away.
+/// an administrator enables them in the user-administration dialog (or, before
+/// that UI existed, directly in the database). The single exception is
+/// bootstrap: when the instance has no users at all, the account being created
+/// is the operator's own first login, so it is activated right away **and**
+/// given `is_admin = 1`. That first account is the administrator who then
+/// manages every account created afterwards. On an existing database the same
+/// promotion is performed once by migration `010_user_admin`.
 ///
 /// The storage quota is *not* passed in: the schema default (1 GiB, migration
 /// `004_user_quota`) decides what a new account gets, and it is read back
@@ -183,12 +286,23 @@ pub fn insert_user(
     display_name: &str,
 ) -> Result<User, AppError> {
     let now = Utc::now().to_rfc3339();
-    let is_active: bool =
+    // Bootstrap: the very first account (COUNT(*) == 0) is both active and an
+    // administrator. Every later account starts inactive and non-admin.
+    let is_first: bool =
         conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get::<_, i64>(0))? == 0;
+    let is_active = is_first;
+    let is_admin = is_first;
     conn.execute(
-        "INSERT INTO users (username, password_hash, display_name, created_at, is_active)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![username, password_hash, display_name, now, is_active],
+        "INSERT INTO users (username, password_hash, display_name, created_at, is_active, is_admin)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            username,
+            password_hash,
+            display_name,
+            now,
+            is_active,
+            is_admin
+        ],
     )
     .map_err(|e| match e {
         rusqlite::Error::SqliteFailure(f, _)
@@ -215,5 +329,6 @@ pub fn insert_user(
             .map_err(|_| AppError::Internal(anyhow::anyhow!("bad timestamp")))?,
         quota_bytes,
         theme,
+        is_admin,
     })
 }

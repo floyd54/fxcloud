@@ -81,6 +81,17 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/keys/me", put(routes::keys::put_me))
         .route("/keys/{username}", get(routes::keys::get_public));
 
+    // User administration. Every handler takes the `AdminUser` extractor, so
+    // a signed-in account without the administrator flag is rejected with 403
+    // before any of this logic runs.
+    let api = api
+        .route("/admin/users", get(routes::admin::list_users))
+        .route("/admin/users/{id}", put(routes::admin::update_user))
+        .route(
+            "/admin/users/{id}/password",
+            post(routes::admin::reset_password),
+        );
+
     Router::new()
         // UI pages & embedded assets
         .route("/", get(ui::index))

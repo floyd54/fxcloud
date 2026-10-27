@@ -517,6 +517,11 @@
     meData = res;
     document.getElementById("user-label").textContent =
       res.display_name || res.username;
+    // Only administrators get the "User administration" entry; everyone else
+    // keeps the menu down to Settings and Sign out. The server also gates the
+    // /api/admin endpoints (403), so this is a convenience, not the security.
+    const adminBtn = document.getElementById("user-admin-btn");
+    if (adminBtn) adminBtn.style.display = res.is_admin ? "" : "none";
     // The theme is part of the account, so it applies before anything else
     // renders - the rows below are painted with it, not around it.
     applyTheme(res.theme);
@@ -2076,6 +2081,224 @@
     }
   }
 
+  // ---------- user administration (admin accounts only) ----------
+  // The "User administration" menu entry is only rendered for administrators
+  // (see loadMe). The server is the real gate: every /api/admin call returns
+  // 403 for a non-admin, so hiding the button is a convenience, not the
+  // security. The table manages the three administrated properties - the
+  // active flag, the admin role itself, and the quota - plus a password
+  // reset that hands back a generated temporary password.
+  const adminModal = document.getElementById("admin-modal");
+  const resetModal = document.getElementById("reset-modal");
+
+  function setAdminStatus(text, isError) {
+    const el = document.getElementById("admin-status");
+    el.textContent = text || "";
+    el.className = isError ? "settings-status error" : "settings-status";
+  }
+
+  function openAdmin() {
+    setUserMenu(false);
+    setAdminStatus("");
+    adminModal.style.display = "flex";
+    loadAdminUsers();
+  }
+
+  function closeAdmin() {
+    adminModal.style.display = "none";
+  }
+
+  // Quota is entered and stored in MiB in the dialog; the API speaks bytes.
+  function mibFromBytes(bytes) {
+    return Math.max(0, Math.round(bytes / 1048576));
+  }
+
+  async function loadAdminUsers() {
+    try {
+      const res = await api("/api/admin/users");
+      renderAdminRows(await res.json());
+    } catch (e) {
+      setAdminStatus(e.message, true);
+    }
+  }
+
+  // Build the table one row per account. The row carries the id and the
+  // current flags as data-attributes so the click handler can read state
+  // without re-deriving it from button text.
+  function renderAdminRows(users) {
+    const tbody = document.getElementById("admin-rows");
+    tbody.innerHTML = "";
+    const myId = meData && meData.id;
+    for (const u of users) {
+      const tr = document.createElement("tr");
+      tr.dataset.id = String(u.id);
+
+      const tdUser = document.createElement("td");
+      const nameWrap = document.createElement("div");
+      nameWrap.className = "admin-user-name";
+      const uname = document.createElement("span");
+      uname.className = "uname";
+      uname.textContent = u.username;
+      nameWrap.appendChild(uname);
+      if (u.display_name && u.display_name !== u.username) {
+        const udisplay = document.createElement("span");
+        udisplay.className = "udisplay";
+        udisplay.textContent = u.display_name;
+        nameWrap.appendChild(udisplay);
+      }
+      tdUser.appendChild(nameWrap);
+
+      const tdStatus = document.createElement("td");
+      const statusBadge = document.createElement("span");
+      statusBadge.className = "admin-badge " + (u.is_active ? "on" : "off");
+      statusBadge.textContent = u.is_active ? "Active" : "Inactive";
+      tdStatus.appendChild(statusBadge);
+
+      const tdRole = document.createElement("td");
+      const roleBadge = document.createElement("span");
+      roleBadge.className = "admin-badge " + (u.is_admin ? "admin" : "member");
+      roleBadge.textContent = u.is_admin ? "Admin" : "Member";
+      tdRole.appendChild(roleBadge);
+
+      const tdQuota = document.createElement("td");
+      tdQuota.className = "admin-quota-cell";
+      const quotaInput = document.createElement("input");
+      quotaInput.type = "number";
+      quotaInput.className = "admin-quota-input";
+      quotaInput.min = "0";
+      quotaInput.step = "1";
+      quotaInput.value = String(mibFromBytes(u.quota_bytes));
+      quotaInput.title = "Quota in MiB";
+      quotaInput.dataset.id = String(u.id);
+      quotaInput.dataset.action = "quota";
+      const usedEl = document.createElement("span");
+      usedEl.className = "used";
+      usedEl.textContent = fmtBytes(u.used_bytes) + " used";
+      tdQuota.appendChild(quotaInput);
+      tdQuota.appendChild(document.createElement("br"));
+      tdQuota.appendChild(usedEl);
+
+      const tdActions = document.createElement("td");
+      tdActions.className = "admin-actions-col";
+      const actions = document.createElement("div");
+      actions.className = "admin-row-actions";
+
+      // Deactivate/activate. The button is hidden for the signed-in admin's
+      // own row: the server refuses self-deactivation anyway, and a dead
+      // button would only invite confusion.
+      const statusBtn = document.createElement("button");
+      statusBtn.type = "button";
+      statusBtn.className = "btn secondary";
+      statusBtn.dataset.id = String(u.id);
+      statusBtn.dataset.action = "toggle-active";
+      statusBtn.dataset.active = u.is_active ? "1" : "0";
+      statusBtn.textContent = u.is_active ? "Deactivate" : "Activate";
+      if (u.id === myId) statusBtn.style.display = "none";
+      actions.appendChild(statusBtn);
+
+      const roleBtn = document.createElement("button");
+      roleBtn.type = "button";
+      roleBtn.className = "btn secondary";
+      roleBtn.dataset.id = String(u.id);
+      roleBtn.dataset.action = "toggle-admin";
+      roleBtn.dataset.admin = u.is_admin ? "1" : "0";
+      roleBtn.textContent = u.is_admin ? "Revoke admin" : "Make admin";
+      actions.appendChild(roleBtn);
+
+      const resetBtn = document.createElement("button");
+      resetBtn.type = "button";
+      resetBtn.className = "btn secondary";
+      resetBtn.dataset.id = String(u.id);
+      resetBtn.dataset.action = "reset-password";
+      resetBtn.textContent = "Reset password";
+      actions.appendChild(resetBtn);
+
+      tdActions.appendChild(actions);
+
+      tr.appendChild(tdUser);
+      tr.appendChild(tdStatus);
+      tr.appendChild(tdRole);
+      tr.appendChild(tdQuota);
+      tr.appendChild(tdActions);
+      tbody.appendChild(tr);
+    }
+  }
+
+  async function adminPut(id, body) {
+    return api(`/api/admin/users/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  // One delegated click handler for every per-row action button.
+  document.getElementById("admin-rows").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    const action = btn.dataset.action;
+    setAdminStatus("");
+    try {
+      if (action === "toggle-active") {
+        // Flip the flag the button currently reflects (from data, not text).
+        await adminPut(id, { is_active: btn.dataset.active !== "1" });
+        await loadAdminUsers();
+      } else if (action === "toggle-admin") {
+        await adminPut(id, { is_admin: btn.dataset.admin !== "1" });
+        await loadAdminUsers();
+      } else if (action === "reset-password") {
+        const res = await api(`/api/admin/users/${id}/password`, { method: "POST" });
+        const data = await res.json();
+        showResetModal(data.username, data.temporary_password);
+      }
+    } catch (err) {
+      setAdminStatus(err.message, true);
+    }
+  });
+
+  // The quota field saves on change (Enter or leaving the field).
+  document.getElementById("admin-rows").addEventListener("change", async (e) => {
+    const input = e.target.closest('input[data-action="quota"]');
+    if (!input) return;
+    const id = Number(input.dataset.id);
+    const mib = Number(input.value);
+    if (!Number.isFinite(mib) || mib < 0) {
+      setAdminStatus("Quota must be a non-negative number of MiB.", true);
+      return;
+    }
+    setAdminStatus("");
+    try {
+      await adminPut(id, { quota_bytes: Math.round(mib * 1048576) });
+      await loadAdminUsers();
+    } catch (err) {
+      setAdminStatus(err.message, true);
+    }
+  });
+
+  // Show the freshly generated temporary password once, for the admin to
+  // copy. It is never retrievable again, so the dialog is the only place it
+  // appears.
+  function showResetModal(username, password) {
+    document.getElementById("reset-user").textContent = "For " + username + ":";
+    document.getElementById("reset-pass").textContent = password;
+    resetModal.style.display = "flex";
+  }
+
+  function closeResetModal() {
+    resetModal.style.display = "none";
+  }
+
+  document.getElementById("reset-copy-btn").addEventListener("click", async () => {
+    const pass = document.getElementById("reset-pass").textContent;
+    try {
+      await navigator.clipboard.writeText(pass);
+    } catch (_) {
+      // Clipboard can be unavailable (insecure context); the code element is
+      // selectable, so the user can still copy it by hand.
+    }
+  });
+
   // ---------- wire up ----------
   document.getElementById("new-folder-btn").addEventListener("click", newFolder);
   document.getElementById("new-file-btn").addEventListener("click", newFile);
@@ -2114,6 +2337,16 @@
       document.getElementById("set-pass-current").value,
       document.getElementById("set-pass-new").value
     );
+  });
+  // User administration (only rendered for admins).
+  document.getElementById("user-admin-btn").addEventListener("click", openAdmin);
+  document.getElementById("admin-close-btn").addEventListener("click", closeAdmin);
+  adminModal.addEventListener("click", (e) => {
+    if (e.target === adminModal) closeAdmin();
+  });
+  document.getElementById("reset-close-btn").addEventListener("click", closeResetModal);
+  resetModal.addEventListener("click", (e) => {
+    if (e.target === resetModal) closeResetModal();
   });
   // Share dialog.
   document.getElementById("share-add-btn").addEventListener("click", shareAdd);
