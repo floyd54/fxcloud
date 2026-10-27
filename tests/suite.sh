@@ -1849,6 +1849,25 @@ grep -q 'entries = sortEntries(entries)' "$UI" \
   && ok "every list render goes through the sort" \
   || bad "renderRows bypasses the sort"
 
+# ---- hidden files toggle ----
+note "hidden files (dot entries) toggle"
+IDX=$REPO/frontend/index.html
+grep -q 'id="hidden-toggle"' "$IDX" \
+  && ok "the toolbar carries a Show hidden toggle" \
+  || bad "no #hidden-toggle in index.html"
+grep -q 'e\.name\.startsWith("\.")' "$UI" \
+  && ok "entries whose name starts with a dot are recognised as hidden" \
+  || bad "no dot-prefix test in app.js"
+grep -q 'fxcloud\.showHidden' "$UI" \
+  && ok "the hidden preference is remembered in localStorage" \
+  || bad "the hidden preference is not persisted"
+grep -q 'let rawEntries' "$UI" && grep -q 'rawEntries = entries' "$UI" \
+  && ok "the unfiltered listing is kept so the toggle can repaint" \
+  || bad "the raw listing is not retained"
+grep -q 'entries = showHidden ? entries : entries\.filter' "$UI" \
+  && ok "rows are filtered by the toggle before the sort" \
+  || bad "the toggle does not filter the rows"
+
 # ---- user administration UI ----
 note "user administration UI"
 IDX=$REPO/frontend/index.html

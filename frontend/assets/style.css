@@ -119,6 +119,13 @@ body {
   flex-wrap: wrap;
 }
 .toolbar .grow { flex: 1; }
+/* View toggles in the toolbar ("Show hidden"): accent-filled while on, the
+   same treatment the editor toolbar gives its active buttons. */
+.toolbar .btn.secondary.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 
 .btn {
   background: var(--accent);

@@ -53,6 +53,20 @@
   // each column is normally opened for.
   const SORT_FIRST_DIR = { name: "asc", size: "desc", date: "desc" };
 
+  // Whether entries whose name starts with a dot (the Unix "hidden" marker)
+  // are shown. Off at first, and remembered in localStorage like the peer
+  // fingerprints below - a display preference, nothing sensitive. The raw
+  // (unfiltered) listing of the current view is kept so the toggle and the
+  // sort can both repaint it without a refetch.
+  const HIDDEN_KEY = "fxcloud.showHidden";
+  let showHidden = false;
+  try {
+    showHidden = localStorage.getItem(HIDDEN_KEY) === "1";
+  } catch (_) {
+    /* private mode: the preference then lasts for this tab only */
+  }
+  let rawEntries = [];
+
   // Nextcloud-style permission bits.
   const PERM_READ = 1, PERM_UPDATE = 2, PERM_CREATE = 4, PERM_DELETE = 8,
         PERM_SHARE = 16, PERM_ALL = 31;
@@ -176,14 +190,36 @@
     });
   }
 
+  // Reflect the hidden-file preference on the toolbar toggle (highlighted
+  // while dot-entries are visible).
+  function setHiddenToggle() {
+    const btn = document.getElementById("hidden-toggle");
+    if (!btn) return;
+    btn.classList.toggle("active", showHidden);
+    btn.setAttribute("aria-pressed", String(showHidden));
+  }
+
   function renderRows(entries) {
+    rawEntries = entries; // the unfiltered listing, for the toggle and sort to repaint
     rowsEl.innerHTML = "";
-    // Paint the list in the chosen order. Sorting here means every path that
-    // renders rows (folder load, trash, a header click) honours it, and the
-    // row index handed to shift-select matches what is on screen.
+    // Drop dot-entries unless the toggle is on, then sort what is left, so
+    // both rules apply together. `currentEntries` therefore holds exactly
+    // what is on screen: selection and the row index handed to shift-select
+    // match the rows the user can actually see.
+    entries = showHidden ? entries : entries.filter((e) => !e.name.startsWith("."));
     entries = sortEntries(entries);
     currentEntries = entries;
     if (entries.length === 0) {
+      if (rawEntries.length > 0) {
+        // Everything in here is hidden - explain instead of claiming the
+        // folder is empty (text only, so the source stays ASCII).
+        rowsEl.innerHTML =
+          '<tr><td colspan="5"><div class="empty">' +
+          "Only hidden files are here.<br/>" +
+          "Turn on <b>Show hidden</b> in the toolbar to reveal them." +
+          "</div></td></tr>";
+        return;
+      }
       rowsEl.innerHTML = trashView
         ? '<tr><td colspan="5"><div class="empty"><div class="big">🗑</div>' +
           "The trash is empty.</div></td></tr>"
@@ -2451,8 +2487,20 @@
         sortState.dir = SORT_FIRST_DIR[key] || "asc";
       }
       updateSortHeaders();
-      renderRows(currentEntries);
+      renderRows(rawEntries);
     });
+  });
+  // Hidden files: flip the preference, remember it, repaint from the raw
+  // listing (the filtered view no longer holds the entries it dropped).
+  document.getElementById("hidden-toggle").addEventListener("click", () => {
+    showHidden = !showHidden;
+    try {
+      localStorage.setItem(HIDDEN_KEY, showHidden ? "1" : "0");
+    } catch (_) {
+      /* private mode: the preference then lasts for this tab only */
+    }
+    setHiddenToggle();
+    renderRows(rawEntries);
   });
   // Bulk action bar (shown while anything is selected).
   document.getElementById("bulk-download").addEventListener("click", bulkDownload);
@@ -2507,6 +2555,7 @@
 
   // ---------- init ----------
   updateSortHeaders();
+  setHiddenToggle();
   loadMe()
     .then(() => FXEnc.init(meName))
     .then(() => loadFiles(currentParent))
