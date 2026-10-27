@@ -621,7 +621,6 @@
     // The theme is part of the account, so it applies before anything else
     // renders - the rows below are painted with it, not around it.
     applyTheme(res.theme);
-    updatePassphraseState(res);
     const storage = document.getElementById("storage-label");
     if (storage && res.used_bytes != null && res.quota_bytes != null) {
       storage.textContent = `${fmtBytes(res.used_bytes)} of ${fmtBytes(res.quota_bytes)}`;
@@ -2074,23 +2073,6 @@
     el.className = isError ? "settings-status error" : "settings-status";
   }
 
-  // The passphrase line in the settings dialog says what is true right now
-  // and what the section is for; the remove button only exists when there
-  // is a passphrase to remove. `has_passphrase` comes from GET /api/me and
-  // is kept in step locally after each enrollment, so reopening the dialog
-  // never has to guess.
-  function updatePassphraseState(me) {
-    const line = document.getElementById("set-passphrase-state");
-    if (line) {
-      line.textContent =
-        me && me.has_passphrase
-          ? "Set - you can sign in with it instead of your password."
-          : "Not set. Use 16+ characters; a few random words work well.";
-    }
-    const remove = document.getElementById("set-passphrase-remove");
-    if (remove) remove.style.display = me && me.has_passphrase ? "" : "none";
-  }
-
   function markThemeChoice(theme) {
     document.getElementById("theme-light").classList.toggle("active", theme !== "dark");
     document.getElementById("theme-dark").classList.toggle("active", theme === "dark");
@@ -2110,7 +2092,6 @@
     document.getElementById("set-name-input").value =
       meData.display_name || meData.username;
     markThemeChoice(meData.theme || "light");
-    updatePassphraseState(meData);
     setSettingsStatus("");
     settingsModal.style.display = "flex";
   }
@@ -2193,56 +2174,6 @@
       setSettingsStatus("Password changed.");
     } catch (e) {
       setSettingsStatus(e.message, true);
-    }
-  }
-
-  // The passphrase moves two things at once - the sign-in credential and the
-  // secret the key row is wrapped under - and FXEnc.enrollPassphrase owns
-  // that order (server endpoint first, re-wrap second). This function is the
-  // dialog's half: the floors the server also enforces, the two-entries
-  // match, and a status line that stays honest when only the first half
-  // succeeded (credentialSet says which half the server has).
-  async function savePassphrase(current, next, next2) {
-    if (next.length < 16) {
-      setSettingsStatus("Passphrase must be at least 16 characters.", true);
-      return;
-    }
-    if (next !== next2) {
-      setSettingsStatus("The two passphrases do not match.", true);
-      return;
-    }
-    if (!current) {
-      setSettingsStatus("Enter your current password to confirm.", true);
-      return;
-    }
-    setSettingsStatus("Setting passphrase...");
-    const res = await FXEnc.enrollPassphrase(next, current);
-    setSettingsStatus(res.message, !res.ok);
-    if (res.credentialSet) {
-      document.getElementById("set-passphrase-current").value = "";
-      document.getElementById("set-passphrase-new").value = "";
-      document.getElementById("set-passphrase-new2").value = "";
-      if (meData) meData.has_passphrase = true;
-      updatePassphraseState(meData);
-    }
-  }
-
-  // Removal asks for the password that stays (it is the proof, and the
-  // secret the keys are wrapped back under) - never for the passphrase
-  // being removed, which would defeat the point of giving it up.
-  async function removePassphraseFlow() {
-    const current = document.getElementById("set-passphrase-current").value;
-    if (!current) {
-      setSettingsStatus("Enter your current password to confirm.", true);
-      return;
-    }
-    setSettingsStatus("Removing passphrase...");
-    const res = await FXEnc.removePassphrase(current);
-    setSettingsStatus(res.message, !res.ok);
-    if (res.credentialRemoved) {
-      document.getElementById("set-passphrase-current").value = "";
-      if (meData) meData.has_passphrase = false;
-      updatePassphraseState(meData);
     }
   }
 
@@ -2503,15 +2434,6 @@
       document.getElementById("set-pass-new").value
     );
   });
-  document.getElementById("set-passphrase-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    savePassphrase(
-      document.getElementById("set-passphrase-current").value,
-      document.getElementById("set-passphrase-new").value,
-      document.getElementById("set-passphrase-new2").value
-    );
-  });
-  document.getElementById("set-passphrase-remove").addEventListener("click", removePassphraseFlow);
   // User administration (only rendered for admins).
   document.getElementById("user-admin-btn").addEventListener("click", openAdmin);
   document.getElementById("admin-close-btn").addEventListener("click", closeAdmin);

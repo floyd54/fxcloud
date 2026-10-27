@@ -150,15 +150,6 @@ impl Db {
                      WHERE name = 'is_admin'",
                 ),
             ),
-            (
-                "011_passphrase_login",
-                include_str!("../../migrations/011_passphrase_login.sql"),
-                // Skip once `users.passphrase_hash` exists.
-                Some(
-                    "SELECT COUNT(*) FROM pragma_table_info('users')
-                     WHERE name = 'passphrase_hash'",
-                ),
-            ),
         ];
         let conn = self.pool.get()?;
         for (name, sql, guard) in MIGRATIONS {

@@ -73,31 +73,6 @@ pub fn verify_password(password: &str, encoded: &str) -> bool {
         .is_ok()
 }
 
-/// Hash the optional sign-in passphrase (README: 16 characters minimum).
-///
-/// Same parameters as [`hash_password`] on purpose: the passphrase is a
-/// *second* server-side credential, not a cheaper one, so a copy of the
-/// database yields no weaker offline target than the password hash beside
-/// it. What makes the passphrase the stronger secret in practice is its
-/// floor - 16 characters, enforced in `POST /api/register` and
-/// `PUT /api/me/passphrase` - not a different KDF.
-pub fn hash_passphrase(passphrase: &str) -> Result<String, AppError> {
-    hash_password(passphrase)
-}
-
-/// Verify a sign-in passphrase against [`hash_passphrase`]'s output.
-///
-/// `encoded` is `None` for accounts that never set one (every account that
-/// existed before migration `011_passphrase_login`), and those never
-/// verify: `POST /api/login` answers the same 401 for "wrong passphrase"
-/// and for "no passphrase exists", so neither branch reveals which.
-pub fn verify_passphrase(passphrase: &str, encoded: Option<&str>) -> bool {
-    match encoded {
-        Some(hash) => verify_password(passphrase, hash),
-        None => false,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Basic-auth verification cache
 // ---------------------------------------------------------------------------

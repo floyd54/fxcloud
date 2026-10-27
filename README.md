@@ -15,10 +15,8 @@ with sharing, quotas and WebDAV.
   [Managing users & quotas](#managing-users--quotas)).
 - **User settings** - the name in the top bar opens a menu: account facts
   (username, member since, storage used), a display name you can change
-  yourself, a light/dark theme, a password change that asks for the
-  current password first, and an optional **passphrase** (16+ characters;
-  a few random words work well) that signs you in instead of the password
-  and wraps your file keys. Everything is stored per account on the server,
+  yourself, a light/dark theme and a password change that asks for the
+  current password first. Everything is stored per account on the server,
   so it follows you to every device.
 - **File explorer** - folders with breadcrumbs and recursive sizes,
   create/upload (files *or* whole folder trees via drag & drop, empty
@@ -159,8 +157,7 @@ administration** from the menu behind their name in the top bar to:
   neither be deactivated nor demoted),
 * **set the storage quota** per account,
 * **reset a password**, which hands back a one-time generated temporary
-  password for the user's next sign-in (a passphrase set on the account
-  keeps working through a reset - it is a separate credential).
+  password for the user's next sign-in.
 
 The same switches are still available directly in the database (no restart
 required). On a systemd deployment the file is
@@ -192,9 +189,8 @@ a quota and how it is enforced: [ARCHITECTURE.md](ARCHITECTURE.md#quotas).
 ## WebDAV
 
 fxcloud speaks WebDAV at **`/dav/`** with HTTP Basic auth (your fxcloud
-username + password - always the password: an optional sign-in passphrase
-is a web-UI credential and is refused here); the path after `/dav/` is
-relative to your home folder:
+username + password); the path after `/dav/` is relative to your home
+folder:
 
 ```bash
 rclone config    # type: webdav, url: https://your-host/dav/, user/pass
@@ -212,7 +208,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 428 checks against a throwaway instance
+./tests/suite.sh    # integration: 378 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

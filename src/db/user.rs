@@ -14,17 +14,10 @@ pub(super) fn parse_ts(s: &str, idx: usize) -> rusqlite::Result<DateTime<Utc>> {
     })
 }
 
-/// Row shape used internally to carry the login hashes alongside the user.
-///
-/// Both hashes stay inside the auth layer like `User::password_hash` does:
-/// neither is part of `USER_COLUMNS`, so no serialization path can leak them.
+/// Row shape used internally to carry the password hash alongside the user.
 pub struct UserWithHash {
     pub user: User,
     pub password_hash: String,
-    /// Argon2id hash of the optional sign-in passphrase (migration
-    /// `011_passphrase_login`), `None` when this account never set one -
-    /// which is every account that existed before that migration.
-    pub passphrase_hash: Option<String>,
 }
 
 fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
@@ -58,15 +51,13 @@ impl Db {
     ) -> Result<Option<UserWithHash>, AppError> {
         self.run(move |conn| {
             let mut stmt = conn.prepare(&format!(
-                "SELECT {USER_COLUMNS}, password_hash, passphrase_hash
-                 FROM users WHERE username = ?1",
+                "SELECT {USER_COLUMNS}, password_hash FROM users WHERE username = ?1",
             ))?;
             let found = stmt
                 .query_row(params![username], |row| {
                     Ok(UserWithHash {
                         user: row_to_user(row)?,
                         password_hash: row.get("password_hash")?,
-                        passphrase_hash: row.get("passphrase_hash")?,
                     })
                 })
                 .optional()?;
@@ -134,41 +125,6 @@ impl Db {
             conn.execute(
                 "UPDATE users SET password_hash = ?2 WHERE id = ?1",
                 params![id, password_hash],
-            )?;
-            Ok(())
-        })
-        .await
-    }
-
-    /// Store (or replace) the hash of the optional sign-in passphrase.
-    ///
-    /// Called only after the caller proved they know the current password
-    /// (`PUT /api/me/passphrase`); the server never sees the passphrase
-    /// itself, just this Argon2id encoding of it. Replacing an existing
-    /// value is deliberate: setting a new passphrase must not require the
-    /// old one, since the password proof already establishes ownership.
-    pub async fn set_passphrase(&self, id: i64, passphrase_hash: String) -> Result<(), AppError> {
-        self.run(move |conn| {
-            conn.execute(
-                "UPDATE users SET passphrase_hash = ?2 WHERE id = ?1",
-                params![id, passphrase_hash],
-            )?;
-            Ok(())
-        })
-        .await
-    }
-
-    /// Drop the sign-in passphrase again (`DELETE /api/me/passphrase`).
-    ///
-    /// The password is untouched on purpose: removing the optional credential
-    /// must leave the mandatory one - and with it WebDAV and every existing
-    /// session - exactly as it was. On an account that never had one this is
-    /// a no-op rather than an error, so a retried removal converges.
-    pub async fn clear_passphrase(&self, id: i64) -> Result<(), AppError> {
-        self.run(move |conn| {
-            conn.execute(
-                "UPDATE users SET passphrase_hash = NULL WHERE id = ?1",
-                params![id],
             )?;
             Ok(())
         })
@@ -298,27 +254,14 @@ impl Db {
     /// The account starts out **inactive** — unless it is the very first one
     /// on a fresh instance (see [`insert_user`]) — and has to be activated
     /// before its owner can sign in.
-    ///
-    /// `passphrase_hash` is the optional sign-in passphrase chosen during
-    /// registration (README: "16+ characters"); `None` for every client that
-    /// does not send one, which keeps old registrations byte-identical.
     pub async fn create_user(
         &self,
         username: String,
         password_hash: String,
         display_name: String,
-        passphrase_hash: Option<String>,
     ) -> Result<User, AppError> {
-        self.run(move |conn| {
-            insert_user(
-                conn,
-                &username,
-                &password_hash,
-                &display_name,
-                passphrase_hash.as_deref(),
-            )
-        })
-        .await
+        self.run(move |conn| insert_user(conn, &username, &password_hash, &display_name))
+            .await
     }
 }
 
@@ -336,17 +279,11 @@ impl Db {
 /// The storage quota is *not* passed in: the schema default (1 GiB, migration
 /// `004_user_quota`) decides what a new account gets, and it is read back
 /// after the insert so there is exactly one source of truth for it.
-///
-/// `passphrase_hash` (`None` = no passphrase, the default for every account
-/// without one) is written in the same insert as migration
-/// `011_passphrase_login` adds the column, so there is no window in which the
-/// row exists without the field the sign-in path selects.
 pub fn insert_user(
     conn: &mut Connection,
     username: &str,
     password_hash: &str,
     display_name: &str,
-    passphrase_hash: Option<&str>,
 ) -> Result<User, AppError> {
     let now = Utc::now().to_rfc3339();
     // Bootstrap: the very first account (COUNT(*) == 0) is both active and an
@@ -356,16 +293,15 @@ pub fn insert_user(
     let is_active = is_first;
     let is_admin = is_first;
     conn.execute(
-        "INSERT INTO users (username, password_hash, display_name, created_at, is_active, is_admin, passphrase_hash)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO users (username, password_hash, display_name, created_at, is_active, is_admin)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             username,
             password_hash,
             display_name,
             now,
             is_active,
-            is_admin,
-            passphrase_hash
+            is_admin
         ],
     )
     .map_err(|e| match e {

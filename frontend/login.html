@@ -30,32 +30,10 @@
           <input id="display_name" name="display_name" type="text" autocomplete="name" />
         </div>
 
-        <!-- Which credential signs this attempt in: the password every
-             account has from the start (it is also what WebDAV sends), or
-             the optional 16+ character passphrase that doubles as the
-             secret the file keys are wrapped under. Shown for signing in
-             only - registering collects both below. -->
-        <div class="auth-tabs" id="cred-tabs">
-          <button id="cred-password" class="active" type="button">Password</button>
-          <button id="cred-passphrase" type="button">Passphrase</button>
-        </div>
-
         <div class="field">
-          <label for="password" id="password-label">Password</label>
+          <label for="password">Password</label>
           <input id="password" name="password" type="password" required minlength="8" autocomplete="current-password" />
         </div>
-
-        <div class="field" id="reg-pass-field" style="display:none">
-          <label for="reg-passphrase">Passphrase (optional, 16+ characters)</label>
-          <input id="reg-passphrase" name="reg-passphrase" type="password" minlength="16" autocomplete="new-password" />
-        </div>
-
-        <div class="field" id="reg-pass2-field" style="display:none">
-          <label for="reg-passphrase2">Repeat passphrase</label>
-          <input id="reg-passphrase2" name="reg-passphrase2" type="password" minlength="16" autocomplete="new-password" />
-        </div>
-
-        <p class="auth-hint" id="auth-hint" style="display:none"></p>
 
         <button class="btn" id="submit-btn" type="submit">Sign in</button>
       </form>
