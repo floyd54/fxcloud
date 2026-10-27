@@ -99,9 +99,14 @@ Ceremony rules:
   `X-Forwarded-Proto` (or `FXCLOUD_SECURE_COOKIE`) plus `Host`. The browser
   sends `Origin` on the ceremony POSTs and it must equal that derived
   value - a mismatch is `400` with a pointer at `FXCLOUD_ORIGIN`, before a
-  challenge is spent. The rpId is the origin's host without port, and the
-  rpId hash inside `authenticatorData` must match it (a credential minted
-  for another domain -> `400`).
+  challenge is spent. Behind a reverse proxy the derived value is only
+  right when the proxy forwards the scheme and `Host` unchanged; if it
+  rewrites `Host`, terminates TLS without sending `X-Forwarded-Proto`, or
+  users open the site under another host/port than the backend derives,
+  set `FXCLOUD_ORIGIN` to the exact URL browsers see (scheme, host and
+  port, no trailing slash). The rpId is the origin's host without port,
+  and the rpId hash inside `authenticatorData` must match it (a
+  credential minted for another domain -> `400`).
 - **Algorithms:** ES256 on P-256 only (`pubKeyCredParams` offers `-7`, and
   the stored key must carry it). Attestation is requested as `none`;
   `packed` without a certificate chain is accepted (the fresh credential

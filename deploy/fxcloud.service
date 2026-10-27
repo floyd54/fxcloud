@@ -18,6 +18,9 @@ Environment=FXCLOUD_DATA=/home/fxcloud/data
 Environment=RUST_LOG=fxcloud=info
 # Enable when serving over HTTPS behind a TLS-terminating reverse proxy:
 # Environment=FXCLOUD_SECURE_COOKIE=1
+# The exact URL users open fxcloud under - required for passkeys when a
+# reverse proxy rewrites Host or terminates TLS (e.g. https://cloud.example.com):
+# Environment=FXCLOUD_ORIGIN=https://cloud.example.com
 
 # --- Security hardening ----------------------------------------------------
 NoNewPrivileges=true

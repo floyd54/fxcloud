@@ -4,7 +4,8 @@ A Nextcloud-inspired personal cloud, written in Rust, that compiles to a
 **single binary**: SQLite and the web frontend are embedded, there is no
 external database and no runtime dependency. Start it, open
 <http://127.0.0.1:8080>, register - and you get a familiar file explorer
-with sharing, quotas and WebDAV.
+with sharing, quotas and WebDAV. New to fxcloud? The
+[User Guide](USERGUIDE.md) walks through the interface end to end.
 
 ## Features
 
@@ -135,6 +136,14 @@ Rolling out a new build: `sudo systemctl stop fxcloud`, replace the binary,
 fxcloud speaks plain HTTP, so the proxy must terminate TLS - and allow
 large uploads:
 
+- **Set `FXCLOUD_ORIGIN`** to the exact URL users open fxcloud under, e.g.
+  `FXCLOUD_ORIGIN=https://cloud.example.com`. Passkeys verify the browser's
+  `Origin` against it; without it fxcloud derives the origin from the
+  forwarded scheme and `Host`, which is only right when the proxy passes
+  both unchanged. Scheme, host and port must match what the browser sends -
+  no trailing slash. A mismatch is refused with
+  `Origin does not match this server's address - set FXCLOUD_ORIGIN to the
+  URL users open it under`.
 - Raise the body-size limit (nginx: `client_max_body_size 10G;`) and keep
   it in sync with `FXCLOUD_MAX_UPLOAD_MB` - a file must be under both.
 - Forward `Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`.
@@ -233,6 +242,9 @@ CI runs both layers on every push and pull request
 
 ## More documentation
 
+- [USERGUIDE.md](USERGUIDE.md) - the user's guide: install, files, sharing,
+  trash, quotas, encryption, passkeys, HTTPS/reverse proxy with
+  `FXCLOUD_ORIGIN`, WebDAV, troubleshooting
 - [ENCRYPTION.md](ENCRYPTION.md) - client-side per-file encryption: threat
   model, cryptographic design, the DECISIONs behind it, and the phases
 - [ARCHITECTURE.md](ARCHITECTURE.md) - code layout, storage format,
