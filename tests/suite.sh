@@ -1868,6 +1868,46 @@ grep -q 'entries = showHidden ? entries : entries\.filter' "$UI" \
   && ok "rows are filtered by the toggle before the sort" \
   || bad "the toggle does not filter the rows"
 
+# ---- toolbar button hierarchy ----
+# One rule across the file list's two button rows: a primary (.btn) action
+# carries an icon, a secondary or danger one is plain text. Every glyph is
+# spelled with an escape so this suite file stays pure ASCII.
+note "toolbar buttons: primary carries an icon, secondary stays plain"
+IDX=$REPO/frontend/index.html
+UP=$'\u2b06'             # upload glyph (U+2B06), escaped so the suite stays ASCII
+FLD=$'\U1F4C1'      # folder emoji
+BASKET=$'\U1F5D1'   # wastebasket emoji
+grep -q "class=\"btn\" id=\"upload-folder-btn\">${UP} Upload folder</button>" "$IDX" \
+  && ok "upload folder is a primary button like upload file" \
+  || bad "upload folder is not styled like upload file"
+grep -q 'class="btn secondary" id="trash-btn">Trash</button>' "$IDX" \
+  && ok "the trash button is a plain secondary label" \
+  || bad "the trash button still carries an icon"
+grep -q "${FLD}\|${BASKET}" "$IDX" \
+  && bad "index.html still mixes loose emoji into the buttons" \
+  || ok "the two icons that broke the hierarchy are gone"
+perl -0777 -e '
+  my $html = <>;
+  my ($n, $bad) = (0, 0);
+  for my $open (q{<div class="toolbar">}, q{<div class="bulkbar"}) {
+    my $i = index($html, $open);
+    if ($i < 0) { $bad++; next; }
+    my $rest = substr($html, $i);
+    my $block = substr($rest, 0, index($rest, "\n    </div>"));
+    while ($block =~ /<button class="(btn[^"]*)"[^>]*>(.*?)<\/button>/sg) {
+      my ($cls, $label) = ($1, $2);
+      $n++;
+      (my $plain = $label) =~ s/\xE2\x80\xA6//g;  # dialog ellipsis, not an icon
+      my $glyph = ($plain =~ /[^\x00-\x7F]/) ? 1 : 0;
+      my $want  = ($cls eq "btn") ? 1 : 0;
+      $bad++ if $glyph != $want;
+    }
+  }
+  exit(($bad || !$n) ? 1 : 0);
+' "$IDX" \
+  && ok "every primary toolbar button carries an icon, every secondary one is plain" \
+  || bad "icons do not line up with the button hierarchy"
+
 # ---- user administration UI ----
 note "user administration UI"
 IDX=$REPO/frontend/index.html
