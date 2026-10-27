@@ -8,12 +8,14 @@ allowed -> `403`. Only `register` and `login` are public.
 
 | Method | Path                    | Body / Query                       | Description                 |
 | ------ | ----------------------- | ---------------------------------- | --------------------------- |
-| POST   | `/api/register`         | `{username, password, display_name?}` | Create account (202 `pending_activation` while inactive; the first account signs in) |
-| POST   | `/api/login`            | `{username, password}`             | Sign in (`403` when the account is inactive) |
+| POST   | `/api/register`         | `{username, password, display_name?, passphrase?}` | Create account (202 `pending_activation` while inactive; the first account signs in). `passphrase` is the optional sign-in passphrase, 16+ characters (`""` counts as sent and is refused with 400); the password stays mandatory either way |
+| POST   | `/api/login`            | `{username, password, mode?}`     | Sign in (`403` when the account is inactive). `mode` names which credential `password` carries: absent or `"password"` (the default - what WebDAV and every pre-existing client sends), or `"passphrase"`; an unknown mode is 400, a wrong value the same 401 in both branches |
 | POST   | `/api/logout`           | -                                  | Sign out                    |
-| GET    | `/api/me`               | -                                  | Current user + `quota_bytes` / `used_bytes` / `theme` |
+| GET    | `/api/me`               | -                                  | Current user + `quota_bytes` / `used_bytes` / `theme` + `has_passphrase` (whether the optional sign-in passphrase is set; boolean, owner only) |
 | PUT    | `/api/me`               | `{display_name?}` and/or `{theme}` | Save the settings from the user menu; theme must be `light` or `dark`, display name non-empty (max 100 chars); returns the updated user (400 when the body changes nothing) |
 | PUT    | `/api/me/password`      | `{current_password, new_password}` | Change the signed-in user's password (401 when the current one is wrong, 400 when the new one is shorter than 8 characters); the session stays open |
+| PUT    | `/api/me/passphrase`    | `{current_password, passphrase}`   | Set or replace the optional sign-in passphrase (401 when the current password is wrong, 400 when the passphrase is shorter than 16 characters); proved with the password because the session alone only says "signed in". The client rewraps its key row under the new passphrase right afterwards (ENCRYPTION.md 5.7 addendum) |
+| DELETE | `/api/me/passphrase`    | `{current_password}`               | Remove the sign-in passphrase again (401 when the current password is wrong; a no-op when none is set). Password, WebDAV and existing sessions are untouched |
 | GET    | `/api/users`            | -                                  | Accounts to share with (everyone but you: `username`, `display_name`, `is_active`) |
 | GET    | `/api/admin/users`      | -                                  | **Admin only (403 otherwise).** Every account for the administration table: `id`, `username`, `display_name`, `is_active`, `is_admin`, `quota_bytes`, `used_bytes`, `created_at` |
 | PUT    | `/api/admin/users/:id`  | `{is_active?}`, `{is_admin?}`, `{quota_bytes?}` | **Admin only.** Partial update of one account; only the fields present are written. Refuses self-deactivation (400), deactivating/demoting the last active admin (400) and a negative quota (400); returns the updated row |

@@ -253,13 +253,25 @@ pub struct RegisterRequest {
     pub password: String,
     #[serde(default)]
     pub display_name: Option<String>,
+    /// Optional sign-in passphrase, 16 characters minimum (README:
+    /// "passphrase login"). Absent or null for every client that does not
+    /// send one - the password stays mandatory either way, since WebDAV
+    /// clients only ever send that one.
+    #[serde(default)]
+    pub passphrase: Option<String>,
 }
 
 /// Login payload.
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub username: String,
+    /// The credential being presented, whichever `mode` says it is.
     pub password: String,
+    /// Which credential `password` carries: absent or `"password"` (the
+    /// default, what WebDAV and every pre-existing client sends), or
+    /// `"passphrase"` for a sign-in with the optional passphrase.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 /// Settings saved from the user menu (`PUT /api/me`).
@@ -283,6 +295,32 @@ pub struct UpdateMeRequest {
 pub struct ChangePasswordRequest {
     pub current_password: String,
     pub new_password: String,
+}
+
+/// Set or replace the optional sign-in passphrase (`PUT /api/me/passphrase`).
+///
+/// Proof and secret are separate on purpose: `current_password` is verified
+/// against `password_hash` before anything is written (a hijacked session
+/// must not be able to lock the owner out by swapping the passphrase), and
+/// the server stores only an Argon2id hash of `passphrase` - it never
+/// becomes a key itself, the key row stays wrapped client-side.
+#[derive(Debug, Deserialize)]
+pub struct SetPassphraseRequest {
+    pub current_password: String,
+    /// 16 characters minimum, checked by the handler, never trimmed:
+    /// a passphrase is a secret exactly as typed.
+    pub passphrase: String,
+}
+
+/// Remove the optional sign-in passphrase (`DELETE /api/me/passphrase`).
+///
+/// Password and key row are rewrapped by the client afterwards, so this
+/// endpoint only gives up the *credential*: with it gone, `mode:
+/// "passphrase"` stops verifying while password sign-in and WebDAV are
+/// untouched.
+#[derive(Debug, Deserialize)]
+pub struct RemovePassphraseRequest {
+    pub current_password: String,
 }
 
 /// Partial update of one account from the user-administration dialog

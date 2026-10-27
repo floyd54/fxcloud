@@ -466,16 +466,19 @@ and one round trip per remaining grantee (DECISION 4).
   setup/unlock/recovery dialog is the only prompt; there is no unlock step
   bolted onto login, so a user who never touches an encrypted file never
   sees it.
-  **The one exception is the sign-in handoff.** When the row is wrapped
-  under the login password (the DECISION 3 default), `login.js` parks that
-  password in `sessionStorage` for the length of the redirect into the
-  app, and the app page takes it and deletes it in the same tick - so the
-  tab that just signed in unlocks without being asked for a string it was
-  given a moment ago. What makes that safe: the row records which secret
-  it is wrapped under (`kdf_params.secret`, written at setup and at
-  recovery, and `login` is claimed only after the server agreed the string
-  is the login password), so a `separate` row is never parked for; the
-  value is read and removed together, so a reload during the derivation
+  **The one exception is the sign-in handoff.** `login.js` parks the
+  credential that just signed in - the login password for a `login` row
+  (the DECISION 3 default), the sign-in passphrase for a `separate` one -
+  in `sessionStorage` for the length of the redirect into the app, and the
+  app page takes it and deletes it in the same tick, so the tab that just
+  signed in unlocks without being asked for a string it was given a moment
+  ago. What makes that safe: the row records which secret it is wrapped
+  under (`kdf_params.secret`, written at setup and at recovery, and `login`
+  is claimed only after the server agreed the string is the login
+  password), and login.js parks only what matches it - a `separate` row is
+  never parked *the login password* for, a `login` row never the
+  passphrase, so the wrong credential is never even tried; the value is
+  read and removed together, so a reload during the derivation
   finds nothing; it expires after 60 s, because a value that old is a
   restored tab rather than a sign-in; and a wrong or tampered one is
   declined with the pane as the fallback. Unlocked keys live **in memory
@@ -499,6 +502,50 @@ and one round trip per remaining grantee (DECISION 4).
   or the user explicitly confirms they accept losing everything.
 - **Account deactivation / admin actions** stay server-side and untouched;
   they cut API access but can never yield plaintext.
+
+**Sign-in passphrase (addendum).** The passphrase above is also usable as
+a *sign-in* credential: an optional second way into the web UI, next to
+the password every account keeps. One string, two roles:
+
+- **Sign-in credential.** `POST /api/login` takes `mode: "passphrase"`
+  and verifies the value against `users.passphrase_hash` (Argon2id, the
+  same cost as `password_hash`). `mode` absent or `"password"` is what
+  WebDAV, the API and every client written before this existed sends, so
+  the password keeps working unchanged; an unknown `mode` is a 400. Both
+  branches answer the same 401 for a wrong value, and neither reveals
+  whether an account has a passphrase at all - `GET /api/me` reports only
+  the boolean `has_passphrase`, to the owner of the account. The floor is
+  **16 characters** (checked in `POST /api/register` and
+  `PUT /api/me/passphrase`; `""` counts as sent and is refused), against
+  8 for the password: the server-side hash of this string is an offline
+  shortcut to the wrapped ARK, so under DECISION 3 its strength carries
+  file confidentiality exactly like the login password does - a
+  Diceware-style phrase clears it with room. Setting it is optional at
+  registration and later from the settings dialog; removing it
+  (`DELETE /api/me/passphrase`) needs the current password as proof, like
+  every credential change, and is a no-op when none is set.
+- **Key secret.** Enrolling a passphrase also moves the key row to
+  `kdf_params.secret = "separate"` - by creating the row
+  (`POST /api/keys/setup`) when the account has none yet, or by
+  rewrapping the existing one (`PUT /api/keys/me`) when it does; the
+  recovery pane opens in the first case as at any other setup. The order
+  is fixed: **the server credential first, the rewrap second.** A
+  mistyped proof then costs one request and touches nothing, while the
+  reverse order could wrap the keys under a passphrase the server refuses
+  at sign-in. Removal runs the same order back: the credential goes
+  first, then the row moves back under the login password - `secret:
+  login` is claimed only because the server just verified that very
+  string against `password_hash`, the rule setup and recovery follow.
+  If the second half fails, the first is not undone: the settings line
+  says which half succeeded and both can be repeated until they agree.
+
+Two things this deliberately does **not** change. **WebDAV** keeps
+Basic-auth against `password_hash` only: a WebDAV client has no way to
+name a mode, the password stays mandatory for exactly that reason, and a
+passphrase is refused there (401) whatever the web UI accepts. And an
+**administrator password reset** (`POST /api/admin/users/{id}/password`)
+replaces `password_hash` only, so a passphrase set before the reset keeps
+verifying afterwards. Both are pinned in the test suite.
 
 `DECISION 3 - Storage passphrase: separate secret, or the login password?`
 **DECIDED: reuse the login password as the default.** (Section 13, row 3.)
@@ -794,7 +841,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **378 checks**. The additions cover the key
+- Testing: the suite now runs **427 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
   `GET /api/keys/<username>` does and does not expose), the encrypted
@@ -909,12 +956,13 @@ security story beyond "content at rest is protected".
 | 4 | Re-key on revoke | explicit/optional action, not automatic | implement as recommended |
 | 5 | Key rotation on overwrite | no; explicit rotate action later | implement as recommended |
 | 6 | Malicious-server / key-substitution | fingerprints + TOFU now; signed keys later; reproducible builds out of scope | implement as recommended |
-| 7 | Unlock persistence | memory-only per tab in v1; device keys later | implement as recommended - plus the sign-in handoff of 5.7: for a `secret: login` row the login password is parked for the length of one redirect, taken once and cleared on read, so the tab that just signed in is not asked again. Nothing else is ever written, a `separate` row is never parked for, and a reload puts the badge back to Unencrypted |
+| 7 | Unlock persistence | memory-only per tab in v1; device keys later | implement as recommended - plus the sign-in handoff of 5.7: for the length of one redirect the credential that just signed in is parked, taken once and cleared on read, so the tab that just signed in is not asked again - the login password for a `secret: login` row, the sign-in passphrase for a `separate` one, matched against `kdf_params.secret` so the wrong credential is never tried. Nothing else is ever written, and a reload puts the badge back to Unencrypted |
 | 8 | ZIP | client-side for encrypted, server-side stays for plaintext | implement as recommended |
 | 9 | WebDAV | hide/deny-write encrypted files in v1; sync agent later | **must work flawlessly.** Split: interim = encrypted files visible read-only as ciphertext + `PUT` rejected after `FXE1` magic check (never blind); target = `fxcloud sync` agent, promoted to committed phase 5. Detail in 7 + 12 |
 | 10 | Test strategy for client crypto | WebCrypto round-trip harness in CI + API visibility tests | implement as recommended |
 | 11 | Write rule while the keys are not loaded | first cut: a locked tab stops new writes and asks to unlock (9, flow 3) | **revised after v0.0.12 - follow the badge.** The two write paths (`newFile`, `uploadTree`) gate on `unlocked()`, not `enabled()`: an "Unencrypted" tab writes plaintext under a badge that says so, an "Encrypted" tab encrypts. Opening an encrypted row still prompts, because those bytes cannot be read any other way. See 9, flows 2-3 |
 | 12 | Shape of phase-3 sharing: one envelope per *file*, or the folder hierarchy the concept already describes? | concept as written (5.2 + 5.5): parent-wraps-child folder keys, one envelope per share row | **implement the concept as written.** Folder keys appear lazily (first encrypted write below a folder, or the subtree walk a share performs), one envelope per share row carries the folder key, and the server stays key-blind: PERM_UPDATE is the whole check on `PUT /api/files/key` and on the JSON move, while WebDAV keeps the key-domain refusal because it holds no keys at all. A move re-binds before it travels (and rolls back if refused); a save never rotates the key (DECISION 5); a grantee may pass their own record back but not swap it. Legacy flat rows keep opening through the root-key fallback, which no grantee ever has. Detail in 5.4 + 5.5 |
+| 13 | Sign-in passphrase: a second, optional login credential? | separate from the password;16+ characters (Diceware example); doubles as the key secret so `kdf_params.secret` becomes `separate` | **implement as designed.** Optional at registration and from the settings dialog; `POST /api/login` gains `mode` (`"password"` default, `"passphrase"`, unknown -> 400), both 401s identical and never revealing existence; `PUT`/`DELETE /api/me/passphrase` prove with the current password and run *before* the client rewraps the key row (server first, rewrap second - a mistyped proof touches nothing). The password stays mandatory: WebDAV verifies `password_hash` only, and an admin password reset leaves `passphrase_hash` alone. Detail in 5.7 addendum |
 
 ---
 

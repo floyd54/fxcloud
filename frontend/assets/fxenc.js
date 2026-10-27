@@ -308,10 +308,21 @@
       // encrypted row still locked.
       await adoptHandoff(parked);
     } catch (e) {
-      // 404 = no key row yet. Anything else (offline, 5xx) also lands here:
-      // showing "setup" is the honest default, and a genuine key row will
-      // refuse a second, different setup with 409 - which runSetup reports.
-      void e;
+      // 404 = no key row yet. A passphrase parked by registering is the one
+      // reason to still be here with a secret in hand: create the keys from
+      // it right now, so an account that chose a passphrase at sign-up starts
+      // unlocked instead of being asked for the same string a second time.
+      // Anything else (offline, 5xx) lands in "setup" as it always did -
+      // honest, and a genuine key row still refuses a second, different
+      // setup with 409 - which runSetup reports.
+      if (e && e.status === 404 && parked && parked.kind === "passphrase") {
+        try {
+          await setupFromHandoff(parked.value);
+          return;
+        } catch (_) {
+          /* fall through to the setup pane: it is the safe default */
+        }
+      }
       state.status = "setup";
       state.keys = null;
       emit();
@@ -330,8 +341,9 @@
   //
   // Signing in and opening the app are two page loads, so the string the user
   // typed does not survive the redirect by itself. login.js parks it in
-  // sessionStorage only for accounts whose key row is wrapped under the login
-  // password; everything here is about taking it exactly once.
+  // sessionStorage: the login password for a `login` row, the passphrase for
+  // a `separate` one, and a passphrase chosen during registration for the row
+  // that does not exist yet. Everything here is about taking it exactly once.
   // ------------------------------------------------------------------------
 
   const HANDOFF_KEY = "fxcloud.handoff";
@@ -341,14 +353,17 @@
   const HANDOFF_TTL_MS = 60000;
 
   /**
-   * Take the parked password and drop it in the same tick.
+   * Take the parked secret and drop it in the same tick.
    *
    * Read and remove are adjacent on purpose: a reload during the derivation
    * below has to find nothing, so the secret exists in storage only between
    * the sign-in redirect and this call - one page load, which is the
    * DECISION 7 lifetime with the handoff spliced into it.
    *
-   * @returns {string|null} the password to try, or null for "ask instead".
+   * @returns {{value: string, kind: string}|null} the secret to try, where
+   *   `kind` is "password" or "passphrase", or null for "ask instead". A
+   *   handoff without a kind predates passphrase sign-in and is the login
+   *   password.
    */
   function takeHandoff() {
     let raw = null;
@@ -364,7 +379,8 @@
       if (!parked || typeof parked.password !== "string" || !parked.password) return null;
       if (typeof parked.at !== "number") return null;
       if (Date.now() - parked.at > HANDOFF_TTL_MS) return null;
-      return parked.password;
+      const kind = parked.kind === "passphrase" ? "passphrase" : "password";
+      return { value: parked.password, kind: kind };
     } catch (_) {
       return null;
     }
@@ -373,24 +389,28 @@
   /**
    * Unlock this tab without a prompt when sign-in already carried the secret.
    *
-   * `pass` is what init() took from the parking spot; here it either opens
-   * this row or is dropped. Every way that fails is a normal state rather
-   * than an error: nothing was carried (a second tab, a reload, a separate
-   * passphrase), the row says "separate" so the login password is not this
-   * tab's to try, or the string does not open the stored ARK. The tab then
-   * stays `locked` and the pane is the fallback - which is also the path a
-   * stale or tampered handoff takes.
+   * `parked` is what init() took from the parking spot; here it either opens
+   * this row or is dropped. The value has to be the secret the row is
+   * wrapped under: the login password for a `login` row, the passphrase for
+   * a `separate` one - a sign-in with the other credential carries the other
+   * string, and this row was not wrapped with it. Every way that fails is a
+   * normal state rather than an error: nothing was carried (a second tab, a
+   * reload), the kinds do not match, or the string does not open the stored
+   * ARK. The tab then stays `locked` and the pane is the fallback - which is
+   * also the path a stale or tampered handoff takes.
    *
+   * @param {{value: string, kind: string}|null} parked
    * @returns {Promise<boolean>} true when the tab is unlocked now.
    */
-  async function adoptHandoff(pass) {
-    if (!pass || !state.keys) return false;
+  async function adoptHandoff(parked) {
+    if (!parked || !state.keys) return false;
     try {
       const params = state.keys.kdf_params || {};
-      if (params.secret === "separate") return false;
+      const wanted = params.secret === "separate" ? "passphrase" : "password";
+      if (parked.kind !== wanted) return false;
       const badge = $("enc-badge");
       if (badge) badge.textContent = "Unlocking\u2026";
-      state.session = await FX().unlockAccount(state.keys, pass, derive);
+      state.session = await FX().unlockAccount(state.keys, parked.value, derive);
       state.status = "unlocked";
       // Envelopes can be opened now - awaited, so a listing drawn right
       // after this resolves already knows which mounts it can open.
@@ -402,6 +422,68 @@
       emit(); // renders the padlock again from the unchanged status
       return false;
     }
+  }
+
+  /**
+   * Publish freshly generated key material and open the recovery pane.
+   *
+   * The shared tail of every path that *creates* a row - the setup pane, the
+   * registration handoff and passphrase enrollment - because they all end on
+   * the same obligation: the recovery key exists in the clear right now, and
+   * the pane that makes the user save it must open before anything else is
+   * offered.
+   *
+   * @param {Object} account - from generateAccount(): session + recoveryHex.
+   * @param {Object} keys - the row the server just accepted (body.keys).
+   */
+  async function publishAccount(account, keys) {
+    state.session = account.session;
+    state.recoveryHex = account.recoveryHex;
+    $("enc-saved-key").textContent = groupRecovery(account.recoveryHex);
+    $("enc-saved-ack").checked = false;
+    adoptKeys(keys, "unlocked");
+    await refreshShareKeys();
+    openPane("saved");
+  }
+
+  /**
+   * Create the key row for an account that registered with a passphrase.
+   *
+   * Runs from init()'s 404 branch with the value login.js parked: the
+   * server verified this string as the account's passphrase during the
+   * sign-in that just happened, so - unlike runSetup's "reuse login
+   * password" branch, which types the password again to prove the default -
+   * there is nothing left to prove here. `kdf_params.secret` is claimed as
+   * "separate" for what the account really has: a passphrase distinct from
+   * the password, never the login secret.
+   *
+   * @param {string} passphrase - the value just verified at sign-in.
+   */
+  async function setupFromHandoff(passphrase) {
+    const badge = $("enc-badge");
+    if (badge) badge.textContent = "Setting up encryption\u2026";
+    const account = await FX().generateAccount(passphrase, derive);
+    account.payload.kdf_params = Object.assign({}, account.payload.kdf_params, {
+      secret: "separate",
+    });
+    let body;
+    try {
+      body = await http("/api/keys/setup", jsonCall("POST", account.payload)).then((r) =>
+        r.json()
+      );
+    } catch (e) {
+      if (e && e.status === 409) {
+        // Another tab (or an earlier attempt) published keys first. Keep
+        // theirs locked and let the pane do its job rather than wrap a
+        // second row over the first.
+        const existing = await http("/api/keys/me").then((r) => r.json());
+        state.session = null;
+        adoptKeys(existing.keys, "locked");
+        return;
+      }
+      throw e;
+    }
+    await publishAccount(account, body.keys);
   }
 
   /**
@@ -1175,6 +1257,203 @@
   }
 
   // ------------------------------------------------------------------------
+  // Passphrase enrollment (settings dialog, README "passphrase sign-in")
+  //
+  // The passphrase is two things at once: the credential POST /api/login
+  // accepts with mode "passphrase", and the secret the key row is wrapped
+  // under (kdf_params.secret = "separate"). Both halves change here, always
+  // in the same order - the server endpoint first, because it validates the
+  // current password: a mistyped proof then costs one request and touches
+  // nothing, while the reverse order could wrap the keys under a passphrase
+  // the server refuses at sign-in. The re-wrap runs second and can fail on
+  // its own; nothing is lost when it does (the row keeps its old secret),
+  // the message says which half succeeded, and both halves can be repeated
+  // until they agree.
+  // ------------------------------------------------------------------------
+
+  /**
+   * PUT/DELETE the passphrase credential without http().
+   *
+   * Deliberately a raw fetch, for the reason verifyLogin is one: these
+   * endpoints answer 401 for "that password is wrong", and http() reads
+   * every 401 as a dead session, redirecting to /login over a mere typo.
+   *
+   * @param {string} method - "PUT" to set, "DELETE" to remove.
+   * @param {Object} payload - { current_password, passphrase? }.
+   * @returns {Promise<Error|null>} null on success, the problem otherwise.
+   */
+  async function callPassphraseApi(method, payload) {
+    const res = await fetch("/api/me/passphrase", {
+      method: method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) return null;
+    if (res.status === 401) return new Error("That is not your current password.");
+    let msg = "Request failed (" + res.status + ")";
+    try {
+      const b = await res.json();
+      if (b && b.error) msg = b.error;
+    } catch (_) {
+      /* not JSON; keep the status line */
+    }
+    return new Error(msg);
+  }
+
+  /**
+   * Set (or replace) the sign-in passphrase from the settings dialog.
+   *
+   * Accounts without a key row get one right here - the passphrase is the
+   * secret it will be wrapped under, so enrolling it *is* turning
+   * encryption on; the recovery pane then opens as it does at any other
+   * setup. Accounts with a row are re-wrapped, which needs the ARK and
+   * therefore an unlocked tab: a locked one gets the unlock pane through
+   * requestKeys(), the same wait an encrypted download makes.
+   *
+   * @param {string} passphrase - 16+ characters, exactly as typed.
+   * @param {string} currentPassword - the proof for the server endpoint.
+   * @returns {Promise<{ok: boolean, message: string}>}
+   */
+  async function enrollPassphrase(passphrase, currentPassword) {
+    if (state.status === "unsupported") {
+      return {
+        ok: false,
+        credentialSet: false,
+        message: "This browser has no WebCrypto, so a passphrase cannot wrap your files.",
+      };
+    }
+    if (typeof passphrase !== "string" || passphrase.length < 16) {
+      return {
+        ok: false,
+        credentialSet: false,
+        message: "A passphrase needs at least 16 characters.",
+      };
+    }
+    if (!currentPassword) {
+      return { ok: false, credentialSet: false, message: "Enter your current password to confirm." };
+    }
+    const credErr = await callPassphraseApi("PUT", {
+      current_password: currentPassword,
+      passphrase: passphrase,
+    });
+    if (credErr) return { ok: false, credentialSet: false, message: credErr.message };
+
+    let created = false;
+    try {
+      if (state.keys) {
+        if (state.status !== "unlocked") {
+          const ok = await requestKeys();
+          if (!ok) {
+            return {
+              ok: false,
+              credentialSet: true,
+              message:
+                "Passphrase saved for sign-in. Unlock your files once, then set it " +
+                "again so they are wrapped under it.",
+            };
+          }
+        }
+        const rewrap = await FX().rewrapAccount(state.session.ark, passphrase, derive);
+        rewrap.kdf_params = Object.assign({}, rewrap.kdf_params, { secret: "separate" });
+        await http("/api/keys/me", jsonCall("PUT", rewrap));
+        adoptKeys(Object.assign({}, state.keys, rewrap), "unlocked");
+        await refreshShareKeys();
+      } else {
+        created = true;
+        const account = await FX().generateAccount(passphrase, derive);
+        account.payload.kdf_params = Object.assign({}, account.payload.kdf_params, {
+          secret: "separate",
+        });
+        const body = await http("/api/keys/setup", jsonCall("POST", account.payload)).then((r) =>
+          r.json()
+        );
+        // The recovery pane has to be answered before anything else, so the
+        // settings dialog behind it would only be in the way.
+        const settings = document.getElementById("settings-modal");
+        if (settings) settings.style.display = "none";
+        await publishAccount(account, body.keys);
+      }
+    } catch (e) {
+      return {
+        ok: false,
+        credentialSet: true,
+        message:
+          (created
+            ? "Passphrase saved for sign-in, but creating your file keys failed: "
+            : "Passphrase saved for sign-in, but re-wrapping your files failed: ") +
+          e.message +
+          " Your previous secret still unlocks them.",
+      };
+    }
+    return {
+      ok: true,
+      credentialSet: true,
+      message: created
+        ? "Passphrase set. Save your recovery key."
+        : "Passphrase set. You can now sign in with it.",
+    };
+  }
+
+  /**
+   * Remove the sign-in passphrase and move the key row back under the
+   * password that stays.
+   *
+   * The proof doubles as the secret to re-wrap with: the DELETE just had
+   * the server check it against password_hash, which is exactly the
+   * condition under which `kdf_params.secret: "login"` may be claimed - the
+   * rule setup and recovery follow. Unlocking first needs the passphrase
+   * itself (it still opens the row), which the person removing it knows.
+   *
+   * @param {string} currentPassword - the password that remains.
+   * @returns {Promise<{ok: boolean, message: string}>}
+   */
+  async function removePassphrase(currentPassword) {
+    if (!currentPassword) {
+      return { ok: false, credentialRemoved: false, message: "Enter your current password to confirm." };
+    }
+    const credErr = await callPassphraseApi("DELETE", { current_password: currentPassword });
+    if (credErr) return { ok: false, credentialRemoved: false, message: credErr.message };
+
+    if (!state.keys) {
+      return { ok: true, credentialRemoved: true, message: "Passphrase removed." };
+    }
+
+    try {
+      if (state.status !== "unlocked") {
+        const ok = await requestKeys();
+        if (!ok) {
+          return {
+            ok: false,
+            credentialRemoved: true,
+            message:
+              "Passphrase removed from sign-in. Unlock your files once, then remove it " +
+              "again so they are wrapped back under your password.",
+          };
+        }
+      }
+      const rewrap = await FX().rewrapAccount(state.session.ark, currentPassword, derive);
+      rewrap.kdf_params = Object.assign({}, rewrap.kdf_params, { secret: "login" });
+      await http("/api/keys/me", jsonCall("PUT", rewrap));
+      adoptKeys(Object.assign({}, state.keys, rewrap), "unlocked");
+      await refreshShareKeys();
+    } catch (e) {
+      return {
+        ok: false,
+        credentialRemoved: true,
+        message:
+          "Passphrase removed from sign-in, but re-wrapping under your password failed: " +
+          e.message +
+          " Unlock with your passphrase and try again.",
+      };
+    }
+    return {
+      ok: true,
+      credentialRemoved: true,
+      message: "Passphrase removed. Your files are wrapped under your password again.",
+    };
+  }
+
+  // ------------------------------------------------------------------------
   // Public surface for app.js
   // ------------------------------------------------------------------------
 
@@ -1190,6 +1469,10 @@
     writeText: writeText,
     download: download,
     previewBlob: previewBlob,
+    // passphrase sign-in (README): the settings dialog drives these; each one
+    // moves the server credential and the key row's wrapping in one flow
+    enrollPassphrase: enrollPassphrase,
+    removePassphrase: removePassphrase,
     // key hierarchy + sharing (5.2 / 5.5), used by the share dialog and the
     // move path in app.js
     shareEnvelope: shareEnvelope,

@@ -626,6 +626,106 @@ RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application
   -d '{"current_password":"correct-horse","new_password":"another-horse"}' "$BASE/api/me/password")
 [ "$RC" = "401" ] && ok "PUT /api/me/password without session -> 401" || bad "expected 401, got $RC"
 
+# ---- sign-in passphrase ----
+note "sign-in passphrase: registration, sign-in modes, credential endpoints"
+# A fresh, activated account, like the password checks above: the suite's
+# other credentials must stay untouched, and this one gets exercised hard.
+PP='orbit cabin drift velvet meadow'
+PP2='solar lantern winter pebble quartz'
+req POST /api/register "$ROOT/finn.jar" \
+  '{"username":"finn","password":"correct-horse","passphrase":"'"$PP"'"}' >/dev/null
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET is_active=1 WHERE username='finn';" >/dev/null
+
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"'"$PP"'","mode":"passphrase"}')
+[ "$RC" = "200" ] && ok "a passphrase signs in (mode: passphrase)" || bad "passphrase sign-in failed (rc=$RC)"
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "the password keeps signing in unchanged" || bad "password sign-in broke (rc=$RC)"
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"wrong-wrong-wrong","mode":"passphrase"}')
+[ "$RC" = "401" ] && ok "a wrong passphrase is 401" || bad "wrong passphrase gave $RC"
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"correct-horse","mode":"passphrase"}')
+[ "$RC" = "401" ] && ok "the password is not accepted where a passphrase is asked for" || bad "password accepted in passphrase mode (rc=$RC)"
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"correct-horse","mode":"token"}')
+[ "$RC" = "400" ] && ok "an unknown credential mode is refused (400)" || bad "mode=token gave $RC"
+
+# An account that exists by now and has never set a passphrase (alice -
+# registered at the top, her password is untouched by every check in
+# between): passphrase mode fails, password mode is untouched.
+RC=$(reqcode POST /api/login "$JA" '{"username":"alice","password":"correct-horse","mode":"passphrase"}')
+[ "$RC" = "401" ] && ok "passphrase mode on an account without one is 401" || bad "expected 401, got $RC"
+RC=$(reqcode POST /api/login "$JA" '{"username":"alice","password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "the same account still signs in with its password" || bad "alice's password sign-in broke (rc=$RC)"
+
+# Policy: the password floor stays 8, the passphrase floor is 16, and an
+# empty passphrase counts as "sent" - it must never mean "no passphrase".
+RC=$(reqcode POST /api/register "$ROOT/x.jar" '{"username":"gina","password":"correct-horse","passphrase":"too-short"}')
+[ "$RC" = "400" ] && ok "registering with a short passphrase is refused (400)" || bad "short passphrase at register gave $RC"
+RC=$(reqcode POST /api/register "$ROOT/x.jar" '{"username":"gina","password":"correct-horse","passphrase":""}')
+[ "$RC" = "400" ] && ok "an empty passphrase is refused, not treated as absent (400)" || bad "empty passphrase gave $RC"
+H=$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM users WHERE username='gina'")
+[ "$H" = "0" ] && ok "a refused registration creates no account" || bad "gina exists after a 400"
+
+# The credential endpoints: password proof first, then the state flag.
+RC=$(reqcode PUT /api/me/passphrase "$ROOT/finn.jar" '{"current_password":"nope","passphrase":"'"$PP2"'"}')
+[ "$RC" = "401" ] && ok "setting a passphrase with the wrong proof is 401" || bad "wrong proof gave $RC"
+ME=$(req GET /api/me "$ROOT/finn.jar")
+[ "$(jget "$ME" has_passphrase)" = "1" ] && ok "a refused attempt left the stored passphrase alone" || bad "has_passphrase changed on a 401"
+RC=$(reqcode PUT /api/me/passphrase "$ROOT/finn.jar" '{"current_password":"correct-horse","passphrase":"short"}')
+[ "$RC" = "400" ] && ok "setting a short passphrase is refused (400)" || bad "short passphrase gave $RC"
+RC=$(reqcode PUT /api/me/passphrase "$ROOT/finn.jar" '{"current_password":"correct-horse","passphrase":"'"$PP2"'"}')
+[ "$RC" = "200" ] && ok "the passphrase can be replaced (200)" || bad "replace gave $RC"
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"'"$PP"'","mode":"passphrase"}')
+[ "$RC" = "401" ] && ok "the replaced-away passphrase stops working" || bad "old passphrase still signs in (rc=$RC)"
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"'"$PP2"'","mode":"passphrase"}')
+[ "$RC" = "200" ] && ok "the replacement signs in" || bad "new passphrase refused (rc=$RC)"
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "the password is unaffected by the passphrase" || bad "password sign-in broke (rc=$RC)"
+
+# Removal: proof, then both flags back.
+RC=$(reqcode DELETE /api/me/passphrase "$ROOT/finn.jar" '{"current_password":"nope"}')
+[ "$RC" = "401" ] && ok "removing with the wrong proof is 401" || bad "wrong proof gave $RC"
+RC=$(reqcode DELETE /api/me/passphrase "$ROOT/finn.jar" '{"current_password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "the passphrase can be removed (200)" || bad "remove gave $RC"
+ME=$(req GET /api/me "$ROOT/finn.jar")
+[ "$(jget "$ME" has_passphrase)" = "0" ] && ok "GET /api/me reports has_passphrase=0 afterwards" || bad "has_passphrase still set"
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"'"$PP2"'","mode":"passphrase"}')
+[ "$RC" = "401" ] && ok "the removed passphrase no longer signs in" || bad "removed passphrase works (rc=$RC)"
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "the password still signs in after removal" || bad "password sign-in broke (rc=$RC)"
+
+# Without a session none of this is reachable.
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+  -d '{"current_password":"correct-horse","passphrase":"'"$PP"'"}' "$BASE/api/me/passphrase")
+[ "$RC" = "401" ] && ok "PUT /api/me/passphrase without session -> 401" || bad "expected 401, got $RC"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H 'Content-Type: application/json' \
+  -d '{"current_password":"correct-horse"}' "$BASE/api/me/passphrase")
+[ "$RC" = "401" ] && ok "DELETE /api/me/passphrase without session -> 401" || bad "expected 401, got $RC"
+
+# WebDAV is password territory: Basic auth only ever verifies password_hash,
+# so a passphrase is never accepted there, whatever the web UI does.
+RC=$(reqcode PUT /api/me/passphrase "$ROOT/finn.jar" '{"current_password":"correct-horse","passphrase":"'"$PP"'"}')
+[ "$RC" = "200" ] && ok "the passphrase is set again for the WebDAV and reset checks" || bad "re-set gave $RC"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -u "finn:correct-horse" -X PROPFIND -H 'Depth: 0' "$BASE/dav/")
+[ "$RC" = "207" ] && ok "WebDAV accepts the password (Basic auth, unchanged)" || bad "password WebDAV gave $RC"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -u "finn:$PP" -X PROPFIND -H 'Depth: 0' "$BASE/dav/")
+[ "$RC" = "401" ] && ok "WebDAV refuses the passphrase - password only" || bad "passphrase WebDAV gave $RC"
+
+# What the database holds for the credential.
+H=$(sqlite3 "$DATA/fxcloud.db" "SELECT passphrase_hash FROM users WHERE username='finn'")
+case "$H" in
+  '$argon2id$'*) ok "the passphrase is stored as an argon2id hash" ;;
+  *) bad "passphrase_hash is not argon2id (${H:0:12}...)" ;;
+esac
+
+# An administrator password reset replaces password_hash only: the passphrase
+# is a separate credential and has to survive it.
+FINN=$(sqlite3 "$DATA/fxcloud.db" "SELECT id FROM users WHERE username='finn';")
+RESET=$(req POST "/api/admin/users/$FINN/password" "$JA")
+TMP=$(jget "$RESET" temporary_password)
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"'"$TMP"'"}')
+[ "$RC" = "200" ] && ok "the temporary password signs in" || bad "temp password refused (rc=$RC)"
+RC=$(reqcode POST /api/login "$ROOT/finn.jar" '{"username":"finn","password":"'"$PP"'","mode":"passphrase"}')
+[ "$RC" = "200" ] && ok "the password reset leaves the passphrase working" || bad "passphrase died with the password reset (rc=$RC)"
+
 # ---- user administration ----
 note "user administration: the first account is the administrator"
 
@@ -1631,10 +1731,13 @@ js_parse "$UI" \
   && ok "app.js parses ($PARSE)" || bad "app.js has a syntax error"
 # The encryption files are loaded by <script> tags rather than app.js, so
 # nothing in the wiring check above would notice a syntax error in them.
+# login.js is loaded the same way, from login.html - and it is the one file
+# whose syntax decides whether anyone can sign in at all.
 for SRC in "$REPO/frontend/assets/fxcrypto.js" \
            "$REPO/frontend/assets/fxenc.js" \
            "$REPO/frontend/assets/fxworker.js" \
            "$REPO/frontend/assets/hashwasm-argon2.js" \
+           "$REPO/frontend/assets/login.js" \
            "$REPO/frontend/tests/fxtool.js" \
            "$REPO/frontend/tests/crypto-roundtrip.js" \
            "$REPO/frontend/tests/fxenc-harness.js"; do
@@ -1655,6 +1758,7 @@ if perl "$REPO/tests/check-call-arity.pl" \
      "$REPO/frontend/assets/fxcrypto.js" \
      "$REPO/frontend/assets/fxenc.js" \
      "$REPO/frontend/assets/fxworker.js" \
+     "$REPO/frontend/assets/login.js" \
      "$REPO/frontend/tests/fxtool.js" \
      "$REPO/frontend/tests/crypto-roundtrip.js" \
      "$REPO/frontend/tests/fxenc-harness.js" >"$ROOT/arity.log" 2>&1; then
@@ -1734,20 +1838,22 @@ SAVE_GUARD=$(printf '%s\n' "$SAVE_BODY" | grep -n 'if (editorEntry !== entry) re
   && ok "a save refreshes the folder before it drops the response" \
   || bad "saveEditor() refreshes the listing only while that file is still open"
 
-# Sign-in and the app are two page loads, so login.js has to park the password
+# Sign-in and the app are two page loads, so login.js has to park the secret
 # while its own document still exists - and it has to ask the key row first,
-# because a separate passphrase is never carried (ENCRYPTION.md 5.7). Neither
-# mistake throws anything: both compile, run, and leave the pane asking for
-# the string the user typed a moment ago, so they are pinned here.
+# because only the secret the row is actually wrapped under is worth carrying:
+# the login password for a `login` row, the passphrase for a `separate` one
+# (ENCRYPTION.md 5.7 addendum). Neither mistake throws anything: both
+# compile, run, and leave the pane asking for the string the user typed a
+# moment ago, so they are pinned here.
 LOGIN_JS=$REPO/frontend/assets/login.js
-CARRY=$(grep -n 'await carrySecretAcrossRedirect(form.password.value);' "$LOGIN_JS" | cut -d: -f1 | head -1)
+CARRY=$(grep -n 'await carrySecretAcrossRedirect(form.password.value, credential, false);' "$LOGIN_JS" | cut -d: -f1 | head -1)
 REDIRECT=$(grep -n 'window.location.href = "/";' "$LOGIN_JS" | cut -d: -f1 | head -1)
 [ -n "$CARRY" ] && [ -n "$REDIRECT" ] && [ "$CARRY" -lt "$REDIRECT" ] \
   && ok "sign-in parks the secret before it redirects to the app" \
   || bad "login.js parks the handoff only after its document is gone"
-grep -q 'params.secret === "separate"' "$LOGIN_JS" \
-  && ok "sign-in never parks a secret for a 'separate' row" \
-  || bad "login.js would carry the login password into a separate-passphrase account"
+grep -q 'rowKind !== kind' "$LOGIN_JS" \
+  && ok "sign-in parks only the credential the key row is wrapped under" \
+  || bad "login.js could park a credential that does not match the row"
 
 # Whether a new write ends up encrypted follows the badge, not a prompt.
 # Gating these two call sites on enabled() ("this account has a key record")
@@ -1825,6 +1931,77 @@ grep -q 'setAttribute("sandbox", "")' "$UI" \
 grep -q 'URL\.revokeObjectURL(previewUrl)' "$UI" \
   && ok "closing the lightbox releases the decrypted blob URL" \
   || bad "a decrypted preview URL outlives the lightbox"
+
+# ---- sign-in passphrase: frontend ----
+# None of this fails loudly when missing: a tab that was never written
+# means the credential cannot be chosen, a dropped kind in the handoff
+# means the pane asks again, an unwired form means the passphrase never
+# reaches the server. So every control, payload field and export is
+# asserted here, at the only place that can still see them.
+note "passphrase sign-in: login form, handoff kind, enrollment wiring"
+LOGIN_HTML=$REPO/frontend/login.html
+IDX=$REPO/frontend/index.html
+grep -q 'id="cred-tabs"' "$LOGIN_HTML" \
+  && ok "the sign-in form offers the credential choice (Password | Passphrase)" \
+  || bad "no #cred-tabs on the sign-in page"
+grep -q 'id="cred-passphrase"' "$LOGIN_HTML" \
+  && ok "the passphrase credential has its own tab" \
+  || bad "no #cred-passphrase button in login.html"
+grep -q 'id="reg-passphrase"[^>]*minlength="16"' "$LOGIN_HTML" \
+  && ok "the registration passphrase field carries the 16-character floor" \
+  || bad "the registration passphrase input does not enforce minlength=16"
+grep -q 'payload.mode = "passphrase"' "$LOGIN_JS" \
+  && ok "a passphrase sign-in says so in the login payload" \
+  || bad "login.js never sends mode=passphrase"
+grep -q 'payload.passphrase = passphrase' "$LOGIN_JS" \
+  && ok "registration forwards the passphrase it collected" \
+  || bad "login.js drops the passphrase before registering"
+grep -q 'Invalid username or passphrase' "$LOGIN_JS" \
+  && ok "a failed passphrase sign-in names the credential that was tried" \
+  || bad "the 401 text does not distinguish passphrase from password"
+grep -q 'parked.kind !== wanted' "$ENC_JS" \
+  && ok "the handoff only tries the credential the key row is wrapped under" \
+  || bad "adoptHandoff() does not match the parked kind against the row"
+grep -q 'setupFromHandoff(parked.value)' "$ENC_JS" \
+  && ok "a passphrase parked by registering creates the keys from it (404 branch)" \
+  || bad "fxenc.js does not set up keys from the registration handoff"
+grep -q 'enrollPassphrase: enrollPassphrase' "$ENC_JS" \
+  && ok "fxenc.js exports the enrollment flow for the settings dialog" \
+  || bad "fxenc.js does not export enrollPassphrase"
+grep -q 'removePassphrase: removePassphrase' "$ENC_JS" \
+  && ok "fxenc.js exports the removal flow for the settings dialog" \
+  || bad "fxenc.js does not export removePassphrase"
+# The credential endpoints answer 401 for a wrong proof, and http() reads
+# every 401 as a dead session - so they must be called with a raw fetch,
+# exactly like verifyLogin. A typo would otherwise redirect to /login
+# instead of saying the password was wrong.
+grep -q 'fetch("/api/me/passphrase"' "$ENC_JS" \
+  && ok "the passphrase endpoints are called with a raw fetch, not http()" \
+  || bad "fxenc.js would read a wrong proof as a dead session"
+grep -q 'id="set-passphrase-form"' "$IDX" \
+  && ok "the settings dialog has a passphrase form" \
+  || bad "no #set-passphrase-form in index.html"
+grep -q 'id="set-passphrase-remove"' "$IDX" \
+  && ok "the settings dialog can remove a passphrase again" \
+  || bad "no #set-passphrase-remove in index.html"
+grep -q 'set-passphrase-form").addEventListener("submit"' "$UI" \
+  && ok "the passphrase form is wired to its handler" \
+  || bad "app.js never submits #set-passphrase-form"
+grep -q 'updatePassphraseState(res)' "$UI" && grep -q 'updatePassphraseState(meData)' "$UI" \
+  && ok "the passphrase state line is filled from /api/me and on dialog open" \
+  || bad "app.js does not refresh the passphrase state line"
+grep -q 'meData.has_passphrase = true' "$UI" && grep -q 'meData.has_passphrase = false' "$UI" \
+  && ok "both credential transitions update the local has_passphrase flag" \
+  || bad "app.js only keeps has_passphrase in step on one of the two paths"
+# The documentation pins: the mode field and the two endpoints have to be
+# written down where integrators look, not only exercised here.
+grep -q 'mode.*passphrase' "$REPO/ENCRYPTION.md" \
+  && grep -q '/api/me/passphrase' "$REPO/ENCRYPTION.md" \
+  && ok "ENCRYPTION.md documents the login mode and the credential endpoints" \
+  || bad "ENCRYPTION.md does not describe the passphrase sign-in surface"
+grep -qi 'passphrase' "$REPO/README.md" \
+  && ok "README.md mentions the passphrase" \
+  || bad "README.md is silent about the passphrase sign-in"
 
 # ---- file list sorting ----
 note "file list sorting (name / date / size, both directions)"

@@ -1,0 +1,16 @@
+-- 011_passphrase_login.sql: optional sign-in passphrase (README, ENCRYPTION.md 5.7).
+--
+-- Every account keeps its password: that is what WebDAV and other Basic-Auth
+-- clients send on every request, and what the first sign-in uses. On top of
+-- it an account may register a passphrase (>= 16 characters), which the web
+-- UI accepts at sign-in instead of the password - POST /api/login with
+-- "mode": "passphrase" - and which is also the secret the account's key row
+-- is wrapped under (kdf_params.secret = "separate").
+--
+-- The column holds an Argon2id hash with the same parameters as
+-- password_hash (src/auth/mod.rs); NULL means "this account has no
+-- passphrase", which is every account that existed before this migration.
+-- It is deliberately a separate column: an administrator password reset
+-- must not silently remove the passphrase, and a passphrase must never be
+-- accepted where only the password is documented to work (WebDAV).
+ALTER TABLE users ADD COLUMN passphrase_hash TEXT;

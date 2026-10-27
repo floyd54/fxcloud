@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
-use axum::routing::{any, get, post, put};
+use axum::routing::{any, delete, get, post, put};
 use axum::Router;
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::compression::CompressionLayer;
@@ -29,6 +29,9 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/me", get(routes::auth::me))
         .route("/me", put(routes::auth::update_me))
         .route("/me/password", put(routes::auth::change_password))
+        // Optional sign-in passphrase (README, ENCRYPTION.md 5.7 addendum)
+        .route("/me/passphrase", put(routes::auth::set_passphrase))
+        .route("/me/passphrase", delete(routes::auth::remove_passphrase))
         // Account discovery for the share dialog
         .route("/users", get(routes::auth::list_users))
         // Files

@@ -160,6 +160,26 @@
         </form>
       </section>
 
+      <!-- Optional sign-in passphrase: the credential mode "passphrase" on
+           /api/login accepts instead of the password, and the secret the
+           file keys are wrapped under (ENCRYPTION.md 5.7 addendum). Setting
+           it therefore also turns encryption on / re-wraps the key row -
+           FXEnc.enrollPassphrase owns that order; this form only collects. -->
+      <section class="settings-section">
+        <h4>Passphrase</h4>
+        <p class="settings-hint" id="set-passphrase-state"></p>
+        <form id="set-passphrase-form" class="settings-form">
+          <input type="password" id="set-passphrase-current" placeholder="Current password"
+                 autocomplete="current-password" />
+          <input type="password" id="set-passphrase-new" placeholder="New passphrase (min 16 characters)"
+                 autocomplete="new-password" />
+          <input type="password" id="set-passphrase-new2" placeholder="Repeat passphrase"
+                 autocomplete="new-password" />
+          <button class="btn" type="submit">Set passphrase</button>
+        </form>
+        <button class="btn secondary" id="set-passphrase-remove" type="button">Remove passphrase</button>
+      </section>
+
       <p class="settings-status" id="set-status"></p>
 
       <div class="modal-footer">

@@ -369,6 +369,22 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
   font-weight: 600;
 }
 
+/* Credential choice on the sign-in form (Password | Passphrase): the same
+   underline tabs as the ones above, one step smaller so they read as a
+   sub-choice of "Sign in" rather than a second navigation. */
+#cred-tabs { margin-bottom: 14px; }
+#cred-tabs button { font-size: 13px; padding: 6px 10px; }
+
+/* Hint under the credential fields - on the sign-in page it carries the
+   Diceware-style example, in register mode the rules for the optional
+   passphrase fields. */
+.auth-hint {
+  margin: -4px 0 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 .field { margin-bottom: 16px; }
 .field label {
   display: block;
@@ -841,6 +857,16 @@ textarea#enc-rcv-key:focus {
   box-shadow: 0 0 0 3px rgba(0, 130, 201, 0.12);
 }
 #set-pass-form { flex-direction: column; }
+/* The passphrase form stacks three inputs plus its button; the state line
+   above it (set / not set) is filled by app.js from GET /api/me. */
+#set-passphrase-form { flex-direction: column; }
+#set-passphrase-remove { margin-top: 8px; }
+.settings-hint {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
 .theme-picker { display: flex; gap: 8px; }
 .theme-picker button {
   padding: 7px 16px;
