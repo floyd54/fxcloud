@@ -40,6 +40,19 @@
   let currentEntries = [];
   let lastCheckIndex = null;
 
+  // Column sort for the file list. `key` is one of name / size / date and
+  // `dir` one of asc / desc. Folders stay grouped first - the same rule the
+  // server applies (ORDER BY is_dir DESC) - so the key only orders within the
+  // folder group and within the file group. The default matches the server's
+  // own order (name, ascending), so the first paint looks unchanged until a
+  // header is clicked. Sorting is purely local: the listing is already
+  // loaded, so toggling a header re-renders it instead of refetching.
+  let sortState = { key: "name", dir: "asc" };
+  // Direction a first click on a column picks (later clicks just toggle):
+  // names read A-Z, sizes biggest-first and dates newest-first, which is what
+  // each column is normally opened for.
+  const SORT_FIRST_DIR = { name: "asc", size: "desc", date: "desc" };
+
   // Nextcloud-style permission bits.
   const PERM_READ = 1, PERM_UPDATE = 2, PERM_CREATE = 4, PERM_DELETE = 8,
         PERM_SHARE = 16, PERM_ALL = 31;
@@ -120,8 +133,55 @@
     });
   }
 
+  // Compare two entries for the current column sort. Folders always sort
+  // before files (matching the server's `is_dir DESC`), then the chosen key
+  // orders within that group, in the chosen direction.
+  function compareEntries(a, b, key, dir) {
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    let av, bv;
+    if (key === "name") {
+      // Case-insensitive, matching the server's COLLATE NOCASE.
+      av = a.name.toLowerCase();
+      bv = b.name.toLowerCase();
+    } else if (key === "size") {
+      // Folders are ordered by their subtree, files by their own size -
+      // the same figures the Size column shows.
+      av = a.is_dir ? (a.subtree_bytes || 0) : (a.size || 0);
+      bv = b.is_dir ? (b.subtree_bytes || 0) : (b.size || 0);
+    } else {
+      // Date: the same column the view displays - deletion time while the
+      // trash is open, modification time otherwise.
+      const f = trashView ? "deleted_at" : "modified_at";
+      av = Date.parse(a[f]) || 0;
+      bv = Date.parse(b[f]) || 0;
+    }
+    if (av === bv) return 0;
+    const cmp = av < bv ? -1 : 1;
+    return dir === "asc" ? cmp : -cmp;
+  }
+
+  // Return a sorted copy of the listing (the input is left untouched so a
+  // re-render can start from the order the server sent).
+  function sortEntries(entries) {
+    const key = sortState.key, dir = sortState.dir;
+    return entries.slice().sort((a, b) => compareEntries(a, b, key, dir));
+  }
+
+  // Reflect the active column and direction on the header cells.
+  function updateSortHeaders() {
+    document.querySelectorAll("th.sortable").forEach((th) => {
+      const active = th.dataset.sort === sortState.key;
+      th.classList.toggle("active", active);
+      th.classList.toggle("desc", active && sortState.dir === "desc");
+    });
+  }
+
   function renderRows(entries) {
     rowsEl.innerHTML = "";
+    // Paint the list in the chosen order. Sorting here means every path that
+    // renders rows (folder load, trash, a header click) honours it, and the
+    // row index handed to shift-select matches what is on screen.
+    entries = sortEntries(entries);
     currentEntries = entries;
     if (entries.length === 0) {
       rowsEl.innerHTML = trashView
@@ -2379,6 +2439,21 @@
     lastCheckIndex = null;
     syncSelectionUi();
   });
+  // Column sorting: clicking a header picks its natural direction the first
+  // time, toggles asc/desc afterwards, then repaints the loaded list locally.
+  document.querySelectorAll("th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      if (sortState.key === key) {
+        sortState.dir = sortState.dir === "asc" ? "desc" : "asc";
+      } else {
+        sortState.key = key;
+        sortState.dir = SORT_FIRST_DIR[key] || "asc";
+      }
+      updateSortHeaders();
+      renderRows(currentEntries);
+    });
+  });
   // Bulk action bar (shown while anything is selected).
   document.getElementById("bulk-download").addEventListener("click", bulkDownload);
   document.getElementById("bulk-move").addEventListener("click", () => bulkTransfer("move"));
@@ -2431,6 +2506,7 @@
   });
 
   // ---------- init ----------
+  updateSortHeaders();
   loadMe()
     .then(() => FXEnc.init(meName))
     .then(() => loadFiles(currentParent))

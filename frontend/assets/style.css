@@ -187,6 +187,26 @@ thead th {
   border-bottom: 1px solid var(--border);
   background: #fafbfc;
 }
+/* Sortable columns: the whole header cell toggles the sort direction. The
+   indicator is a triangle drawn with borders rather than a glyph, so the
+   source stays ASCII; it is invisible until the column is the active sort
+   and flips to point down for descending. */
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { color: var(--text); }
+th.sortable .arrow {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 5px solid currentColor;
+  opacity: 0;
+  transition: transform 0.15s, opacity 0.15s;
+}
+th.sortable.active .arrow { opacity: 1; }
+th.sortable.desc .arrow { transform: rotate(180deg); }
 tbody td {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);

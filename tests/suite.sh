@@ -1826,6 +1826,29 @@ grep -q 'URL\.revokeObjectURL(previewUrl)' "$UI" \
   && ok "closing the lightbox releases the decrypted blob URL" \
   || bad "a decrypted preview URL outlives the lightbox"
 
+# ---- file list sorting ----
+note "file list sorting (name / date / size, both directions)"
+IDX=$REPO/frontend/index.html
+grep -q 'data-sort="name"' "$IDX" && grep -q 'data-sort="size"' "$IDX" \
+  && grep -q 'data-sort="date"' "$IDX" \
+  && ok "the Name, Size and Modified headers are sortable" \
+  || bad "sortable column headers missing from index.html"
+grep -q 'function sortEntries(' "$UI" && grep -q 'function compareEntries(' "$UI" \
+  && ok "the listing sorts its rows locally" \
+  || bad "no local sort functions in app.js"
+grep -q 'sortState\.dir === "asc" ? "desc" : "asc"' "$UI" \
+  && ok "a header click toggles between both directions" \
+  || bad "sort direction does not toggle asc/desc"
+grep -q 'SORT_FIRST_DIR' "$UI" \
+  && ok "each column starts from its natural direction" \
+  || bad "no natural first-click direction"
+grep -q 'a\.is_dir !== b\.is_dir' "$UI" \
+  && ok "folders stay grouped before files when sorting" \
+  || bad "folders are not kept ahead of files"
+grep -q 'entries = sortEntries(entries)' "$UI" \
+  && ok "every list render goes through the sort" \
+  || bad "renderRows bypasses the sort"
+
 # ---- user administration UI ----
 note "user administration UI"
 IDX=$REPO/frontend/index.html
