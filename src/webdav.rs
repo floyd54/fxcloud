@@ -342,7 +342,7 @@ async fn put_file(
         }
     };
     let size = body.len() as i64;
-    let mime = mime_guess::from_path(&name).first().map(|m| m.to_string());
+    let declared = mime_guess::from_path(&name).first().map(|m| m.to_string());
 
     let existing = match state.db.resolve_path(owner_id, segments.to_vec()).await {
         Ok(e) => e,
@@ -385,6 +385,18 @@ async fn put_file(
             // a browser save must not interleave the two halves (see
             // `FileService::begin_replace`).
             {
+                // A plaintext row gets its type from the bytes themselves
+                // (magic numbers, then the text heuristic), so a file pushed
+                // over DAV without an extension still opens as text in the
+                // web UI. An encrypted row keeps the name-based guess: the
+                // body is an FXE1 container, and sniffing ciphertext would
+                // store a type that describes neither the wrapper nor the
+                // plaintext the server has never seen.
+                let mime = if old.enc_version > 0 {
+                    declared
+                } else {
+                    crate::files::resolve_mime(declared.as_deref(), &body)
+                };
                 let _write = state.files.begin_replace(old.id).await;
                 if let Err(e) = state
                     .db
@@ -405,10 +417,12 @@ async fn put_file(
                 return forbidden();
             }
             // A *create* is not an overwrite, so nothing can be destroyed and
-            // nothing is sniffed: `enc_version` stays 0, exactly as it would
-            // for any other file whose first four bytes happen to spell
-            // "FXE1". DAV has no channel for a key record, so it can only ever
-            // create plaintext rows.
+            // nothing is sniffed for the encryption check: `enc_version` stays
+            // 0, exactly as it would for any other file whose first four bytes
+            // happen to spell "FXE1". DAV has no channel for a key record, so
+            // it can only ever create plaintext rows - and a plaintext row's
+            // type is the bytes' own business (see the overwrite branch).
+            let mime = crate::files::resolve_mime(declared.as_deref(), &body);
             match state
                 .db
                 .create_file(owner_id, parent.id, name, size, mime, 0, None)

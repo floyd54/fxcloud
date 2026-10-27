@@ -215,7 +215,7 @@
 
       if (!trashView && entry.is_dir) {
         tr.addEventListener("click", () => openFolder(entry.id, perms));
-      } else if (!trashView && (perms & PERM_READ) && previewKind(entry.name)) {
+      } else if (!trashView && (perms & PERM_READ) && previewKind(entry.name, entry.mime)) {
         // Browser-viewable files open in the lightbox directly, encrypted
         // rows included since phase 2 (ENCRYPTION.md 12): openPreview
         // decrypts those into an in-memory blob URL first, so ciphertext
@@ -363,7 +363,7 @@
         items.push(["Open", () => openFolder(entry.id, perms)]);
       }
       if (!entry.is_dir && (perms & PERM_READ)) {
-        const entryKind = previewKind(entry.name);
+        const entryKind = previewKind(entry.name, entry.mime);
         // Every renderable kind previews, encrypted rows included: the tab
         // decrypts one into a blob URL (phase 2, ENCRYPTION.md 12), so the
         // menu no longer splits by encryption state. Text keeps "Edit".
@@ -770,6 +770,13 @@
   // Extensions the browser renders natively, mirroring `extension_type()` in
   // src/web/routes/files.rs. The server stays the authority on the actual
   // Content-Type; this list only decides what a click opens.
+  //
+  // The extension is the first answer and the sniffed MIME type the fallback:
+  // a file uploaded without one carries the type the server read from its
+  // bytes (POST /api/files/upload sniffs them - `resolve_mime` in
+  // src/files/mod.rs), and that is what opens a plain text note in the editor
+  // instead of downloading it. Encrypted rows have mime = null and stay
+  // decided by name alone - their bytes are ciphertext the server never saw.
   const PREVIEW_EXT = {
     image: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "apng", "svg"],
     video: ["mp4", "webm", "ogv", "mov", "m4v"],
@@ -786,12 +793,24 @@
     ],
   };
 
-  function previewKind(name) {
+  function previewKind(name, mime) {
     const dot = name.lastIndexOf(".");
-    if (dot < 0) return null;
-    const ext = name.slice(dot + 1).toLowerCase();
-    for (const kind of Object.keys(PREVIEW_EXT)) {
-      if (PREVIEW_EXT[kind].indexOf(ext) >= 0) return kind;
+    if (dot >= 0) {
+      const ext = name.slice(dot + 1).toLowerCase();
+      for (const kind of Object.keys(PREVIEW_EXT)) {
+        if (PREVIEW_EXT[kind].indexOf(ext) >= 0) return kind;
+      }
+    }
+    // No usable extension: the MIME type the server sniffed from the bytes
+    // is the second opinion. text/* opens in the editor (the editor is the
+    // safe view of text - it never renders it), everything else maps onto
+    // the same kinds the extension table knows.
+    if (mime) {
+      if (mime.startsWith("text/")) return "text";
+      if (mime.startsWith("image/")) return "image";
+      if (mime.startsWith("video/")) return "video";
+      if (mime.startsWith("audio/")) return "audio";
+      if (mime === "application/pdf") return "pdf";
     }
     return null;
   }
@@ -845,7 +864,7 @@
   }
 
   async function openPreview(entry) {
-    const kind = previewKind(entry.name);
+    const kind = previewKind(entry.name, entry.mime);
     if (!kind || entry.is_dir) return;
     previewEntry = entry;
     releasePreviewUrl();

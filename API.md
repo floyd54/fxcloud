@@ -20,7 +20,7 @@ allowed -> `403`. Only `register` and `login` are public.
 | POST   | `/api/files/folder`     | `{parent_id, name}`                | Create folder               |
 | POST   | `/api/files/file`       | `{parent_id, name}`                | Create empty file (409 on duplicates) |
 | POST   | `/api/files/folder/ensure` | `{parent_id, name}`             | Get-or-create folder (idempotent; powers folder uploads) |
-| POST   | `/api/files/upload`     | multipart: `parent`, `file`        | Upload file                 |
+| POST   | `/api/files/upload`     | multipart: `parent`, `file`        | Upload file. For plaintext uploads the stored `mime` is decided from the bytes (magic numbers first, then a text heuristic), not from the browser's `Content-Type`, which is `application/octet-stream` for a file without an extension; the declared type is only the fallback for binary the sniffer does not know, and encrypted uploads keep `mime` null |
 | GET    | `/api/files/download`   | `?id=<fileId>`                     | Download file               |
 | GET    | `/api/files/preview`    | `?id=<fileId>` (+ optional `Range`) | Inline preview (206/416 ranges; `CSP: sandbox` for HTML/SVG) |
 | PUT    | `/api/files/content`    | `?id=<fileId>`, body = raw text    | Overwrite file content (editor save; quota-checked, 507 when full). Encrypted rows add `&enc=1&key=<base64 file key>` and require an `FXE1` body; a `key` requires `enc=1`, `enc=1` requires a key, and `enc=0` is refused on an encrypted row (ENCRYPTION.md 5.4) |

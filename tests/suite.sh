@@ -137,6 +137,18 @@ subsize() { # subsize <list response> <name> -> subtree_bytes (empty for files/a
   ' "$2"
 }
 
+field() { # field <listing-json> <name> <key> -> that one field of that one row
+  printf '%s' "$1" | perl -MJSON::PP -0777 -e '
+    my ($name, $key) = @ARGV;
+    my $d = decode_json(do { local $/; <STDIN> });
+    for my $e (@{$d->{entries} || []}) {
+      next unless defined $e->{name} && $e->{name} eq $name;
+      my $v = $e->{$key};
+      print ref($v) ? encode_json($v) : (defined $v ? $v : "");
+      last;
+    }' "$2" "$3"
+}
+
 req() { # req <METHOD> <path> <jar> [json-body]
   local method=$1 path=$2 jar=$3 body=${4:-}
   if [ -n "$body" ]; then
@@ -675,6 +687,83 @@ curl -s -D "$ROOT/ph.txt" -o /dev/null -b "$JA" "$BASE/api/files/download?id=$NI
 grep -qi '^content-disposition: attachment' "$ROOT/ph.txt" \
   && ok "download endpoint stays attachment" || bad "download disposition changed"
 
+# ---- content sniffing: the bytes decide the stored type ----
+# A browser says "application/octet-stream" for a file without an extension -
+# its type table is keyed on the name. The server reads the bytes instead
+# (magic numbers first, then a text heuristic), so a note without an extension
+# still opens in the editor.
+note "the server sniffs the type of a file that has no extension"
+printf 'Notiz ohne Endung, mit Umlauten: Gr\303\274\303\237e\n' > "$ROOT/src/ohne-endung"
+NR=$(up "$JA" "$DOC" ohne-endung)
+OID=$(jget "$NR" entry.id)
+[ -n "$OID" ] && ok "uploaded a text file without an extension (id $OID)" \
+  || bad "ohne-endung upload failed: $NR"
+OLIST=$(req GET "/api/files?parent=$DOC" "$JA")
+[ "$(field "$OLIST" ohne-endung mime)" = "text/plain" ] \
+  && ok "its stored type is text/plain (sniffed, not the browser's word)" \
+  || bad "stored mime: '$(field "$OLIST" ohne-endung mime)'"
+RC=$(reqcode GET "/api/files/preview?id=$OID" "$JA")
+[ "$RC" = "200" ] && ok "and the preview serves it (extension-less text is viewable)" \
+  || bad "preview of the sniffed text file: $RC"
+
+printf '\211PNG\r\n\032\n\000\000\000\rIHDR\000\000\000\001\000\000\000\001\010\002\000\000\000\220wS\336' \
+  > "$ROOT/src/bild-ohne-endung"
+NR=$(up "$JA" "$DOC" bild-ohne-endung)
+BID=$(jget "$NR" entry.id)
+[ -n "$BID" ] && ok "uploaded PNG bytes without an extension (id $BID)" \
+  || bad "bild-ohne-endung upload failed: $NR"
+[ "$(field "$(req GET "/api/files?parent=$DOC" "$JA")" bild-ohne-endung mime)" = "image/png" ] \
+  && ok "magic bytes win: stored as image/png" \
+  || bad "png mime: '$(field "$(req GET "/api/files?parent=$DOC" "$JA")" bild-ohne-endung mime)'"
+
+printf 'BINAER\000\001\002\000\377\376' > "$ROOT/src/dat-ohne-endung"
+NR=$(up "$JA" "$DOC" dat-ohne-endung)
+DID=$(jget "$NR" entry.id)
+[ -n "$DID" ] && ok "uploaded binary junk without an extension (id $DID)" \
+  || bad "dat-ohne-endung upload failed: $NR"
+[ -z "$(field "$(req GET "/api/files?parent=$DOC" "$JA")" dat-ohne-endung mime)" ] \
+  && ok "unnamed binary stays untyped (mime NULL, not a guess)" \
+  || bad "binary mime: '$(field "$(req GET "/api/files?parent=$DOC" "$JA")" dat-ohne-endung mime)'"
+
+# The editor's save is a write path like any other: without the sniff it
+# would wipe the type of an extension-less file on its first save and drop
+# it back out of the editor menu.
+note "an extension-less text file keeps its type across an editor save"
+printf 'zweite Fassung, immer noch ohne Endung\n' > "$ROOT/src/neu-ohne-endung.txt"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" \
+  -H 'Content-Type: text/plain' --data-binary "@$ROOT/src/neu-ohne-endung.txt" \
+  "$BASE/api/files/content?id=$OID")
+[ "$RC" = "200" ] && ok "PUT content -> 200" || bad "save: $RC"
+[ "$(field "$(req GET "/api/files?parent=$DOC" "$JA")" ohne-endung mime)" = "text/plain" ] \
+  && ok "the stored type survived the save" \
+  || bad "mime after save: '$(field "$(req GET "/api/files?parent=$DOC" "$JA")" ohne-endung mime)'"
+
+# The named case must not regress: a declared *specific* text type beats the
+# heuristic's flat text/plain, so a Markdown note keeps text/markdown.
+note "a named text file keeps its specific type (mime_guess, not text/plain)"
+NR=$(req POST /api/files/file "$JA" "{\"parent_id\":$DOC,\"name\":\"notiz.md\"}")
+MID=$(jget "$NR" entry.id)
+[ -n "$MID" ] && ok "created the empty row notiz.md (id $MID)" || bad "create notiz.md: $NR"
+printf '# Titel\n\nnur Text\n' > "$ROOT/src/notiz-body.txt"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" \
+  -H 'Content-Type: text/plain' --data-binary "@$ROOT/src/notiz-body.txt" \
+  "$BASE/api/files/content?id=$MID")
+[ "$RC" = "200" ] && ok "saved the body via the editor route" || bad "notiz.md save: $RC"
+[ "$(field "$(req GET "/api/files?parent=$DOC" "$JA")" notiz.md mime)" = "text/markdown" ] \
+  && ok "notiz.md keeps text/markdown (a named type beats the sniff)" \
+  || bad "notiz.md mime: '$(field "$(req GET "/api/files?parent=$DOC" "$JA")" notiz.md mime)'"
+
+# WebDAV is the other door into the same storage: a client that pushes a
+# file without an extension gets the same sniffing.
+note "a WebDAV PUT without an extension is sniffed the same way"
+printf 'dav notiz ohne endung\n' > "$ROOT/src/dav-ohne-endung"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -u "alice:correct-horse" \
+  --data-binary "@$ROOT/src/dav-ohne-endung" "$BASE/dav/docs/dav-ohne-endung")
+[ "$RC" = "201" ] && ok "DAV PUT created the file (201)" || bad "dav sniff create: $RC"
+[ "$(field "$(req GET "/api/files?parent=$DOC" "$JA")" dav-ohne-endung mime)" = "text/plain" ] \
+  && ok "the DAV-written file is stored as text/plain" \
+  || bad "dav sniff mime: '$(field "$(req GET "/api/files?parent=$DOC" "$JA")" dav-ohne-endung mime)'"
+
 # ---- text editor (save via PUT /api/files/content) ----
 note "the text editor saves content back to the file"
 printf 'first version' > "$ROOT/src/edit.txt"
@@ -909,19 +998,6 @@ urlencode() {
   printf '%s' "$1" | perl -0777 -pe 's/([^A-Za-z0-9_.~-])/sprintf("%%%02X", ord($1))/ge'
 }
 
-# field <listing-json> <name> <key> -> that one field of that one row
-field() {
-  printf '%s' "$1" | perl -MJSON::PP -0777 -e '
-    my ($name, $key) = @ARGV;
-    my $d = decode_json(do { local $/; <STDIN> });
-    for my $e (@{$d->{entries} || []}) {
-      next unless defined $e->{name} && $e->{name} eq $name;
-      my $v = $e->{$key};
-      print ref($v) ? encode_json($v) : (defined $v ? $v : "");
-      last;
-    }' "$2" "$3"
-}
-
 RC=$(reqsave GET /api/keys/me "$JA" "$ROOT/k.json")
 [ "$RC" = "404" ] && ok "GET /api/keys/me before setup -> 404" || bad "keys/me: $RC"
 
@@ -1066,6 +1142,11 @@ RC=$(curl -s -o "$ROOT/k.json" -w '%{http_code}' -X PUT -b "$JA" -c "$JA" \
 ELIST=$(req GET "/api/files?parent=$DOC" "$JA")
 [ "$(field "$ELIST" secret.txt enc_version)" = "1" ] \
   && ok "the listing reports enc_version=1" || bad "enc_version is not 1"
+# The sniff must never look at ciphertext: the server would store a type that
+# describes neither the wrapper nor the plaintext it never saw.
+[ -z "$(field "$ELIST" secret.txt mime)" ] \
+  && ok "the encrypted row keeps mime NULL (ciphertext is not sniffed)" \
+  || bad "encrypted row claims a mime: '$(field "$ELIST" secret.txt mime)'"
 EK=$(field "$ELIST" secret.txt enc_key)
 [ -n "$EK" ] && ok "the listing carries the wrapped key" || bad "no enc_key in the listing"
 ESZ=$(field "$ELIST" secret.txt size)
@@ -1536,6 +1617,26 @@ grep -q 'FXEnc.readText(entry)' "$UI" && grep -q 'FXEnc.writeText(entry, content
 grep -q 'FXEnc.writeText(entry, "")' "$UI" \
   && ok "a file created while encryption is on is encrypted immediately" \
   || bad "newFile() creates its file without encrypting it"
+
+# The stored MIME type is the second opinion of previewKind(): the extension
+# stays the first answer (it is what the name promises), and the sniffed type
+# decides only when the name says nothing - which is exactly the case of a
+# file uploaded without an extension. Encrypted rows carry mime = null and
+# are decided by name alone, as before. Dropping either half shows up as
+# "the file no longer opens" rather than as a failed request, so both are
+# pinned here.
+grep -q 'function previewKind(name, mime)' "$UI" \
+  && ok "previewKind() takes the stored MIME type as its second opinion" \
+  || bad "previewKind() does not accept a mime parameter"
+grep -q 'previewKind(entry\.name, entry\.mime)' "$UI" \
+  && ok "the callers pass the entry's mime along with its name" \
+  || bad "no caller hands entry.mime to previewKind()"
+[ "$(grep -c 'previewKind(entry\.name, entry\.mime)' "$UI")" = "3" ] \
+  && ok "all three decision points consult the mime type" \
+  || bad "expected 3 mime-aware previewKind() calls, found $(grep -c 'previewKind(entry\.name, entry\.mime)' "$UI")"
+grep -q 'mime\.startsWith("text/")' "$UI" \
+  && ok "the fallback maps text/* onto the editor kind" \
+  || bad "app.js has no text/* fallback in previewKind()"
 
 # A save changes the row on the server, and the folder behind the lightbox is
 # the second place that holds a key for it: newFile() hands the editor the

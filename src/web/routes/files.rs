@@ -278,6 +278,15 @@ pub async fn upload(
         return Err(AppError::BadRequest(
             "enc_key given for a plaintext upload".into(),
         ));
+    } else {
+        // The client's Content-Type is a hint, not the truth: a browser
+        // sends `application/octet-stream` (or nothing) for a file without
+        // an extension, which is exactly the case where the stored type has
+        // to decide later whether the row opens in the editor. The bytes
+        // decide here - magic numbers first, then a text heuristic - and
+        // the client's word only survives as the fallback for binary the
+        // sniffer does not know (`resolve_mime`).
+        mime = crate::files::resolve_mime(mime.as_deref(), &data);
     }
 
     // Create metadata first to obtain a file id, then persist the blob.
@@ -632,13 +641,20 @@ pub async fn save_content(
     };
 
     // For an encrypted row keep `mime` NULL: the stored type must not describe
-    // bytes the server has never seen in plaintext.
+    // bytes the server has never seen in plaintext. For a plaintext save the
+    // bytes decide (`resolve_mime`): the editor's save is a write path like
+    // any other, and a file without an extension would otherwise lose the
+    // sniffed `text/plain` on its first save and drop out of the editor menu.
     let mime = if enc_version > 0 {
         None
     } else {
-        mime_guess::from_path(&entry.name)
-            .first()
-            .map(|m| m.to_string())
+        crate::files::resolve_mime(
+            mime_guess::from_path(&entry.name)
+                .first()
+                .map(|m| m.to_string())
+                .as_deref(),
+            &body,
+        )
     };
     // The blob path is id-derived, so replacing the content in place swaps
     // the blob underneath; meta first, because it holds the quota gate. Both

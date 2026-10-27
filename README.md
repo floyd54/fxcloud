@@ -28,7 +28,11 @@ with sharing, quotas and WebDAV.
   with live Markdown preview; new text files are created directly in the
   UI. Encrypted files open the same way: the tab decrypts them into a
   Blob URL, so images, video, audio, PDF and HTML preview with encryption
-  on, and an encrypted text file edits just like a plaintext one.
+  on, and an encrypted text file edits just like a plaintext one. The
+  server reads the type of an uploaded file from its bytes (magic
+  numbers, then a text heuristic), so a note without an extension still
+  opens in the editor; the stored type also survives WebDAV writes and
+  editor saves.
 - **Sharing** - share files/folders with other accounts using a permission
   bitmask (read 1, update 2, create 4, delete 8); shares mount in the
   grantee's root tree and are enforced in the web UI *and* WebDAV. When
@@ -188,7 +192,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 315 checks against a throwaway instance
+./tests/suite.sh    # integration: 334 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

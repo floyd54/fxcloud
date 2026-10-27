@@ -15,6 +15,77 @@ use crate::models::{BlobRef, FileEntry};
 /// silently destroying encrypted files with a plaintext `PUT`.
 pub const FXE1_MAGIC: &[u8] = b"FXE1";
 
+/// How many leading bytes the text heuristic looks at.
+const TEXT_SNIFF_WINDOW: usize = 8192;
+
+/// Pick the `mime` to store for a plaintext row: the *content* decides
+/// (magic numbers first, then a text heuristic - `declared` plays no role in
+/// either), and the client's declaration is only the fallback for binary the
+/// sniffer does not know. `None` means "binary the sniffer does not know" -
+/// the caller keeps whatever the client declared (or NULL).
+///
+/// This is what lets a file *without an extension* open as text: the
+/// browser's `Content-Type` for such an upload is `application/octet-stream`
+/// or empty, which is no help at all, while the bytes themselves usually
+/// settle the question. Encrypted uploads never reach this - their bytes are
+/// an FXE1 container the server cannot read (ENCRYPTION.md 7), so their
+/// `mime` stays NULL.
+///
+/// `declared` is what the client or the file name claims (browser
+/// `Content-Type`, `mime_guess` on the name). A more specific declared text
+/// type (`text/markdown`, `application/json`) is kept over the generic
+/// `text/plain` the heuristic would offer, so a `.md` file keeps its type;
+/// `application/octet-stream` - the placeholder every extensionless upload
+/// carries - is treated as "no declaration" rather than as an answer.
+pub fn resolve_mime(declared: Option<&str>, data: &[u8]) -> Option<String> {
+    // Magic numbers are content, not naming: they win outright.
+    if let Some(kind) = infer::get(data) {
+        return Some(kind.mime_type().to_string());
+    }
+    if looks_like_text(data) {
+        return Some(match declared {
+            Some(d) if is_specific_text(d) => d.to_string(),
+            _ => "text/plain".to_string(),
+        });
+    }
+    // Unknown binary: keep a real declaration, drop the placeholder.
+    declared
+        .filter(|d| !d.is_empty() && *d != "application/octet-stream")
+        .map(str::to_string)
+}
+
+/// A declared type worth keeping over the generic `text/plain`.
+fn is_specific_text(declared: &str) -> bool {
+    (declared.starts_with("text/") && declared != "text/plain")
+        || matches!(
+            declared,
+            "application/json"
+                | "application/xml"
+                | "application/yaml"
+                | "application/x-yaml"
+                | "application/toml"
+                | "application/x-sh"
+                | "application/javascript"
+        )
+        || declared.ends_with("+json")
+        || declared.ends_with("+xml")
+}
+
+/// The text heuristic behind [`resolve_mime`]: one scan over the first
+/// [`TEXT_SNIFF_WINDOW`] bytes decides. Text in any single-byte encoding
+/// (ASCII, UTF-8, Latin-1, cp1252) contains nothing but the whitespace
+/// controls (tab, LF, CR, FF) - so German umlauts in either encoding stay
+/// text - while compressed, encrypted and executable data is full of the
+/// remaining C0 controls, the NUL byte of UTF-16 included. UTF-16 text
+/// therefore stays untyped: the editor reads UTF-8, so calling it text
+/// would only promise a decode the browser cannot keep.
+fn looks_like_text(data: &[u8]) -> bool {
+    let sample = &data[..data.len().min(TEXT_SNIFF_WINDOW)];
+    !sample
+        .iter()
+        .any(|&b| (b < 0x20 && !matches!(b, 0x09 | 0x0A | 0x0C | 0x0D)) || b == 0x7f)
+}
+
 /// High-level file operations combining DB metadata with on-disk blobs.
 ///
 /// Blob layout: `<blob_dir>/<owner-id>/<year>/<h1>/<h2>/<file-id>` — the
@@ -298,5 +369,115 @@ impl FileService {
             }
         }
         stats
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_specific_text, looks_like_text, resolve_mime};
+
+    /// A real 1x1 PNG: the signature alone is what the magic table matches.
+    const PNG: &[u8] =
+        b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89";
+
+    #[test]
+    fn magic_bytes_win_over_the_client_word() {
+        // Content is not naming: a renamed upload keeps the type its bytes say.
+        assert_eq!(resolve_mime(None, PNG).as_deref(), Some("image/png"));
+        assert_eq!(
+            resolve_mime(Some("application/octet-stream"), PNG).as_deref(),
+            Some("image/png")
+        );
+        assert_eq!(
+            resolve_mime(Some("text/plain"), PNG).as_deref(),
+            Some("image/png")
+        );
+    }
+
+    #[test]
+    fn utf8_text_is_text_plain() {
+        // German text with umlauts: high bytes, still text.
+        let note = b"Gr\xc3\xbc\xc3\x9fe\nZeile zwei, mit Umlauten: \xc3\xa4\xc3\xb6\xc3\xbc\n";
+        assert_eq!(resolve_mime(None, note).as_deref(), Some("text/plain"));
+    }
+
+    #[test]
+    fn legacy_single_byte_text_is_still_text() {
+        // Latin-1/cp1252: not valid UTF-8, but no controls beyond whitespace.
+        let old = b"Gr\xfc\xdfe\nalte Notiz mit Umlauten: \xe4\xf6\xfc\n";
+        assert!(looks_like_text(old));
+        assert_eq!(resolve_mime(None, old).as_deref(), Some("text/plain"));
+    }
+
+    #[test]
+    fn nul_bytes_end_the_text_guess() {
+        let mut binary = b"some prefix".to_vec();
+        binary.push(0);
+        binary.extend_from_slice(b"\x01\x02\x03");
+        assert!(!looks_like_text(&binary));
+        assert_eq!(resolve_mime(None, &binary), None);
+    }
+
+    #[test]
+    fn unknown_binary_keeps_a_real_declaration_only() {
+        let binary = b"\x01\x02\x03\x04\x05\x06\x07";
+        assert_eq!(
+            resolve_mime(Some("application/x-custom"), binary).as_deref(),
+            Some("application/x-custom")
+        );
+        // The octet-stream placeholder every extensionless upload carries is
+        // not an answer, and neither is an empty string.
+        assert_eq!(resolve_mime(Some("application/octet-stream"), binary), None);
+        assert_eq!(resolve_mime(Some(""), binary), None);
+        assert_eq!(resolve_mime(None, binary), None);
+    }
+
+    #[test]
+    fn a_specific_declared_text_type_survives() {
+        // text/markdown says more than the heuristic's text/plain.
+        assert_eq!(
+            resolve_mime(Some("text/markdown"), "# titel\n".as_bytes()).as_deref(),
+            Some("text/markdown")
+        );
+        assert_eq!(
+            resolve_mime(Some("application/json"), b"{\"a\":1}\n").as_deref(),
+            Some("application/json")
+        );
+        // The flat text/plain and the octet-stream placeholder do not.
+        assert_eq!(
+            resolve_mime(Some("text/plain"), "# titel\n".as_bytes()).as_deref(),
+            Some("text/plain")
+        );
+        assert_eq!(
+            resolve_mime(Some("application/octet-stream"), "# titel\n".as_bytes()).as_deref(),
+            Some("text/plain")
+        );
+    }
+
+    #[test]
+    fn is_specific_text_draws_the_line_where_it_says() {
+        assert!(is_specific_text("text/markdown"));
+        assert!(is_specific_text("text/csv"));
+        assert!(is_specific_text("application/json"));
+        assert!(is_specific_text("application/ld+json"));
+        assert!(is_specific_text("image/svg+xml"));
+        assert!(!is_specific_text("text/plain"));
+        assert!(!is_specific_text("application/octet-stream"));
+        assert!(!is_specific_text("image/png"));
+    }
+
+    #[test]
+    fn an_empty_file_is_an_empty_note() {
+        // Nothing to contradict the guess: an empty upload opens as text.
+        assert_eq!(resolve_mime(None, b"").as_deref(), Some("text/plain"));
+    }
+
+    #[test]
+    fn utf16_stays_untyped() {
+        // UTF-16 text is full of NUL bytes: the editor reads UTF-8, so the
+        // server must not promise a decode the browser cannot keep.
+        let utf16: &[u8] = b"H\0e\0l\0l\0o\0";
+        assert!(!looks_like_text(utf16));
+        assert_eq!(resolve_mime(None, utf16), None);
     }
 }
