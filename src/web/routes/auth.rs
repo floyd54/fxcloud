@@ -11,8 +11,9 @@ use crate::models::{
 };
 use crate::web::state::SharedState;
 
-/// Build the session cookie set on successful login/registration.
-fn session_cookie(token: &str, max_age: i64, secure: bool) -> String {
+/// Build the session cookie set on successful login (password or passkey)
+/// and registration.
+pub(super) fn session_cookie(token: &str, max_age: i64, secure: bool) -> String {
     // HttpOnly + SameSite=Lax gives solid CSRF basics; `Secure` is appended when
     // serving over HTTPS (enabled via FXCLOUD_SECURE_COOKIE).
     let secure_attr = if secure { "; Secure" } else { "" };

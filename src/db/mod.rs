@@ -1,5 +1,6 @@
 pub mod file;
 pub mod keys;
+pub mod passkey;
 pub mod session;
 pub mod share;
 pub mod user;
@@ -149,6 +150,15 @@ impl Db {
                     "SELECT COUNT(*) FROM pragma_table_info('users')
                      WHERE name = 'is_admin'",
                 ),
+            ),
+            // 011 stays open: that number belonged to the withdrawn
+            // passphrase-login round (reverted in f9aa1d9). The table below
+            // needs no guard - `CREATE TABLE/INDEX IF NOT EXISTS` is
+            // idempotent on every startup.
+            (
+                "012_webauthn_credentials",
+                include_str!("../../migrations/012_webauthn_credentials.sql"),
+                None,
             ),
         ];
         let conn = self.pool.get()?;

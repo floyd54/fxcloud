@@ -1629,15 +1629,21 @@ js_parse() {
 }
 js_parse "$UI" \
   && ok "app.js parses ($PARSE)" || bad "app.js has a syntax error"
-# The encryption files are loaded by <script> tags rather than app.js, so
-# nothing in the wiring check above would notice a syntax error in them.
+# The encryption files and the login page are loaded by <script> tags rather
+# than by app.js, so nothing in the wiring check above would notice a syntax
+# error in them. webauthn-client.js sits between the two pages (login tab and
+# settings dialog), and tests/webauthn.js is the virtual authenticator the
+# passkey section below drives.
 for SRC in "$REPO/frontend/assets/fxcrypto.js" \
            "$REPO/frontend/assets/fxenc.js" \
            "$REPO/frontend/assets/fxworker.js" \
            "$REPO/frontend/assets/hashwasm-argon2.js" \
+           "$REPO/frontend/assets/webauthn-client.js" \
+           "$REPO/frontend/assets/login.js" \
            "$REPO/frontend/tests/fxtool.js" \
            "$REPO/frontend/tests/crypto-roundtrip.js" \
-           "$REPO/frontend/tests/fxenc-harness.js"; do
+           "$REPO/frontend/tests/fxenc-harness.js" \
+           "$REPO/frontend/tests/webauthn.js"; do
   js_parse "$SRC" \
     && ok "$(basename "$SRC") parses ($PARSE)" \
     || bad "$(basename "$SRC") has a syntax error"
@@ -1655,9 +1661,12 @@ if perl "$REPO/tests/check-call-arity.pl" \
      "$REPO/frontend/assets/fxcrypto.js" \
      "$REPO/frontend/assets/fxenc.js" \
      "$REPO/frontend/assets/fxworker.js" \
+     "$REPO/frontend/assets/webauthn-client.js" \
+     "$REPO/frontend/assets/login.js" \
      "$REPO/frontend/tests/fxtool.js" \
      "$REPO/frontend/tests/crypto-roundtrip.js" \
-     "$REPO/frontend/tests/fxenc-harness.js" >"$ROOT/arity.log" 2>&1; then
+     "$REPO/frontend/tests/fxenc-harness.js" \
+     "$REPO/frontend/tests/webauthn.js" >"$ROOT/arity.log" 2>&1; then
   ok "every frontend helper is called with its declared argument count"
 else
   bad "frontend arity: $(tr '\n' ' ' < "$ROOT/arity.log")"
@@ -1932,6 +1941,251 @@ grep -q 'temporary_password' "$UI" \
 grep -q 'quota_bytes' "$UI" \
   && ok "the dialog can change the quota" \
   || bad "no quota control in the admin dialog"
+
+# ---- passkeys (WebAuthn) ----
+# A virtual authenticator (frontend/tests/webauthn.js) builds every ceremony
+# output byte by byte - clientDataJSON, authenticatorData, the COSE key, the
+# signature - so the happy paths and each rejection are driven over the real
+# endpoints with the exact bytes a browser would send, including the bad ones
+# no honest browser produces. Placed after every server restart above:
+# challenges live in memory and would not survive a restart.
+note "passkeys (WebAuthn): registration, sign-in, rejections, device list"
+WA=$REPO/frontend/tests/webauthn.js
+PKB=$BASE          # what clientDataJSON must claim; no Origin header is sent
+                   # below, so the server derives this same origin itself
+PLOGIN=$ROOT/pk-login.jar
+
+# -- registration -------------------------------------------------------
+RC=$(reqsave POST /api/passkeys/register/start "$JA" "$ROOT/pk-rstart.json" '{}')
+[ "$RC" = "200" ] && ok "a signed-in account starts a registration ceremony" \
+  || bad "register/start: $RC"
+
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' -d '{}' "$BASE/api/passkeys/register/start")
+[ "$RC" = "401" ] && ok "starting a registration needs a session" \
+  || bad "sessionless register/start: $RC"
+
+# Without an Origin header the server derives the origin from Host and the
+# secure-cookie flag; the clientData built below claims exactly that.
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "$JA" -c "$JA" \
+  -H 'Content-Type: application/json' -d '{}' "$BASE/api/passkeys/register/start")
+[ "$RC" = "200" ] && ok "the WebAuthn origin is derived when no Origin header is sent" \
+  || bad "derived origin: $RC"
+
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "$JA" -c "$JA" \
+  -H 'Content-Type: application/json' -H 'Origin: https://evil.example' \
+  -d '{}' "$BASE/api/passkeys/register/start")
+[ "$RC" = "400" ] && ok "a foreign Origin header fails before a challenge is spent" \
+  || bad "foreign Origin: $RC"
+
+"$NODE" "$WA" register "$ROOT/pk-rstart.json" "$ROOT/pk-state.json" \
+  "$ROOT/pk-rcred.json" --origin=$PKB \
+  && ok "the virtual authenticator answers with an attestation" \
+  || bad "webauthn.js register failed"
+
+BODY=$(printf '{"label":"Laptop","credential":%s}' "$(cat "$ROOT/pk-rcred.json")")
+RC=$(reqsave POST /api/passkeys/register/finish "$JA" "$ROOT/pk-rfin.json" "$BODY")
+[ "$RC" = "201" ] && grep -q '"label":"Laptop"' "$ROOT/pk-rfin.json" \
+  && ok "the attestation verifies and the first passkey is stored" \
+  || bad "register/finish: $RC $(head -c 200 "$ROOT/pk-rfin.json")"
+
+CREDID=$(jget "$(cat "$ROOT/pk-rcred.json")" id)
+reqsave POST /api/passkeys/register/start "$JA" "$ROOT/pk-rstart2.json" '{}' >/dev/null
+"$NODE" "$WA" register "$ROOT/pk-rstart2.json" "$ROOT/pk-state2.json" \
+  "$ROOT/pk-rcred2.json" --origin=$PKB --cred-id="$CREDID"
+BODY=$(printf '{"label":"Dup","credential":%s}' "$(cat "$ROOT/pk-rcred2.json")")
+RC=$(reqsave POST /api/passkeys/register/finish "$JA" "$ROOT/pk-rfin2.json" "$BODY")
+[ "$RC" = "409" ] && ok "the same authenticator cannot register twice" \
+  || bad "duplicate credential: $RC"
+
+RC=$(reqsave GET /api/me/passkeys "$JA" "$ROOT/pk-list.json")
+NPK=$(perl -MJSON::PP -0777 -e 'print scalar @{decode_json(<STDIN>)}' <"$ROOT/pk-list.json")
+[ "$RC" = "200" ] && [ "$NPK" = "1" ] && ok "the device list shows the stored passkey" \
+  || bad "device list: $RC/$NPK"
+
+RC=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/me/passkeys")
+[ "$RC" = "401" ] && ok "the device list needs a session" \
+  || bad "sessionless device list: $RC"
+
+# -- sign-in ------------------------------------------------------------
+RC=$(reqsave POST /api/passkeys/login/start "$PLOGIN" "$ROOT/pk-lstart.json" \
+  '{"username":"alice"}')
+NALLOW=$(perl -MJSON::PP -0777 -e 'print scalar @{decode_json(<STDIN>)->{allowCredentials}}' <"$ROOT/pk-lstart.json")
+[ "$RC" = "200" ] && [ "$NALLOW" = "1" ] && ok "login/start offers alice's credential" \
+  || bad "login/start: $RC/$NALLOW"
+
+RC=$(reqsave POST /api/passkeys/login/start "$PLOGIN" "$ROOT/pk-lghost.json" \
+  '{"username":"nobody-here"}')
+NGHOST=$(perl -MJSON::PP -0777 -e 'print scalar @{decode_json(<STDIN>)->{allowCredentials}}' <"$ROOT/pk-lghost.json")
+[ "$RC" = "200" ] && [ "$NGHOST" = "1" ] \
+  && ok "an unknown name gets the identical shape (one dummy entry)" \
+  || bad "ghost login/start: $RC/$NGHOST"
+
+"$NODE" "$WA" assert "$ROOT/pk-lstart.json" "$ROOT/pk-state.json" \
+  "$ROOT/pk-lcred.json" --origin=$PKB \
+  && ok "the authenticator signs the challenge" \
+  || bad "webauthn.js assert failed"
+BODY=$(printf '{"credential":%s}' "$(cat "$ROOT/pk-lcred.json")")
+RC=$(reqsave POST /api/passkeys/login/finish "$PLOGIN" "$ROOT/pk-lfin.json" "$BODY")
+[ "$RC" = "200" ] && grep -q 'fxcloud_session' "$PLOGIN" \
+  && grep -q '"username":"alice"' "$ROOT/pk-lfin.json" \
+  && ok "a verified assertion opens a session" \
+  || bad "login/finish: $RC $(head -c 200 "$ROOT/pk-lfin.json")"
+
+RC=$(reqsave POST /api/passkeys/login/finish "$PLOGIN" "$ROOT/pk-lfin2.json" "$BODY")
+[ "$RC" = "401" ] && ok "a replayed assertion is refused (challenges are single-use)" \
+  || bad "replay: $RC"
+
+# One tampered output per fresh ceremony. The state file's counter advances
+# like a real device's even when the server refuses, so the clone-detection
+# pin below sees the value the server last accepted (1), not a fresh one.
+pk_bad() { # pk_bad <webauthn.js flags...> -> status of the finish call
+  reqsave POST /api/passkeys/login/start "$PLOGIN" "$ROOT/pk-lb.json" \
+    '{"username":"alice"}' >/dev/null || return 99
+  "$NODE" "$WA" assert "$ROOT/pk-lb.json" "$ROOT/pk-state.json" \
+    "$ROOT/pk-lcred-bad.json" --origin=$PKB "$@" || return 99
+  reqsave POST /api/passkeys/login/finish "$PLOGIN" "$ROOT/pk-lfin-bad.json" \
+    "{\"credential\":$(cat "$ROOT/pk-lcred-bad.json")}"
+}
+
+RC=$(pk_bad --bad-challenge)
+[ "$RC" = "401" ] && ok "an unknown challenge is refused" || bad "unknown challenge: $RC"
+RC=$(pk_bad --bad-origin=https://evil.example)
+[ "$RC" = "400" ] && ok "a clientData origin of another site is refused" \
+  || bad "bad origin: $RC"
+RC=$(pk_bad --bad-sig)
+[ "$RC" = "401" ] && ok "a tampered signature is refused" || bad "bad signature: $RC"
+RC=$(pk_bad --rp=evil.example)
+[ "$RC" = "400" ] && ok "a credential minted for a foreign rpId is refused" \
+  || bad "foreign rpId: $RC"
+RC=$(pk_bad --cross-origin)
+[ "$RC" = "400" ] && ok "cross-origin ceremonies are refused" || bad "crossOrigin: $RC"
+RC=$(pk_bad --bad-userhandle)
+[ "$RC" = "401" ] && ok "a userHandle of another account is refused" \
+  || bad "userHandle: $RC"
+RC=$(pk_bad --counter=1)
+[ "$RC" = "400" ] && ok "a standing signature counter is refused (clone detection)" \
+  || bad "counter: $RC"
+RC=$(pk_bad)
+[ "$RC" = "200" ] && ok "the next honest assertion still signs in" \
+  || bad "honest retry: $RC"
+
+# The ceremony kind is re-checked at redemption, in both directions: a
+# registration challenge cannot open a session and a login challenge cannot
+# register a device.
+reqsave POST /api/passkeys/register/start "$JA" "$ROOT/pk-kindreg.json" '{}' >/dev/null
+"$NODE" "$WA" assert "$ROOT/pk-kindreg.json" "$ROOT/pk-state.json" \
+  "$ROOT/pk-kindcred.json" --origin=$PKB --rp=127.0.0.1
+BODY=$(printf '{"credential":%s}' "$(cat "$ROOT/pk-kindcred.json")")
+RC=$(reqsave POST /api/passkeys/login/finish "$PLOGIN" "$ROOT/pk-kindfin.json" "$BODY")
+[ "$RC" = "401" ] && ok "a registration challenge cannot redeem as a login" \
+  || bad "kind guard register->login: $RC"
+
+reqsave POST /api/passkeys/login/start "$PLOGIN" "$ROOT/pk-kindlog.json" \
+  '{"username":"alice"}' >/dev/null
+"$NODE" "$WA" register "$ROOT/pk-kindlog.json" "$ROOT/pk-kindstate.json" \
+  "$ROOT/pk-kindcred2.json" --origin=$PKB --rp=127.0.0.1
+BODY=$(printf '{"label":"Kind","credential":%s}' "$(cat "$ROOT/pk-kindcred2.json")")
+RC=$(reqsave POST /api/passkeys/register/finish "$JA" "$ROOT/pk-kindfin2.json" "$BODY")
+[ "$RC" = "401" ] && ok "a login challenge cannot redeem as a registration" \
+  || bad "kind guard login->register: $RC"
+
+# A real credential answering a ceremony opened for a name nobody has: the
+# ceremony carries no account, so the credential never gets the chance to
+# switch users silently.
+reqsave POST /api/passkeys/login/start "$PLOGIN" "$ROOT/pk-lghost2.json" \
+  '{"username":"nobody-here"}' >/dev/null
+"$NODE" "$WA" assert "$ROOT/pk-lghost2.json" "$ROOT/pk-state.json" \
+  "$ROOT/pk-lgcred.json" --origin=$PKB
+BODY=$(printf '{"credential":%s}' "$(cat "$ROOT/pk-lgcred.json")")
+RC=$(reqsave POST /api/passkeys/login/finish "$PLOGIN" "$ROOT/pk-lgfin.json" "$BODY")
+[ "$RC" = "401" ] && ok "a real credential cannot answer an unknown account's ceremony" \
+  || bad "ghost ceremony: $RC"
+
+# -- device management --------------------------------------------------
+PKID=$(jget "$(cat "$ROOT/pk-rfin.json")" id)
+RC=$(reqsave PATCH "/api/me/passkeys/$PKID" "$JA" "$ROOT/pk-ren.json" \
+  '{"label":"Key on the ring"}')
+[ "$RC" = "200" ] && grep -q 'Key on the ring' "$ROOT/pk-ren.json" \
+  && ok "a passkey can be renamed" || bad "rename: $RC"
+
+RC=$(reqsave PATCH "/api/me/passkeys/$PKID" "$JA" "$ROOT/pk-ren2.json" '{"label":"   "}')
+[ "$RC" = "400" ] && ok "a blank label is refused" || bad "blank label: $RC"
+
+RC=$(reqsave DELETE "/api/me/passkeys/$PKID" "$JA" "$ROOT/pk-del.json")
+[ "$RC" = "200" ] && ok "a passkey can be removed" || bad "delete: $RC"
+
+RC=$(reqsave GET /api/me/passkeys "$JA" "$ROOT/pk-list2.json")
+NPK=$(perl -MJSON::PP -0777 -e 'print scalar @{decode_json(<STDIN>)}' <"$ROOT/pk-list2.json")
+[ "$RC" = "200" ] && [ "$NPK" = "0" ] && ok "the list is empty after the removal" \
+  || bad "list after delete: $RC/$NPK"
+
+RC=$(reqsave DELETE "/api/me/passkeys/$PKID" "$JA" "$ROOT/pk-del2.json")
+[ "$RC" = "404" ] && ok "removing it twice is a 404" || bad "double delete: $RC"
+
+# -- credential verified, account deactivated -> 403 --------------------
+# Same ordering as the password flow: the credential checks out first, only
+# then does the account state decide - an inactive account is not told
+# anything a stranger could not learn from a wrong password.
+PJ3=$ROOT/pk-inactive.jar
+reqsave POST /api/register "$PJ3" "$ROOT/pk-ureg.json" \
+  '{"username":"pkuser","password":"correct-horse"}' >/dev/null
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET is_active=1 WHERE username='pkuser';"
+reqsave POST /api/login "$PJ3" "$ROOT/pk-ulogin.json" \
+  '{"username":"pkuser","password":"correct-horse"}' >/dev/null
+reqsave POST /api/passkeys/register/start "$PJ3" "$ROOT/pk-istart.json" '{}' >/dev/null
+"$NODE" "$WA" register "$ROOT/pk-istart.json" "$ROOT/pk-istate.json" \
+  "$ROOT/pk-icred.json" --origin=$PKB
+BODY=$(printf '{"label":"Phone","credential":%s}' "$(cat "$ROOT/pk-icred.json")")
+reqsave POST /api/passkeys/register/finish "$PJ3" "$ROOT/pk-ifin.json" "$BODY" >/dev/null
+reqsave POST /api/passkeys/login/start "$PJ3" "$ROOT/pk-ilstart.json" \
+  '{"username":"pkuser"}' >/dev/null
+"$NODE" "$WA" assert "$ROOT/pk-ilstart.json" "$ROOT/pk-istate.json" \
+  "$ROOT/pk-ilcred.json" --origin=$PKB
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET is_active=0 WHERE username='pkuser';"
+BODY=$(printf '{"credential":%s}' "$(cat "$ROOT/pk-ilcred.json")")
+RC=$(reqsave POST /api/passkeys/login/finish "$PJ3" "$ROOT/pk-ilfin.json" "$BODY")
+[ "$RC" = "403" ] && grep -q 'not activated' "$ROOT/pk-ilfin.json" \
+  && ok "a verified passkey cannot sign in a deactivated account (403)" \
+  || bad "inactive passkey login: $RC $(head -c 200 "$ROOT/pk-ilfin.json")"
+
+# -- passkey UI ---------------------------------------------------------
+# The pages are embedded at build time, so greps here see what the running
+# instance serves. Both pages load webauthn-client.js - one marshalling
+# implementation for the login tab and the settings list.
+note "passkey UI: login tab and the settings device list"
+LHTML=$REPO/frontend/login.html
+LJS=$REPO/frontend/assets/login.js
+IDX=$REPO/frontend/index.html
+UI=$REPO/frontend/assets/app.js
+
+grep -q 'id="tab-passkey"' "$LHTML" && grep -q 'id="passkey-form"' "$LHTML" \
+  && ok "the login page carries a passkey tab with its own form" \
+  || bad "login.html has no passkey tab/form"
+grep -q 'src="/assets/webauthn-client.js"' "$LHTML" \
+  && ok "the login page loads the WebAuthn marshalling helper" \
+  || bad "login.html does not load webauthn-client.js"
+grep -q 'navigator\.credentials\.get' "$LJS" \
+  && ok "login.js drives the browser's credential prompt" \
+  || bad "login.js never calls navigator.credentials.get"
+grep -q 'form.style.display = isPasskey' "$LJS" \
+  && ok "the passkey tab hides the password form and its required field" \
+  || bad "the password form is not hidden on the passkey tab"
+grep -q 'id="passkey-list"' "$IDX" && grep -q 'id="passkey-add-btn"' "$IDX" \
+  && ok "the settings dialog has the device section" \
+  || bad "index.html has no passkey section"
+grep -q 'src="/assets/webauthn-client.js"' "$IDX" \
+  && ok "the app loads the WebAuthn marshalling helper" \
+  || bad "index.html does not load webauthn-client.js"
+grep -q 'navigator\.credentials\.create' "$UI" \
+  && ok "app.js registers devices through the browser" \
+  || bad "app.js never calls navigator.credentials.create"
+grep -q 'loadPasskeys();' "$UI" \
+  && ok "the device list refreshes when the dialog opens" \
+  || bad "opening settings does not refresh the device list"
+grep -q 'FXCLOUD_ORIGIN' "$REPO/src/config.rs" \
+  && ok "the deployment origin is configurable (FXCLOUD_ORIGIN)" \
+  || bad "no FXCLOUD_ORIGIN knob in config.rs"
 
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true

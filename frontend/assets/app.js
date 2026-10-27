@@ -2094,6 +2094,7 @@
     markThemeChoice(meData.theme || "light");
     setSettingsStatus("");
     settingsModal.style.display = "flex";
+    loadPasskeys();
   }
 
   function closeSettings() {
@@ -2172,6 +2173,178 @@
       document.getElementById("set-pass-current").value = "";
       document.getElementById("set-pass-new").value = "";
       setSettingsStatus("Password changed.");
+    } catch (e) {
+      setSettingsStatus(e.message, true);
+    }
+  }
+
+  // ---------- passkeys (WebAuthn) ----------
+  // The settings dialog manages the devices; the ceremony itself runs in
+  // the browser via navigator.credentials, marshalled by
+  // webauthn-client.js (shared with the login page). The server stores
+  // only each device's public half, so removing one cannot lock anyone out
+  // - the password keeps working, and the storage passphrase of
+  // ENCRYPTION.md 5.7 is a separate matter entirely.
+
+  async function loadPasskeys() {
+    try {
+      const res = await api("/api/me/passkeys");
+      renderPasskeys(await res.json());
+    } catch (e) {
+      // 401 already bounced to /login inside api(); anything else belongs
+      // in the dialog's status line.
+      setSettingsStatus(e.message, true);
+    }
+  }
+
+  function passkeySubtitle(pk) {
+    const parts = ["added " + new Date(pk.created_at).toLocaleDateString()];
+    if (pk.last_used_at) {
+      parts.push("last used " + new Date(pk.last_used_at).toLocaleDateString());
+    }
+    if (pk.transports && pk.transports.length) {
+      parts.push(pk.transports.join(", "));
+    }
+    return parts.join(" - ");
+  }
+
+  function renderPasskeys(rows) {
+    const list = document.getElementById("passkey-list");
+    list.textContent = "";
+    if (!rows.length) {
+      const empty = document.createElement("p");
+      empty.className = "passkey-empty";
+      empty.textContent = "No passkeys registered yet.";
+      list.appendChild(empty);
+      return;
+    }
+    for (const pk of rows) {
+      const row = document.createElement("div");
+      row.className = "passkey-row";
+
+      const meta = document.createElement("div");
+      meta.className = "passkey-meta";
+      const label = document.createElement("span");
+      label.className = "passkey-label";
+      label.textContent = pk.label;
+      const sub = document.createElement("span");
+      sub.className = "passkey-sub";
+      sub.textContent = passkeySubtitle(pk);
+      meta.appendChild(label);
+      meta.appendChild(sub);
+
+      const actions = document.createElement("div");
+      actions.className = "passkey-actions";
+      const rename = document.createElement("button");
+      rename.type = "button";
+      rename.textContent = "Rename";
+      rename.addEventListener("click", () => renamePasskey(pk));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "danger";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => removePasskey(pk));
+      actions.appendChild(rename);
+      actions.appendChild(remove);
+
+      row.appendChild(meta);
+      row.appendChild(actions);
+      list.appendChild(row);
+    }
+  }
+
+  // Rename via prompt(): the field is edited rarely and briefly, and the
+  // row it changes is right there on screen.
+  async function renamePasskey(pk) {
+    const next = prompt("New name for this passkey:", pk.label);
+    if (next === null) return;
+    const trimmed = next.trim();
+    if (!trimmed) {
+      setSettingsStatus("Passkey name cannot be empty.", true);
+      return;
+    }
+    try {
+      await api("/api/me/passkeys/" + pk.id, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: trimmed }),
+      });
+      setSettingsStatus("Passkey renamed.");
+      await loadPasskeys();
+    } catch (e) {
+      setSettingsStatus(e.message, true);
+    }
+  }
+
+  async function removePasskey(pk) {
+    const sure = confirm(
+      'Remove the passkey "' + pk.label + '"? This device can no longer sign in with it.'
+    );
+    if (!sure) return;
+    try {
+      await api("/api/me/passkeys/" + pk.id, { method: "DELETE" });
+      setSettingsStatus("Passkey removed.");
+      await loadPasskeys();
+    } catch (e) {
+      setSettingsStatus(e.message, true);
+    }
+  }
+
+  // Registration runs entirely in the browser: the server only ever sees
+  // the attested public half. The label is asked up front so the list has
+  // a name the moment the device answers.
+  async function addPasskey() {
+    if (
+      !window.isSecureContext ||
+      !navigator.credentials ||
+      !navigator.credentials.create
+    ) {
+      setSettingsStatus(
+        "Passkeys need HTTPS (or localhost) - this browser blocks them here.",
+        true
+      );
+      return;
+    }
+    const label = prompt(
+      'Name for the new passkey (for example: "phone", "security key"):',
+      "Passkey"
+    );
+    if (label === null) return;
+    try {
+      const startRes = await api("/api/passkeys/register/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const options = await startRes.json();
+      let cred;
+      try {
+        cred = await navigator.credentials.create({
+          publicKey: FxWebAuthn.createOptions(options),
+        });
+      } catch (err) {
+        setSettingsStatus(
+          err.name === "NotAllowedError"
+            ? "Passkey creation was cancelled or refused by the device."
+            : err.message,
+          true
+        );
+        return;
+      }
+      if (!cred) {
+        setSettingsStatus("Passkey creation was cancelled.", true);
+        return;
+      }
+      await api("/api/passkeys/register/finish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          label: label.trim() || "Passkey",
+          credential: FxWebAuthn.credentialToJson(cred, "register"),
+        }),
+      });
+      setSettingsStatus("Passkey added.");
+      await loadPasskeys();
     } catch (e) {
       setSettingsStatus(e.message, true);
     }
@@ -2434,6 +2607,7 @@
       document.getElementById("set-pass-new").value
     );
   });
+  document.getElementById("passkey-add-btn").addEventListener("click", addPasskey);
   // User administration (only rendered for admins).
   document.getElementById("user-admin-btn").addEventListener("click", openAdmin);
   document.getElementById("admin-close-btn").addEventListener("click", closeAdmin);

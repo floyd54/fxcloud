@@ -486,6 +486,12 @@ and one round trip per remaining grantee (DECISION 4).
   opening one of the account's encrypted files asks for the passphrase
   again (DECISION 7 discusses the UX tradeoff, DECISION 11 the writing
   rule that follows from it).
+- **Passkeys are not part of this.** A WebAuthn sign-in (API.md,
+  *Passkeys*) carries no password at all, so there is nothing to park for
+  the redirect: the handoff above stays password-only, and the pane asks
+  for the storage passphrase when a row needs it - the fallback it always
+  was. The passkey authenticates the *session*; its private half never
+  leaves the device and it unlocks nothing in this hierarchy.
 - **Passphrase change:** derive new KEK, rewrap ARK, upload. O(1), no file
   re-encryption, no share re-wrapping.
 - **Recovery:** if the passphrase is lost, the data is unrecoverable by
@@ -794,7 +800,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **378 checks**. The additions cover the key
+- Testing: the suite now runs **421 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
   `GET /api/keys/<username>` does and does not expose), the encrypted

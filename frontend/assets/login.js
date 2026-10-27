@@ -3,23 +3,32 @@
 
   const tabLogin = document.getElementById("tab-login");
   const tabRegister = document.getElementById("tab-register");
+  const tabPasskey = document.getElementById("tab-passkey");
   const form = document.getElementById("auth-form");
   const errorBox = document.getElementById("error");
   const submitBtn = document.getElementById("submit-btn");
   const displayField = document.getElementById("display-field");
   const displayInput = document.getElementById("display_name");
+  const passkeyForm = document.getElementById("passkey-form");
+  const passkeyBtn = document.getElementById("passkey-btn");
 
-  let mode = "login"; // or "register"
+  let mode = "login"; // or "register" or "passkey"
 
   function setMode(next) {
     mode = next;
     const isRegister = mode === "register";
-    tabLogin.classList.toggle("active", !isRegister);
+    const isPasskey = mode === "passkey";
+    tabLogin.classList.toggle("active", mode === "login");
     tabRegister.classList.toggle("active", isRegister);
+    tabPasskey.classList.toggle("active", isPasskey);
     displayField.style.display = isRegister ? "block" : "none";
     displayInput.required = false;
     submitBtn.textContent = isRegister ? "Create account" : "Sign in";
     form.password.autocomplete = isRegister ? "new-password" : "current-password";
+    // The passkey tab is its own form: the password field's `required`
+    // must not block a sign-in that never types one.
+    form.style.display = isPasskey ? "none" : "";
+    passkeyForm.style.display = isPasskey ? "" : "none";
     hideError();
   }
 
@@ -83,6 +92,7 @@
 
   tabLogin.addEventListener("click", () => setMode("login"));
   tabRegister.addEventListener("click", () => setMode("register"));
+  tabPasskey.addEventListener("click", () => setMode("passkey"));
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -142,6 +152,102 @@
       showError("Network error. Is the server running?");
     } finally {
       setLoading(false);
+    }
+  });
+
+  function setPasskeyLoading(loading) {
+    passkeyBtn.disabled = loading;
+    passkeyBtn.innerHTML = loading
+      ? '<span class="spinner"></span>Waiting for your device...'
+      : "Sign in with passkey";
+  }
+
+  /**
+   * Username-first passkey sign-in: challenge for the name, the browser's
+   * credential prompt, then the assertion back to the server. The start
+   * response is identical for unknown names and accounts without passkeys,
+   * and the failure the user sees is too - this page must not turn into an
+   * account-existence oracle either.
+   */
+  passkeyForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    hideError();
+
+    if (
+      !window.isSecureContext ||
+      !navigator.credentials ||
+      !navigator.credentials.get
+    ) {
+      showError("This browser cannot use passkeys here - open the site over HTTPS (or on localhost).");
+      return;
+    }
+    const username = passkeyForm.username.value.trim();
+    if (!username) {
+      showError("Enter your username.");
+      return;
+    }
+
+    setPasskeyLoading(true);
+    try {
+      const startRes = await fetch("/api/passkeys/login/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username }),
+      });
+      if (!startRes.ok) {
+        let message = "Could not start the passkey sign-in.";
+        try {
+          const body = await startRes.json();
+          if (body.error) message = body.error;
+        } catch (_) {}
+        showError(message);
+        return;
+      }
+      const options = await startRes.json();
+
+      let cred = null;
+      try {
+        cred = await navigator.credentials.get({
+          publicKey: FxWebAuthn.assertionOptions(options),
+        });
+      } catch (err) {
+        showError(
+          err.name === "NotAllowedError"
+            ? "No passkey was used - the prompt was cancelled, timed out, or this account has none on this device."
+            : "Passkey sign-in failed: " + err.message
+        );
+        return;
+      }
+      if (!cred) {
+        showError("No passkey was used.");
+        return;
+      }
+
+      const finishRes = await fetch("/api/passkeys/login/finish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential: FxWebAuthn.credentialToJson(cred, "assert") }),
+      });
+      if (!finishRes.ok) {
+        let message = "Passkey sign-in failed.";
+        try {
+          const body = await finishRes.json();
+          if (body.error) message = body.error;
+        } catch (_) {}
+        if (finishRes.status === 401) message = "Unknown user or no matching passkey.";
+        showError(message);
+        return;
+      }
+
+      // Signed in - the session cookie is set. There is no typed password
+      // to carry across the redirect, so the encryption pane simply asks
+      // for the storage passphrase when it needs one (it always was the
+      // fallback, ENCRYPTION.md DECISION 7).
+      window.location.href = "/";
+    } catch (_) {
+      showError("Network error. Is the server running?");
+    } finally {
+      setPasskeyLoading(false);
     }
   });
 })();

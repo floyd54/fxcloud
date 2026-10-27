@@ -22,6 +22,38 @@ pub struct ZipJob {
     pub expires_at: DateTime<Utc>,
 }
 
+/// How long a WebAuthn challenge stays redeemable. Matches the `timeout`
+/// sent with the ceremony options.
+const CEREMONY_TTL_MINUTES: i64 = 5;
+
+/// What a pending WebAuthn ceremony may be redeemed for. The kind is
+/// re-checked at redemption, so a registration challenge cannot open a
+/// session and a login challenge cannot register a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CeremonyKind {
+    Register,
+    Login,
+}
+
+/// One pending WebAuthn ceremony: the issued challenge plus what it was
+/// issued for.
+///
+/// Keyed by challenge and single-use - redemption removes the entry, and
+/// expired entries are dropped on the next insert, exactly like
+/// [`ZipJob`]. Kept in memory only: a restart clearing half-finished
+/// ceremonies just means the user opens the dialog again.
+pub struct Ceremony {
+    /// Copy of the map key so verification can compare against the stored
+    /// challenge without threading the key through separately.
+    pub challenge: String,
+    /// Register: the session's user. Login: the targeted account - `None`
+    /// when no account of that name exists (the response must look
+    /// identical either way).
+    pub user_id: Option<i64>,
+    pub kind: CeremonyKind,
+    pub expires_at: DateTime<Utc>,
+}
+
 /// Shared application state available to every handler.
 pub struct AppState {
     pub db: Db,
@@ -29,6 +61,8 @@ pub struct AppState {
     pub config: Config,
     /// Short-lived, single-use ZIP download tokens (see [`ZipJob`]).
     zip_jobs: Mutex<HashMap<String, ZipJob>>,
+    /// Pending WebAuthn challenges (see [`Ceremony`]), keyed by challenge.
+    ceremonies: Mutex<HashMap<String, Ceremony>>,
 }
 
 impl AppState {
@@ -39,6 +73,7 @@ impl AppState {
             files,
             config,
             zip_jobs: Mutex::new(HashMap::new()),
+            ceremonies: Mutex::new(HashMap::new()),
         }
     }
 
@@ -73,6 +108,38 @@ impl AppState {
         let mut jobs = self.zip_jobs.lock().unwrap_or_else(|p| p.into_inner());
         let job = jobs.remove(token)?;
         (job.user_id == user_id && job.expires_at > Utc::now()).then_some(job)
+    }
+
+    /// Issue a fresh WebAuthn challenge bound to `kind` and `user_id`.
+    ///
+    /// Housekeeping mirrors [`Self::new_zip_job`]: expired ceremonies are
+    /// dropped on every call, so the map only ever holds the last five
+    /// minutes' worth.
+    pub fn new_ceremony(&self, kind: CeremonyKind, user_id: Option<i64>) -> String {
+        let mut map = self.ceremonies.lock().unwrap_or_else(|p| p.into_inner());
+        let now = Utc::now();
+        map.retain(|_, c| c.expires_at > now);
+
+        let challenge = crate::webauthn::new_challenge();
+        map.insert(
+            challenge.clone(),
+            Ceremony {
+                challenge: challenge.clone(),
+                user_id,
+                kind,
+                expires_at: now + Duration::minutes(CEREMONY_TTL_MINUTES),
+            },
+        );
+        challenge
+    }
+
+    /// Redeem a challenge for `kind`: always removed, returned only when it
+    /// exists, is of that kind and has not expired - single-use even for a
+    /// wrong kind or an expired attempt, like [`Self::take_zip_job`].
+    pub fn take_ceremony(&self, challenge: &str, kind: CeremonyKind) -> Option<Ceremony> {
+        let mut map = self.ceremonies.lock().unwrap_or_else(|p| p.into_inner());
+        let found = map.remove(challenge)?;
+        (found.kind == kind && found.expires_at > Utc::now()).then_some(found)
     }
 }
 

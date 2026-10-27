@@ -20,17 +20,20 @@ src/
 |   |-- session.rs   # session rows + token generation
 |   |-- file.rs      # file-tree metadata: recursive ops, breadcrumbs,
 |   |                #   subtree sizes, quota gates
+|   |-- passkey.rs   # webauthn_credentials rows (public keys, counters)
 |   \-- share.rs     # share records: covering shares, mount names
 |-- sharing.rs       # permission bitmask (PERM_*) and helpers
 |-- files/           # FileService: DB metadata + on-disk blob storage
 |-- webdav.rs        # WebDAV protocol layer mounted at /dav/
+|-- webauthn.rs      # WebAuthn verification: clientData, authData, COSE, ES256
 \-- web/             # axum routing layer
     |-- mod.rs       # router assembly
-    |-- state.rs     # shared AppState (db, config)
+    |-- state.rs     # shared AppState (db, config), ZIP + ceremony state
     |-- ui.rs        # embedded pages + version slot injection
     \-- routes/
         |-- auth.rs  # /api/register, /login, /logout, /me, /users
         |-- files.rs # /api/files/* (listing, upload, preview, editor, zip)
+        |-- passkeys.rs # /api/passkeys/* ceremonies + /api/me/passkeys
         \-- shares.rs# /api/shares/*
 frontend/            # static UI (plain JS, no framework), embedded at build time
 migrations/          # SQL schema, idempotent, applied at startup

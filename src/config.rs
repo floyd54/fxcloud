@@ -29,6 +29,15 @@ pub struct Config {
     /// Interval of the trash purge sweep in seconds (default: hourly). Kept
     /// configurable so tests can age entries out without waiting.
     pub trash_sweep_secs: u64,
+    /// Public origin of this instance for WebAuthn (passkeys), e.g.
+    /// `https://cloud.example.com`.
+    ///
+    /// WebAuthn binds credentials to an exact origin and to the origin's
+    /// host without port (the rpId), so behind a reverse proxy that
+    /// rewrites `Host` this is the one place to say what browsers actually
+    /// see. Unset (the default), both are derived per request from
+    /// `X-Forwarded-Proto` / `FXCLOUD_SECURE_COOKIE` and `Host`.
+    pub webauthn_origin: Option<String>,
 }
 
 impl Config {
@@ -62,6 +71,10 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3600);
+        let webauthn_origin = std::env::var("FXCLOUD_ORIGIN")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
 
         let cfg = Self {
             bind,
@@ -72,6 +85,7 @@ impl Config {
             max_upload_bytes,
             trash_days,
             trash_sweep_secs,
+            webauthn_origin,
         };
         cfg.ensure_dirs().context("creating data directories")?;
         Ok(cfg)

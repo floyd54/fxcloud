@@ -6,6 +6,7 @@ mod files;
 mod models;
 mod sharing;
 mod web;
+mod webauthn;
 mod webdav;
 
 use std::sync::Arc;

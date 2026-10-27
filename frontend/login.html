@@ -14,6 +14,7 @@
 
       <div class="auth-tabs">
         <button id="tab-login" class="active" type="button">Sign in</button>
+        <button id="tab-passkey" type="button">Passkey</button>
         <button id="tab-register" type="button">Create account</button>
       </div>
 
@@ -37,9 +38,23 @@
 
         <button class="btn" id="submit-btn" type="submit">Sign in</button>
       </form>
+
+      <form id="passkey-form" style="display:none" autocomplete="on">
+        <div class="field">
+          <label for="passkey-username">Username</label>
+          <input id="passkey-username" name="username" type="text" required minlength="3"
+                 autocomplete="username" />
+        </div>
+        <p class="auth-hint">
+          Sign in with the passkey registered for this account - the device
+          asks for a PIN or biometrics instead of a password.
+        </p>
+        <button class="btn" id="passkey-btn" type="submit">Sign in with passkey</button>
+      </form>
     </div>
   </div>
 
+  <script src="/assets/webauthn-client.js"></script>
   <script src="/assets/login.js"></script>
 </body>
 </html>

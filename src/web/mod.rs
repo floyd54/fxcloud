@@ -92,6 +92,34 @@ pub fn build_router(state: SharedState) -> Router {
             post(routes::admin::reset_password),
         );
 
+    // Passkeys (WebAuthn): ceremony endpoints for adding a device and for
+    // signing in, plus the device list the settings dialog manages. The
+    // register pair and `/me/passkeys` take the `AuthUser` extractor; the
+    // login pair is deliberately public, like `/login`.
+    let api = api
+        .route(
+            "/passkeys/register/start",
+            post(routes::passkeys::register_start),
+        )
+        .route(
+            "/passkeys/register/finish",
+            post(routes::passkeys::register_finish),
+        )
+        .route("/passkeys/login/start", post(routes::passkeys::login_start))
+        .route(
+            "/passkeys/login/finish",
+            post(routes::passkeys::login_finish),
+        )
+        .route("/me/passkeys", get(routes::passkeys::list))
+        .route(
+            "/me/passkeys/{id}",
+            axum::routing::patch(routes::passkeys::rename),
+        )
+        .route(
+            "/me/passkeys/{id}",
+            axum::routing::delete(routes::passkeys::remove),
+        );
+
     Router::new()
         // UI pages & embedded assets
         .route("/", get(ui::index))

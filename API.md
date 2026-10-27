@@ -2,7 +2,8 @@
 
 All `/api/*` routes require the session cookie set by `POST /api/login`
 (HttpOnly). Missing or invalid session -> `401`; authenticated but not
-allowed -> `403`. Only `register` and `login` are public.
+allowed -> `403`. Only `register`, `login` and the two `passkeys/login/*`
+ceremony endpoints are public.
 
 ## Endpoints
 
@@ -14,6 +15,13 @@ allowed -> `403`. Only `register` and `login` are public.
 | GET    | `/api/me`               | -                                  | Current user + `quota_bytes` / `used_bytes` / `theme` |
 | PUT    | `/api/me`               | `{display_name?}` and/or `{theme}` | Save the settings from the user menu; theme must be `light` or `dark`, display name non-empty (max 100 chars); returns the updated user (400 when the body changes nothing) |
 | PUT    | `/api/me/password`      | `{current_password, new_password}` | Change the signed-in user's password (401 when the current one is wrong, 400 when the new one is shorter than 8 characters); the session stays open |
+| POST   | `/api/passkeys/register/start` | `{}`                   | Begin adding a device: WebAuthn creation options bound to this session, `excludeCredentials` from the account's existing passkeys; `400` when the request's `Origin` disagrees with the deployment origin |
+| POST   | `/api/passkeys/register/finish` | `{label?, credential}` | Verify the attestation and store the device -> `201` with the row (`label`: trimmed, 1-100 chars, default `Passkey`; `409` when the authenticator is already registered; `401` unknown, replayed or foreign ceremony) |
+| POST   | `/api/passkeys/login/start` | `{username}`              | **Public.** Sign-in challenge; byte-for-byte identical answer for unknown names and accounts without passkeys (one random dummy `allowCredentials` entry - no account oracle) |
+| POST   | `/api/passkeys/login/finish` | `{credential}`            | **Public.** Verify the assertion -> session cookie + user. `401` unknown/replayed/wrong credential, `400` origin/rpId/counter, `403` inactive (only after the credential checked out) |
+| GET    | `/api/me/passkeys`      | -                                  | The signed-in account's devices: `id`, `label`, `created_at`, `last_used_at`, `transports` |
+| PATCH  | `/api/me/passkeys/:id`  | `{label}`                          | Rename one device (`400` blank or longer than 100 chars, `404` unknown or foreign id) |
+| DELETE | `/api/me/passkeys/:id`  | -                                  | Remove one device (`404` unknown or foreign id); removing the last one is allowed - the password keeps working |
 | GET    | `/api/users`            | -                                  | Accounts to share with (everyone but you: `username`, `display_name`, `is_active`) |
 | GET    | `/api/admin/users`      | -                                  | **Admin only (403 otherwise).** Every account for the administration table: `id`, `username`, `display_name`, `is_active`, `is_admin`, `quota_bytes`, `used_bytes`, `created_at` |
 | PUT    | `/api/admin/users/:id`  | `{is_active?}`, `{is_admin?}`, `{quota_bytes?}` | **Admin only.** Partial update of one account; only the fields present are written. Refuses self-deactivation (400), deactivating/demoting the last active admin (400) and a negative quota (400); returns the updated row |
@@ -66,6 +74,58 @@ administrator flips the flag in the **User administration** dialog (or with
 
 Sharing still works both ways for inactive accounts; shares become visible
 to the grantee once their account is activated.
+
+## Passkeys
+
+Passkeys (WebAuthn/FIDO2) are a second way in, not a second secret: the
+account's password, its sessions, shares and the encryption hierarchy of
+ENCRYPTION.md are untouched by them. The private half never leaves the
+authenticator; the server stores the attested public key, the signature
+counter and a label (migration `012_webauthn_credentials`).
+
+Ceremony rules:
+
+- **Username-first.** `login/start` takes the name and answers with an
+  `allowCredentials` list; discoverable-credential-only flows are not part
+  of the endpoints. Unknown name, account without passkeys and real account
+  get byte-for-byte identical responses - the first two a single random,
+  unusable entry instead of an empty list.
+- **Challenges** are 32 random bytes held in memory for five minutes and
+  single-use: redemption removes the entry (a replay -> `401`), and the
+  ceremony kind is re-checked, so a registration challenge cannot open a
+  session and a login challenge cannot register a device. A restart clears
+  pending ceremonies; the user simply starts the dialog again.
+- **Origin and rpId** come from `FXCLOUD_ORIGIN` when set, otherwise from
+  `X-Forwarded-Proto` (or `FXCLOUD_SECURE_COOKIE`) plus `Host`. The browser
+  sends `Origin` on the ceremony POSTs and it must equal that derived
+  value - a mismatch is `400` with a pointer at `FXCLOUD_ORIGIN`, before a
+  challenge is spent. The rpId is the origin's host without port, and the
+  rpId hash inside `authenticatorData` must match it (a credential minted
+  for another domain -> `400`).
+- **Algorithms:** ES256 on P-256 only (`pubKeyCredParams` offers `-7`, and
+  the stored key must carry it). Attestation is requested as `none`;
+  `packed` without a certificate chain is accepted (the fresh credential
+  signs itself), a chain (`x5c`) is refused.
+- **User verification is required** (`userVerification: "required"`, UP
+  and UV flags checked): a PIN or biometric gesture, not just a touch.
+- **Counter (clone detection):** a nonzero counter must strictly advance
+  (`stored > 0 && new > 0 && new <= stored` -> `400`); authenticators that
+  never count (many platform passkeys stay at 0) are exempt.
+- **Account state is checked last**, exactly like the password flow: a
+  valid passkey on a deactivated account gets `403`, and only after the
+  credential itself verified.
+
+Device management (`/api/me/passkeys`) renames and removes rows scoped to
+the owner: a foreign or unknown id is `404`, never a hint that the id
+exists somewhere else. Removing the last passkey is allowed on purpose -
+the password keeps working, and cutting off a lost device must never be
+blocked by a policy question.
+
+Passkeys need a **secure context**: browsers expose
+`navigator.credentials` only over HTTPS or on `localhost`. A passkey
+sign-in carries no password, so there is nothing for the sign-in handoff
+of ENCRYPTION.md 5.7 to park - the encryption pane asks for the storage
+passphrase when it needs one, as it always did.
 
 ## Permissions
 

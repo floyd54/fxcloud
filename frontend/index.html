@@ -160,6 +160,17 @@
         </form>
       </section>
 
+      <section class="settings-section">
+        <h4>Passkeys</h4>
+        <p class="settings-hint">
+          A passkey signs you in with a PIN or biometrics instead of a
+          password. The private half stays on your device; the server only
+          stores the public key, so a lost device can be removed here.
+        </p>
+        <div id="passkey-list" class="passkey-list"></div>
+        <button class="btn secondary" id="passkey-add-btn" type="button">Add passkey</button>
+      </section>
+
       <p class="settings-status" id="set-status"></p>
 
       <div class="modal-footer">
@@ -383,6 +394,7 @@
   <script src="/assets/hashwasm-argon2.js"></script>
   <script src="/assets/fxcrypto.js"></script>
   <script src="/assets/fxenc.js"></script>
+  <script src="/assets/webauthn-client.js"></script>
   <script src="/assets/app.js"></script>
 </body>
 </html>

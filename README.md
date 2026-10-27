@@ -13,6 +13,13 @@ with sharing, quotas and WebDAV.
   sessions. The first account on a fresh instance becomes your login;
   later accounts are activated with one SQL statement (see
   [Managing users & quotas](#managing-users--quotas)).
+- **Passkeys (WebAuthn)** - sign in with a PIN or biometric instead of a
+  password (username-first FIDO2/WebAuthn, ES256, user verification
+  required); devices are listed, renamed and removed in the user settings.
+  Browsers only expose passkeys in a secure context, so this wants HTTPS
+  (or localhost), and behind a reverse proxy that rewrites `Host` set
+  `FXCLOUD_ORIGIN` to the URL users open the site under. Details:
+  [API.md](API.md#passkeys).
 - **User settings** - the name in the top bar opens a menu: account facts
   (username, member since, storage used), a display name you can change
   yourself, a light/dark theme and a password change that asks for the
@@ -91,6 +98,7 @@ Everything is configured via environment variables:
 | `FXCLOUD_MAX_UPLOAD_MB` | `1024`          | Max request body for uploads, in MiB |
 | `FXCLOUD_TRASH_DAYS`    | `30`            | Days a trashed entry is kept before the purge removes it |
 | `FXCLOUD_TRASH_SWEEP_SECS` | `3600`       | Interval of the trash purge sweep, in seconds |
+| `FXCLOUD_ORIGIN`          | (derived)    | Public origin for WebAuthn passkeys (e.g. `https://cloud.example.com`); defaults to the request's scheme and `Host` |
 | `RUST_LOG`              | `fxcloud=info`  | Log filter (tracing)                 |
 
 ```bash
@@ -208,7 +216,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 378 checks against a throwaway instance
+./tests/suite.sh    # integration: 421 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

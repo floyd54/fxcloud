@@ -465,3 +465,94 @@ impl BatchOutcome {
         self.failed.push(BatchFailure { id, name, error });
     }
 }
+
+// ---------------------------------------------------------------------------
+// Passkeys (WebAuthn)
+// ---------------------------------------------------------------------------
+
+/// One registered passkey of the account (`GET /api/me/passkeys`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasskeyInfo {
+    pub id: i64,
+    /// Device name shown in the settings list; renameable.
+    pub label: String,
+    pub created_at: DateTime<Utc>,
+    /// Last successful sign-in with this device; `null` until then.
+    #[serde(default)]
+    pub last_used_at: Option<DateTime<Utc>>,
+    /// Transport hints the browser reported at registration (usb, nfc, ...).
+    #[serde(default)]
+    pub transports: Vec<String>,
+}
+
+/// Payload of `POST /api/passkeys/login/start`.
+#[derive(Debug, Deserialize)]
+pub struct PasskeyLoginStartRequest {
+    pub username: String,
+}
+
+/// Credential produced by `navigator.credentials.create()` during
+/// registration, as the browser's `toJSON()` serializes it: base64url
+/// strings in place of the raw byte fields.
+#[derive(Debug, Deserialize)]
+pub struct RegisterCredentialJson {
+    /// Informational here: the server takes the authoritative credential id
+    /// from the attested authenticator data and checks it against this.
+    pub id: String,
+    pub response: AttestationResponseJson,
+}
+
+/// The `AuthenticatorAttestationResponse` object.
+#[derive(Debug, Deserialize)]
+pub struct AttestationResponseJson {
+    #[serde(rename = "clientDataJSON")]
+    pub client_data_json: String,
+    #[serde(rename = "attestationObject")]
+    pub attestation_object: String,
+    /// Optional transport hints; some authenticators omit them.
+    #[serde(rename = "transports", default)]
+    pub transports: Option<Vec<String>>,
+}
+
+/// Payload of `POST /api/passkeys/register/finish`.
+#[derive(Debug, Deserialize)]
+pub struct PasskeyRegisterFinishRequest {
+    /// Device label for the settings list; defaults server-side.
+    #[serde(default)]
+    pub label: Option<String>,
+    pub credential: RegisterCredentialJson,
+}
+
+/// Credential produced by `navigator.credentials.get()` during sign-in.
+#[derive(Debug, Deserialize)]
+pub struct LoginCredentialJson {
+    /// Base64url credential id - the lookup key of the whole assertion.
+    pub id: String,
+    pub response: AssertionResponseJson,
+}
+
+/// The `AuthenticatorAssertionResponse` object.
+#[derive(Debug, Deserialize)]
+pub struct AssertionResponseJson {
+    #[serde(rename = "clientDataJSON")]
+    pub client_data_json: String,
+    #[serde(rename = "authenticatorData")]
+    pub authenticator_data: String,
+    pub signature: String,
+    /// The registration's user id, echoed by authenticators that remember
+    /// it; `null` when the username-first client does not send it.
+    #[serde(rename = "userHandle", default)]
+    pub user_handle: Option<String>,
+}
+
+/// Payload of `POST /api/passkeys/login/finish`.
+#[derive(Debug, Deserialize)]
+pub struct PasskeyLoginFinishRequest {
+    pub credential: LoginCredentialJson,
+}
+
+/// Payload of `PATCH /api/me/passkeys/:id` (rename one device).
+#[derive(Debug, Deserialize)]
+pub struct RenamePasskeyRequest {
+    pub label: String,
+}
