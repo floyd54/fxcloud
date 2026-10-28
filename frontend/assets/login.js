@@ -12,6 +12,27 @@
   const passkeyForm = document.getElementById("passkey-form");
   const passkeyBtn = document.getElementById("passkey-btn");
 
+  // The dictionary lives in i18n.js, which the page loads before this file.
+  // A function declaration, so call sites pass one or two arguments.
+  function t(key, params) {
+    return globalThis.I18N ? globalThis.I18N.t(key, params) : key;
+  }
+
+  /**
+   * Turn an error body into a message in the selected language. The server
+   * sends a stable `code` (src/error.rs) beside the English text; a code
+   * this build does not know yet falls back to that text.
+   */
+  function errMessage(status, body) {
+    if (body && body.code && t("err." + body.code) !== "err." + body.code) {
+      return t("err." + body.code, {
+        used: body.used != null ? String(body.used) : "",
+        quota: body.quota != null ? String(body.quota) : "",
+      });
+    }
+    return body && body.error ? body.error : null;
+  }
+
   let mode = "login"; // or "register" or "passkey"
 
   function setMode(next) {
@@ -23,7 +44,7 @@
     tabPasskey.classList.toggle("active", isPasskey);
     displayField.style.display = isRegister ? "block" : "none";
     displayInput.required = false;
-    submitBtn.textContent = isRegister ? "Create account" : "Sign in";
+    submitBtn.textContent = isRegister ? t("login.tab.register") : t("login.tab.signin");
     form.password.autocomplete = isRegister ? "new-password" : "current-password";
     // The passkey tab is its own form: the password field's `required`
     // must not block a sign-in that never types one.
@@ -83,10 +104,10 @@
   function setLoading(loading) {
     if (loading) {
       submitBtn.disabled = true;
-      submitBtn.innerHTML = '<span class="spinner"></span>Please wait…';
+      submitBtn.innerHTML = '<span class="spinner"></span>' + t("login.wait");
     } else {
       submitBtn.disabled = false;
-      submitBtn.textContent = mode === "register" ? "Create account" : "Sign in";
+      submitBtn.textContent = mode === "register" ? t("login.tab.register") : t("login.tab.signin");
     }
   }
 
@@ -117,13 +138,13 @@
       });
 
       if (!res.ok) {
-        let message = "Something went wrong.";
+        let message = t("login.err.generic");
         try {
           const body = await res.json();
-          if (body.error) message = body.error;
+          message = errMessage(res.status, body) || message;
         } catch (_) {}
         // Friendly fallbacks for common failures.
-        if (res.status === 401) message = "Invalid username or password.";
+        if (res.status === 401) message = t("login.err.invalid");
         showError(message);
         return;
       }
@@ -137,10 +158,7 @@
       // so explain the situation instead of pretending the user is signed in.
       if (body && body.pending_activation) {
         setMode("login");
-        showMessage(
-          "Account created. It has to be activated before you can sign in – please contact your administrator.",
-          "success"
-        );
+        showMessage(t("login.err.inactive"), "success");
         return;
       }
 
@@ -149,7 +167,7 @@
       await carrySecretAcrossRedirect(form.password.value);
       window.location.href = "/";
     } catch (err) {
-      showError("Network error. Is the server running?");
+      showError(t("login.err.network"));
     } finally {
       setLoading(false);
     }
@@ -158,8 +176,8 @@
   function setPasskeyLoading(loading) {
     passkeyBtn.disabled = loading;
     passkeyBtn.innerHTML = loading
-      ? '<span class="spinner"></span>Waiting for your device...'
-      : "Sign in with passkey";
+      ? '<span class="spinner"></span>' + t("login.waiting")
+      : t("login.passkeyBtn");
   }
 
   /**
@@ -178,12 +196,12 @@
       !navigator.credentials ||
       !navigator.credentials.get
     ) {
-      showError("This browser cannot use passkeys here - open the site over HTTPS (or on localhost).");
+      showError(t("login.err.https"));
       return;
     }
     const username = passkeyForm.username.value.trim();
     if (!username) {
-      showError("Enter your username.");
+      showError(t("login.err.needUser"));
       return;
     }
 
@@ -195,10 +213,10 @@
         body: JSON.stringify({ username: username }),
       });
       if (!startRes.ok) {
-        let message = "Could not start the passkey sign-in.";
+        let message = t("login.err.startFail");
         try {
           const body = await startRes.json();
-          if (body.error) message = body.error;
+          message = errMessage(startRes.status, body) || message;
         } catch (_) {}
         showError(message);
         return;
@@ -213,13 +231,13 @@
       } catch (err) {
         showError(
           err.name === "NotAllowedError"
-            ? "No passkey was used - the prompt was cancelled, timed out, or this account has none on this device."
-            : "Passkey sign-in failed: " + err.message
+            ? t("login.err.noPasskeyUsed")
+            : t("login.err.passkeyFail", { msg: err.message })
         );
         return;
       }
       if (!cred) {
-        showError("No passkey was used.");
+        showError(t("login.err.noPasskey"));
         return;
       }
 
@@ -229,12 +247,12 @@
         body: JSON.stringify({ credential: FxWebAuthn.credentialToJson(cred, "assert") }),
       });
       if (!finishRes.ok) {
-        let message = "Passkey sign-in failed.";
+        let message = t("login.err.finishFail");
         try {
           const body = await finishRes.json();
-          if (body.error) message = body.error;
+          message = errMessage(finishRes.status, body) || message;
         } catch (_) {}
-        if (finishRes.status === 401) message = "Unknown user or no matching passkey.";
+        if (finishRes.status === 401) message = t("login.err.unknown");
         showError(message);
         return;
       }
@@ -245,7 +263,7 @@
       // fallback, ENCRYPTION.md DECISION 7).
       window.location.href = "/";
     } catch (_) {
-      showError("Network error. Is the server running?");
+      showError(t("login.err.network"));
     } finally {
       setPasskeyLoading(false);
     }

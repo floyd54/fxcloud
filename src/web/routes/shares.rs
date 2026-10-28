@@ -108,7 +108,7 @@ pub async fn create_batch(
                     .ok()
                     .flatten()
                     .map(|entry| entry.name);
-                out.failure(file_id, name, e.user_message());
+                out.failure(file_id, name, e);
             }
         }
     }

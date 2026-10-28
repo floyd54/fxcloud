@@ -861,6 +861,28 @@ textarea#enc-rcv-key:focus {
 .settings-status { min-height: 18px; margin: 10px 0 0; font-size: 13px; color: var(--muted); }
 .settings-status.error { color: var(--danger); }
 
+/* ---- language switcher (i18n.js draws the flags into .lang-switch) ----
+   Three hosts: the topbar, the settings dialog and the login card. The
+   buttons are line-height 0 so the SVG flags sit on a stable baseline. */
+.lang-switch { display: inline-flex; align-items: center; gap: 5px; }
+.lang-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+  line-height: 0;
+  transition: border-color 0.15s, background 0.15s;
+}
+.lang-btn:hover { border-color: var(--accent); }
+.lang-btn.active { border-color: var(--accent); background: rgba(127, 127, 127, 0.14); }
+.topbar .lang-btn:hover { border-color: rgba(255, 255, 255, 0.7); }
+.topbar .lang-btn.active { border-color: #fff; background: rgba(255, 255, 255, 0.22); }
+.settings-lang { display: flex; gap: 6px; }
+.auth-lang { display: flex; justify-content: center; gap: 6px; margin: 10px 0 2px; }
+
 /* ---- passkeys (WebAuthn): login tab hint + settings device list ---- */
 .auth-hint {
   margin: 0 0 14px;

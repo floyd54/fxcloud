@@ -1634,7 +1634,8 @@ js_parse "$UI" \
 # error in them. webauthn-client.js sits between the two pages (login tab and
 # settings dialog), and tests/webauthn.js is the virtual authenticator the
 # passkey section below drives.
-for SRC in "$REPO/frontend/assets/fxcrypto.js" \
+for SRC in "$REPO/frontend/assets/i18n.js" \
+           "$REPO/frontend/assets/fxcrypto.js" \
            "$REPO/frontend/assets/fxenc.js" \
            "$REPO/frontend/assets/fxworker.js" \
            "$REPO/frontend/assets/hashwasm-argon2.js" \
@@ -1657,6 +1658,7 @@ done
 # this file stayed green. hashwasm-argon2.js is excluded because it is a
 # vendored bundle whose single-letter minified names trip the check.
 if perl "$REPO/tests/check-call-arity.pl" \
+     "$REPO/frontend/assets/i18n.js" \
      "$REPO/frontend/assets/app.js" \
      "$REPO/frontend/assets/fxcrypto.js" \
      "$REPO/frontend/assets/fxenc.js" \
@@ -1671,6 +1673,98 @@ if perl "$REPO/tests/check-call-arity.pl" \
 else
   bad "frontend arity: $(tr '\n' ' ' < "$ROOT/arity.log")"
 fi
+
+# ---- language switch (i18n.js) ----
+# English stays the default; German is the first flag in the switcher. The
+# dictionaries have to agree key for key and every marked key has to exist
+# in both, or a translated page falls back to English mid-sentence - the
+# failure no parser above would notice.
+note "language switch: English default, German first, dictionaries in step"
+I18N_JS="$REPO/frontend/assets/i18n.js"
+LOGIN_HTML="$REPO/frontend/login.html"
+IDX=$REPO/frontend/index.html
+first_script=$(grep -o '<script src="[^"]*"' "$IDX" | head -1 || true)
+[ "$first_script" = '<script src="/assets/i18n.js"' ] \
+  && ok "index.html loads i18n.js before every other script" \
+  || bad "i18n.js is not the first script in index.html"
+first_script=$(grep -o '<script src="[^"]*"' "$LOGIN_HTML" | head -1 || true)
+[ "$first_script" = '<script src="/assets/i18n.js"' ] \
+  && ok "login.html loads i18n.js before every other script" \
+  || bad "i18n.js is not the first script in login.html"
+grep -q 'class="lang-switch" id="lang-switch"' "$IDX" \
+  && ok "the topbar carries the flag switcher" \
+  || bad "no flag switcher in the topbar"
+grep -q 'id="settings-lang"' "$IDX" \
+  && ok "the settings dialog offers the language too" \
+  || bad "no language section in the settings dialog"
+grep -q 'class="lang-switch auth-lang" id="lang-switch"' "$LOGIN_HTML" \
+  && ok "the login/register card carries the flag switcher" \
+  || bad "no flag switcher on the login page"
+grep -q 'var currentCode = "en"' "$I18N_JS" \
+  && ok "English is the default language" \
+  || bad "the default language is not English"
+grep -q 'var CODES = \["de", "en"\]' "$I18N_JS" \
+  && ok "German is the first flag in the switcher" \
+  || bad "the switcher does not start with German"
+LC_ALL=C grep -q 'navigator.language' "$I18N_JS" \
+  && bad "the UI sniffs the browser language instead of asking" \
+  || ok "no browser-language guessing: the flags decide"
+grep -q 'fxcloud.lang' "$I18N_JS" \
+  && ok "the language choice is remembered in localStorage" \
+  || bad "the language choice is not persisted"
+LC_ALL=C grep -q '[^ -~	]' "$I18N_JS" \
+  && bad "i18n.js contains non-ASCII bytes (glyphs must be \XXXX escapes)" \
+  || ok "i18n.js stays pure ASCII"
+# One pass for parity, JS call sites and the data-i18n marks in both pages.
+if "$NODE" -e '
+  const fs = require("fs");
+  globalThis.window = globalThis;
+  require(process.argv[1]);
+  const I = globalThis.I18N;
+  const de = Object.keys(I.dict("de")).sort();
+  const en = Object.keys(I.dict("en")).sort();
+  let bad = 0;
+  if (de.join("\n") !== en.join("\n")) {
+    console.error("dictionary parity: DE=" + de.length + " EN=" + en.length);
+    bad = 1;
+  }
+  for (const f of ["app", "fxenc", "login"]) {
+    const src = fs.readFileSync(process.argv[2] + "/assets/" + f + ".js", "utf8");
+    for (const m of src.matchAll(/\bt\("([a-z][a-zA-Z0-9_.]*)"\)/g)) {
+      if (!(m[1] in I.dict("en")) || !(m[1] in I.dict("de"))) {
+        console.error(f + ".js uses an unknown key: " + m[1]);
+        bad = 1;
+      }
+    }
+  }
+  for (const h of ["index.html", "login.html"]) {
+    const src = fs.readFileSync(process.argv[2] + "/" + h, "utf8");
+    for (const m of src.matchAll(/data-i18n(?:-title|-aria|-ph)?="([^"]+)"/g)) {
+      if (!(m[1] in I.dict("en")) || !(m[1] in I.dict("de"))) {
+        console.error(h + " marks an unknown key: " + m[1]);
+        bad = 1;
+      }
+    }
+  }
+  process.exit(bad ? 1 : 0);
+' "$I18N_JS" "$REPO/frontend"; then
+  ok "both dictionaries agree and every marked or used key exists"
+else
+  bad "i18n dictionary or key usage is broken"
+fi
+# The server names failures with a stable code so the UI can translate them
+# instead of echoing the English message.
+grep -q 'pub fn code(&self)' "$REPO/src/error.rs" \
+  && grep -q '"code": code' "$REPO/src/error.rs" \
+  && ok "every server error carries a stable code to the frontend" \
+  || bad "error responses do not carry a stable code"
+grep -q 'pub code: String' "$REPO/src/models.rs" \
+  && ok "batch failures carry the code per item" \
+  || bad "BatchFailure has no code field"
+grep -q 'fxcloud:langchange' "$UI" \
+  && grep -q 'fxcloud:langchange' "$REPO/frontend/assets/fxenc.js" \
+  && ok "both renderers repaint on a language switch" \
+  || bad "a language switch leaves stale labels behind"
 
 # ENCRYPTION.md 5.7 makes "reuse login password" the pre-selected default in
 # the setup UI. No parser can notice a control that was never written, so the
@@ -1886,10 +1980,10 @@ IDX=$REPO/frontend/index.html
 UP=$'\u2b06'             # upload glyph (U+2B06), escaped so the suite stays ASCII
 FLD=$'\U1F4C1'      # folder emoji
 BASKET=$'\U1F5D1'   # wastebasket emoji
-grep -q "class=\"btn\" id=\"upload-folder-btn\">${UP} Upload folder</button>" "$IDX" \
+grep -q "class=\"btn\" id=\"upload-folder-btn\" data-i18n=\"files.uploadFolder\">${UP} Upload folder</button>" "$IDX" \
   && ok "upload folder is a primary button like upload file" \
   || bad "upload folder is not styled like upload file"
-grep -q 'class="btn secondary" id="trash-btn">Trash</button>' "$IDX" \
+grep -q 'class="btn secondary" id="trash-btn" data-i18n="files.trash">Trash</button>' "$IDX" \
   && ok "the trash button is a plain secondary label" \
   || bad "the trash button still carries an icon"
 grep -q "${FLD}\|${BASKET}" "$IDX" \

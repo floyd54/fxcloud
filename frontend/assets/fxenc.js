@@ -26,6 +26,12 @@
     return globalThis.FXCrypto;
   }
 
+  // The dictionary lives in i18n.js, which every page loads before this
+  // file. A function declaration, so call sites pass one or two arguments.
+  function t(key, params) {
+    return globalThis.I18N ? globalThis.I18N.t(key, params) : key;
+  }
+
   // ------------------------------------------------------------------------
   // HTTP - deliberately separate from app.js's `api()` so a failure here
   // still carries a status code the panes can react to.
@@ -40,10 +46,17 @@
       throw err;
     }
     if (!res.ok) {
-      let msg = "Request failed (" + res.status + ")";
+      let msg = t("err.request_failed", { status: res.status });
       try {
         const body = await res.json();
-        if (body && body.error) msg = body.error;
+        if (body && body.code && t("err." + body.code) !== "err." + body.code) {
+          msg = t("err." + body.code, {
+            used: body.used != null ? String(body.used) : "",
+            quota: body.quota != null ? String(body.quota) : "",
+          });
+        } else if (body && body.error) {
+          msg = body.error;
+        }
       } catch (_) {
         /* not JSON; keep the status line */
       }
@@ -82,7 +95,7 @@
         if (!entry) return;
         pending.delete(msg.id);
         if (msg.ok) entry.resolve(msg.result);
-        else entry.reject(new Error(msg.error || "crypto worker error"));
+        else entry.reject(new Error(msg.error || t("enc.err.worker")));
       };
       w.onerror = (ev) => {
         console.warn(
@@ -95,7 +108,7 @@
           /* already gone */
         }
         worker = null;
-        for (const [, entry] of pending) entry.reject(new Error("crypto worker stopped"));
+        for (const [, entry] of pending) entry.reject(new Error(t("enc.err.workerStopped")));
         pending.clear();
       };
       worker = w;
@@ -195,10 +208,7 @@
   function requestKeys() {
     if (state.status === "unlocked") return Promise.resolve(true);
     if (state.status === "unsupported") {
-      alert(
-        "This browser has no WebCrypto, so encrypted uploads are unavailable. " +
-          "HTTPS (or localhost) and a current browser are required."
-      );
+      alert(t("enc.unsupported"));
       return Promise.resolve(false);
     }
     openPane(state.status === "setup" ? "setup" : "unlock");
@@ -254,24 +264,18 @@
     badge.style.display = "";
     badge.className = "enc-badge " + state.status;
     if (state.status === "setup") {
-      badge.textContent = "Encrypt uploads";
-      badge.title =
-        "Client-side encryption is not set up yet. Files you upload are stored " +
-        "as-is until you turn it on. Click to set it up.";
+      badge.textContent = t("enc.badge.setup");
+      badge.title = t("enc.title.setup");
     } else if (state.status === "locked") {
       // The badge answers exactly one question: are new writes encrypted in
       // this tab? "Unencrypted" is the honest answer for a tab whose keys
       // are not loaded - and it is what every reload lands on, since keys
       // live in memory only (DECISION 7).
-      badge.textContent = "\uD83D\uDD13 Unencrypted";
-      badge.title =
-        "New files and uploads in this tab are stored as-is. Click to turn " +
-        "encryption on here - that also opens this account's encrypted files.";
+      badge.textContent = t("enc.badge.locked");
+      badge.title = t("enc.title.locked");
     } else {
-      badge.textContent = "\uD83D\uDD12 Encrypted";
-      badge.title =
-        "Uploads are encrypted in this browser before they leave the device. " +
-        "Click to turn it off for this tab or to see this account's key fingerprint.";
+      badge.textContent = t("enc.badge.unlocked");
+      badge.title = t("enc.title.unlocked");
     }
   }
 
@@ -389,7 +393,7 @@
       const params = state.keys.kdf_params || {};
       if (params.secret === "separate") return false;
       const badge = $("enc-badge");
-      if (badge) badge.textContent = "Unlocking\u2026";
+      if (badge) badge.textContent = t("enc.badge.unlocking");
       state.session = await FX().unlockAccount(state.keys, pass, derive);
       state.status = "unlocked";
       // Envelopes can be opened now - awaited, so a listing drawn right
@@ -425,10 +429,17 @@
     });
     if (res.ok) return true;
     if (res.status === 401) return false;
-    let msg = "Could not check the login password (" + res.status + ")";
+    let msg = t("enc.checkLoginFail", { status: res.status });
     try {
       const b = await res.json();
-      if (b && b.error) msg = b.error;
+      if (b && b.code && t("err." + b.code) !== "err." + b.code) {
+        msg = t("err." + b.code, {
+          used: b.used != null ? String(b.used) : "",
+          quota: b.quota != null ? String(b.quota) : "",
+        });
+      } else if (b && b.error) {
+        msg = b.error;
+      }
     } catch (_) {
       /* not JSON; keep the status line */
     }
@@ -441,23 +452,23 @@
     const pass2 = $("enc-setup-pass2").value;
     if (!pass)
       return setStatus(
-        reuseLogin ? "Enter your fxcloud login password." : "Choose a storage passphrase.",
+        reuseLogin ? t("enc.enterLogin") : t("enc.choosePass"),
         true
       );
     if (!reuseLogin && pass !== pass2)
-      return setStatus("The two passphrases do not match.", true);
+      return setStatus(t("enc.mismatch"), true);
 
     setBusy(true);
     try {
       if (reuseLogin) {
-        setStatus("Checking your login password…");
+        setStatus(t("enc.checking"));
         if (!(await verifyLogin(pass))) {
-          setStatus("That is not your fxcloud login password.", true);
+          setStatus(t("enc.wrongLogin"), true);
           return;
         }
       }
 
-      setStatus("Deriving keys (Argon2id, 64 MiB)…");
+      setStatus(t("enc.deriving"));
       const account = await FX().generateAccount(pass, derive);
       // DECISION 3's default only pays off if the next tab can tell which
       // secret the row is wrapped under: sign-in carries the login password
@@ -481,11 +492,7 @@
           const existing = await http("/api/keys/me").then((r) => r.json());
           state.session = null;
           adoptKeys(existing.keys, "locked");
-          setStatus(
-            "This account already has a key record; unlock with its " +
-              "passphrase instead.",
-            true
-          );
+          setStatus(t("enc.exists"), true);
           return;
         }
         throw e;
@@ -549,8 +556,8 @@
 
   async function runUnlock() {
     const pass = $("enc-unlock-pass").value;
-    if (!pass) return setStatus("Enter your storage passphrase.", true);
-    setStatus("Deriving keys (Argon2id, 64 MiB)…");
+    if (!pass) return setStatus(t("enc.enterPass"), true);
+    setStatus(t("enc.deriving"));
     setBusy(true);
     try {
       state.session = await FX().unlockAccount(state.keys, pass, derive);
@@ -572,9 +579,9 @@
     const raw = $("enc-rcv-key").value;
     const pass = $("enc-rcv-pass").value;
     const pass2 = $("enc-rcv-pass2").value;
-    if (!raw.trim()) return setStatus("Paste the 64 hex digits from your recovery key.", true);
-    if (!pass) return setStatus("Choose a new storage passphrase.", true);
-    if (pass !== pass2) return setStatus("The two passphrases do not match.", true);
+    if (!raw.trim()) return setStatus(t("enc.pasteRcv"), true);
+    if (!pass) return setStatus(t("enc.chooseNew"), true);
+    if (pass !== pass2) return setStatus(t("enc.mismatch"), true);
 
     let recovery;
     try {
@@ -582,16 +589,16 @@
     } catch (e) {
       return setStatus(e.message, true);
     }
-    if (recovery.length !== 32) return setStatus("A recovery key is 32 bytes - 64 hex digits.", true);
+    if (recovery.length !== 32) return setStatus(t("enc.rcvLen"), true);
 
-    setStatus("Opening the account root key…");
+    setStatus(t("enc.openRoot"));
     setBusy(true);
     try {
       // Recovery opens the ARK directly; the private key and the root key
       // hang off it, so a recovered session is a full session rather than a
       // read-only peek (ENCRYPTION.md 5.7).
       const session = await FX().openWithRecovery(state.keys, recovery);
-      setStatus("Re-wrapping under the new passphrase…");
+      setStatus(t("enc.rewrapping"));
       const rewrap = await FX().rewrapAccount(session.ark, pass, derive);
       // The secret just changed, so any earlier marker is void. Claim "login"
       // only when the server agrees this string is the login password - the
@@ -699,7 +706,7 @@
    * that root key.
    */
   async function resolveFileKey(entry) {
-    if (!state.session) throw new Error("unlock encryption to open this file");
+    if (!state.session) throw new Error(t("enc.err.open"));
     const cached = folderKeys.get(entry.id);
     if (cached) return cached;
     const trail = await http("/api/files/breadcrumb?id=" + entry.id).then((r) => r.json());
@@ -737,7 +744,7 @@
         .catch(() => null);
       if (legacy) return legacy;
     }
-    throw new Error("could not unwrap this key - wrong passphrase, or the data was altered");
+    throw new Error(t("enc.err.unwrapped"));
   }
 
   /**
@@ -747,7 +754,7 @@
    * caller that knows both says which parent to believe.
    */
   async function resolveRecordUnder(entry, parentId) {
-    if (!entry.enc_key) throw new Error("this file has no stored key to open it with");
+    if (!entry.enc_key) throw new Error(t("enc.err.unkeyed"));
     // A mount's own record came from its envelope, wherever the row stands.
     if (shareKeys.has(entry.id)) return shareKeys.get(entry.id);
     // At a top level the trail tells the truth (own root), so the ordinary
@@ -778,7 +785,7 @@
     if (cached) return cached;
     const info = await http("/api/files/info?id=" + parentId).then((r) => r.json());
     const folder = info.entry;
-    if (!folder || !folder.is_dir) throw new Error("destination is not a folder");
+    if (!folder || !folder.is_dir) throw new Error(t("enc.err.notFolder"));
     if (folder.enc_key) return await resolveFileKey(folder);
     // No record yet. Wrap the new one under its *parent's* key first, so the
     // chain above stays walkable for whoever opens below this folder later.
@@ -904,7 +911,7 @@
    * single byte of a possibly large file has been read or encrypted.
    */
   async function encryptUpload(file, parentId, fileName) {
-    if (!(await requestKeys())) throw new Error("encrypted upload cancelled");
+    if (!(await requestKeys())) throw new Error(t("enc.err.uploadCancelled"));
 
     const created = await http(
       "/api/files/file",
@@ -960,7 +967,7 @@
 
   /** Fetch, decrypt and save - the only way an encrypted row leaves fxcloud. */
   async function download(entry) {
-    if (state.status !== "unlocked") throw new Error("unlock encryption to download this file");
+    if (state.status !== "unlocked") throw new Error(t("enc.err.download"));
     const res = await http("/api/files/download?id=" + entry.id);
     const body = new Uint8Array(await res.arrayBuffer());
     const fileKey = await resolveFileKey(entry);
@@ -989,7 +996,7 @@
    * The caller owns the object URL and its lifetime.
    */
   async function previewBlob(entry) {
-    if (state.status !== "unlocked") throw new Error("unlock encryption to preview this file");
+    if (state.status !== "unlocked") throw new Error(t("enc.err.preview"));
     const res = await http("/api/files/download?id=" + entry.id);
     const body = new Uint8Array(await res.arrayBuffer());
     const fileKey = await resolveFileKey(entry);
@@ -1006,8 +1013,8 @@
    * FXE1 container back into text here.
    */
   async function readText(entry) {
-    if (state.status !== "unlocked") throw new Error("unlock encryption to open this file");
-    if (!entry.enc_key) throw new Error("this file has no stored key to open it with");
+    if (state.status !== "unlocked") throw new Error(t("enc.err.open"));
+    if (!entry.enc_key) throw new Error(t("enc.err.unkeyed"));
     const res = await http("/api/files/download?id=" + entry.id);
     const body = new Uint8Array(await res.arrayBuffer());
     const fileKey = await resolveFileKey(entry);
@@ -1027,7 +1034,7 @@
    * folder stays walkable.
    */
   async function writeText(entry, text) {
-    if (state.status !== "unlocked") throw new Error("unlock encryption to save this file");
+    if (state.status !== "unlocked") throw new Error(t("enc.err.save"));
     const plain = new TextEncoder().encode(text);
     let fileKey;
     let wrappedKey;
@@ -1126,21 +1133,16 @@
     const syncSecretMode = () => {
       const reuseLogin = $("enc-use-login").checked;
       $("enc-setup-pass-label").textContent = reuseLogin
-        ? "Your fxcloud login password"
-        : "Storage passphrase";
+        ? t("enc.setup.passLabel")
+        : t("enc.passphrase");
       $("enc-setup-pass").setAttribute(
         "autocomplete",
         reuseLogin ? "current-password" : "new-password"
       );
       $("enc-setup-row2").style.display = reuseLogin ? "none" : "";
       $("enc-setup-hint").textContent = reuseLogin
-        ? "Signing in already makes the server spend a 64 MiB Argon2id hash, " +
-          "so one strong password can cover both. Your browser can fill this " +
-          "from the password you signed in with, and it is checked against " +
-          "your account before any key is created."
-        : "A separate passphrase is never sent anywhere; only the 64 MiB " +
-          "Argon2id derivation runs here. It is one more secret to keep: " +
-          "without it your files cannot be opened again.";
+        ? t("enc.setup.hintLogin")
+        : t("enc.setup.hintSep");
       for (const id of ["enc-use-login", "enc-use-pass"]) {
         const el = $(id);
         const wrap = el && el.closest ? el.closest(".enc-option") : null;
@@ -1153,6 +1155,12 @@
       if (el) el.addEventListener("change", syncSecretMode);
     }
     syncSecretMode();
+    // A language switch repaints the badge and the setup pane's dynamic
+    // texts (i18n.js fires this once the dictionary has swapped).
+    document.addEventListener("fxcloud:langchange", () => {
+      render();
+      syncSecretMode();
+    });
     for (const id of ["enc-setup-pass", "enc-setup-pass2"]) {
       const el = $(id);
       if (el) el.addEventListener("input", armSetup);

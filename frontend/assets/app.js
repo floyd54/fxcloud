@@ -72,6 +72,33 @@
         PERM_SHARE = 16, PERM_ALL = 31;
 
   // ---------- helpers ----------
+  // Shorthand for the dictionary in i18n.js (loaded before this file). A
+  // function declaration on purpose: call sites pass one or two args.
+  function t(key, params) {
+    return globalThis.I18N ? globalThis.I18N.t(key, params) : key;
+  }
+
+  /** Locale for dates: the selected language decides, not the browser. */
+  function dateLocale() {
+    return globalThis.I18N ? globalThis.I18N.dateLocale() : undefined;
+  }
+
+  /**
+   * Turn an error response into a message in the selected language. The
+   * server sends a stable `code` (src/error.rs); the English `error` text
+   * remains the fallback for a code this build does not know yet.
+   */
+  function errMessage(status, body) {
+    if (body && body.code && t("err." + body.code) !== "err." + body.code) {
+      return t("err." + body.code, {
+        used: body.used != null ? fmtBytes(body.used) : "",
+        quota: body.quota != null ? fmtBytes(body.quota) : "",
+      });
+    }
+    if (body && body.error) return body.error;
+    return t("err.request_failed", { status });
+  }
+
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -89,7 +116,7 @@
   function formatDate(iso) {
     const d = new Date(iso);
     if (isNaN(d)) return "";
-    return d.toLocaleString(undefined, {
+    return d.toLocaleString(dateLocale(), {
       year: "numeric", month: "short", day: "numeric",
       hour: "2-digit", minute: "2-digit",
     });
@@ -108,11 +135,13 @@
       throw new Error("unauthorized");
     }
     if (!res.ok) {
-      let message = `Request failed (${res.status})`;
+      let message;
       try {
         const body = await res.json();
-        if (body.error) message = body.error;
-      } catch (_) {}
+        message = errMessage(res.status, body);
+      } catch (_) {
+        message = t("err.request_failed", { status: res.status });
+      }
       const err = new Error(message);
       // The status rides along so a caller can tell "404, nothing there"
       // (the share dialog's "no key to exchange with") from a real failure.
@@ -123,6 +152,16 @@
   }
 
   // ---------- rendering ----------
+  // The root crumb is synthesized ("Home"/"Trash") and describes a view,
+  // not a folder name, so it follows the language; every real folder keeps
+  // the name the user gave it.
+  function crumbLabel(crumb) {
+    if (crumb.id != null) return crumb.name;
+    if (crumb.name === "Home") return t("crumb.home");
+    if (crumb.name === "Trash") return t("files.trash");
+    return crumb.name;
+  }
+
   function renderBreadcrumb(crumbs) {
     breadcrumbEl.innerHTML = "";
     crumbs.forEach((crumb, idx) => {
@@ -136,11 +175,11 @@
       if (isLast) {
         const cur = document.createElement("span");
         cur.className = "current";
-        cur.textContent = crumb.name;
+        cur.textContent = crumbLabel(crumb);
         breadcrumbEl.appendChild(cur);
       } else {
         const a = document.createElement("a");
-        a.textContent = crumb.name;
+        a.textContent = crumbLabel(crumb);
         a.addEventListener("click", () => openFolder(crumb.id));
         breadcrumbEl.appendChild(a);
       }
@@ -212,19 +251,19 @@
     if (entries.length === 0) {
       if (rawEntries.length > 0) {
         // Everything in here is hidden - explain instead of claiming the
-        // folder is empty (text only, so the source stays ASCII).
+        // folder is empty (empty.hidden2 carries the <b> emphasis, so it
+        // goes in as HTML like the markup around it).
         rowsEl.innerHTML =
           '<tr><td colspan="5"><div class="empty">' +
-          "Only hidden files are here.<br/>" +
-          "Turn on <b>Show hidden</b> in the toolbar to reveal them." +
+          t("empty.hidden1") + "<br/>" + t("empty.hidden2") +
           "</div></td></tr>";
         return;
       }
       rowsEl.innerHTML = trashView
         ? '<tr><td colspan="5"><div class="empty"><div class="big">🗑</div>' +
-          "The trash is empty.</div></td></tr>"
+          t("empty.trash") + "</div></td></tr>"
         : '<tr><td colspan="5"><div class="empty"><div class="big">📂</div>' +
-          "This folder is empty.<br/>Upload a file or create a folder to get started.</div></td></tr>";
+          t("empty.folder1") + "<br/>" + t("empty.folder2") + "</div></td></tr>";
       return;
     }
 
@@ -243,7 +282,7 @@
       const box = document.createElement("input");
       box.type = "checkbox";
       box.checked = selected.has(entry.id);
-      box.title = "Select";
+      box.title = t("row.select");
       box.addEventListener("click", (e) => {
         e.stopPropagation();
         toggleRowSelection(entry, index, box.checked, e.shiftKey);
@@ -258,11 +297,11 @@
           ? ' <span class="shared-badge">↔ ' + escapeHtml(entry.owner_name) + "</span>"
           : "") +
         (entry.enc_version > 0
-          ? ' <span class="enc-mark" title="encrypted in the browser - the ' +
-            'server only stores ciphertext">&#128274;</span>'
+          ? ' <span class="enc-mark" title="' + escapeHtml(t("row.encTitle")) +
+            '">&#128274;</span>'
           : "") +
         '<div class="meta-mobile">' +
-        (entry.is_dir ? "Folder" : formatSize(entry.size)) + " · " +
+        (entry.is_dir ? t("row.folder") : formatSize(entry.size)) + " · " +
         formatDate(entry.modified_at) + "</div></div></div></div>";
 
       const sizeTd = document.createElement("td");
@@ -279,7 +318,7 @@
       if (trashView) {
         dateTd.textContent = formatDate(entry.deleted_at);
         if (entry.purge_at) {
-          dateTd.title = "Deleted automatically on " + formatDate(entry.purge_at);
+          dateTd.title = t("row.purgeOn", { date: formatDate(entry.purge_at) });
         }
       } else {
         dateTd.textContent = formatDate(entry.modified_at);
@@ -295,7 +334,7 @@
       const kebab = document.createElement("button");
       kebab.type = "button";
       kebab.className = "kebab";
-      kebab.title = "Actions";
+      kebab.title = t("row.actions");
       kebab.textContent = "⋮";
       kebab.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -382,7 +421,7 @@
     if (selected.size === 0) return;
 
     document.getElementById("bulk-count").textContent =
-      selected.size === 1 ? "1 item selected" : `${selected.size} items selected`;
+      selected.size === 1 ? t("bulk.one") : t("bulk.n", { n: selected.size });
 
     // The trash swaps the file actions for restore / delete permanently.
     const fileActions = ["bulk-download", "bulk-move", "bulk-copy", "bulk-share", "bulk-delete"];
@@ -409,8 +448,21 @@
   function skippedNote(done) {
     const missing = selected.size - done;
     return missing > 0
-      ? `\n\n${missing} of ${selected.size} selected item(s) skipped — missing permission.`
+      ? "\n\n" + t("batch.skipped", { missing, total: selected.size })
       : "";
+  }
+
+  // One failed batch item, in the selected language: the stable `code`
+  // wins (i18n.js `err.*`), the server's English text stays as the fallback
+  // for a code this build does not know yet.
+  function failureText(f) {
+    if (f.code && t("err." + f.code) !== "err." + f.code) {
+      return t("err." + f.code, {
+        used: f.used != null ? fmtBytes(f.used) : "",
+        quota: f.quota != null ? fmtBytes(f.quota) : "",
+      });
+    }
+    return f.error;
   }
 
   // Turn one batch response into user feedback (partial failures are normal).
@@ -418,9 +470,13 @@
     if (!out || !out.failed || out.failed.length === 0) return;
     const lines = out.failed
       .slice(0, 8)
-      .map((f) => `${f.name || "#" + f.id}: ${f.error}`);
+      .map((f) => `${f.name || "#" + f.id}: ${failureText(f)}`);
     alert(
-      `${out.failed.length} of ${out.failed.length + out.ok.length} item(s) failed:\n\n` +
+      t("batch.failed", {
+        failed: out.failed.length,
+        n: out.failed.length + out.ok.length,
+      }) +
+        "\n\n" +
         lines.join("\n") +
         (out.failed.length > 8 ? "\n…" : "")
     );
@@ -452,11 +508,11 @@
     // for now only the owner manages an item's shares.
     const items = [];
     if (trashView) {
-      items.push(["Restore", () => restoreTrashEntry(entry.id)]);
-      items.push(["Delete permanently", () => purgeTrashEntry(entry.id), true]);
+      items.push([t("act.restore"), () => restoreTrashEntry(entry.id)]);
+      items.push([t("bulk.purge"), () => purgeTrashEntry(entry.id), true]);
     } else {
       if (entry.is_dir) {
-        items.push(["Open", () => openFolder(entry.id, perms)]);
+        items.push([t("act.open"), () => openFolder(entry.id, perms)]);
       }
       if (!entry.is_dir && (perms & PERM_READ)) {
         const entryKind = previewKind(entry.name, entry.mime);
@@ -464,24 +520,27 @@
         // decrypts one into a blob URL (phase 2, ENCRYPTION.md 12), so the
         // menu no longer splits by encryption state. Text keeps "Edit".
         if (entryKind) {
-          items.push([entryKind === "text" ? "Edit" : "Preview", () => openPreview(entry)]);
+          items.push([
+            entryKind === "text" ? t("act.edit") : t("act.preview"),
+            () => openPreview(entry),
+          ]);
         }
-        items.push(["Download", () => downloadFile(entry.id, entry.name, entry)]);
+        items.push([t("bulk.download"), () => downloadFile(entry.id, entry.name, entry)]);
       }
       if (isOwner) {
-        items.push(["Share", () => openShareDialog([entry])]);
+        items.push([t("bulk.share"), () => openShareDialog([entry])]);
       }
       if (perms & PERM_UPDATE) {
-        items.push(["Move to…", () => openTransferDialog("move", [entry])]);
+        items.push([t("bulk.move"), () => openTransferDialog("move", [entry])]);
       }
       if (perms & PERM_READ) {
-        items.push(["Copy to…", () => openTransferDialog("copy", [entry])]);
+        items.push([t("bulk.copy"), () => openTransferDialog("copy", [entry])]);
       }
       if (perms & PERM_UPDATE) {
-        items.push(["Rename", () => renameEntry(entry.id, entry.name)]);
+        items.push([t("act.rename"), () => renameEntry(entry.id, entry.name)]);
       }
       if (perms & PERM_DELETE) {
-        items.push(["Delete", () => deleteEntry(entry.id, entry.is_dir, entry.name), true]);
+        items.push([t("bulk.delete"), () => deleteEntry(entry.id, entry.is_dir, entry.name), true]);
       }
     }
 
@@ -621,10 +680,19 @@
     // The theme is part of the account, so it applies before anything else
     // renders - the rows below are painted with it, not around it.
     applyTheme(res.theme);
+    renderStorageLabel();
+  }
+
+  // Re-derivable from the cached /api/me payload, so the language switch
+  // can repaint it without another round trip.
+  function renderStorageLabel() {
     const storage = document.getElementById("storage-label");
-    if (storage && res.used_bytes != null && res.quota_bytes != null) {
-      storage.textContent = `${fmtBytes(res.used_bytes)} of ${fmtBytes(res.quota_bytes)}`;
-      storage.title = "storage used of quota";
+    if (storage && meData && meData.used_bytes != null && meData.quota_bytes != null) {
+      storage.textContent = t("storage.of", {
+        used: fmtBytes(meData.used_bytes),
+        quota: fmtBytes(meData.quota_bytes),
+      });
+      storage.title = t("storage.title");
     }
   }
 
@@ -644,7 +712,7 @@
   }
 
   async function purgeTrashEntry(id) {
-    if (!confirm("Delete this item permanently? This cannot be undone.")) return;
+    if (!confirm(t("confirm.purgeOne"))) return;
     try {
       await api("/api/files/trash/purge", {
         method: "POST",
@@ -674,7 +742,7 @@
   }
 
   async function bulkPurge() {
-    if (!confirm(`Delete ${selected.size} item(s) permanently? This cannot be undone.`)) return;
+    if (!confirm(t("confirm.purgeN", { n: selected.size }))) return;
     for (const entry of selected.values()) {
       try {
         await api("/api/files/trash/purge", {
@@ -691,7 +759,7 @@
   }
 
   async function emptyTrash() {
-    if (!confirm("Empty the trash? Every item in it is deleted permanently.")) return;
+    if (!confirm(t("confirm.emptyTrash"))) return;
     try {
       await api("/api/files/trash/empty", { method: "POST" });
       await loadTrash();
@@ -723,7 +791,7 @@
   }
 
   async function newFolder() {
-    const name = prompt("New folder name:");
+    const name = prompt(t("prompt.newFolder"));
     if (!name || !name.trim()) return;
     try {
       await api("/api/files/folder", {
@@ -738,7 +806,7 @@
   }
 
   async function newFile() {
-    let name = prompt("New file name:", "note.md");
+    let name = prompt(t("prompt.newFile"), "note.md");
     if (name === null) return; // cancelled
     name = name.trim();
     if (!name) return;
@@ -748,10 +816,7 @@
     const editable =
       PREVIEW_EXT.text.indexOf(ext) >= 0 || ext === "md" || ext === "markdown";
     if (!editable) {
-      alert(
-        "Only text files can be created here (.txt, .md, .csv, code, ...).\n" +
-          "Upload other file types instead.",
-      );
+      alert(t("file.textOnly"));
       return;
     }
     try {
@@ -775,7 +840,7 @@
           entry = await FXEnc.writeText(entry, "");
         } catch (e) {
           await discardCreated(entry.id);
-          alert(`The new file could not be encrypted, so it was removed: ${e.message}`);
+          alert(t("file.encFail", { msg: e.message }));
           return;
         }
       }
@@ -812,7 +877,7 @@
   }
 
   async function renameEntry(id, currentName) {
-    const name = prompt("Rename to:", currentName);
+    const name = prompt(t("prompt.rename"), currentName);
     if (!name || !name.trim() || name.trim() === currentName) return;
     try {
       await api("/api/files/rename", {
@@ -828,8 +893,8 @@
 
   async function deleteEntry(id, isDir, name) {
     const promptText = isDir
-      ? `Move folder "${name}" and everything inside it to the trash?`
-      : `Move file "${name}" to the trash?`;
+      ? t("confirm.moveFolder", { name })
+      : t("confirm.moveFile", { name });
     if (!confirm(promptText)) return;
     try {
       // Same endpoint as the bulk bar — a single item is a batch of one.
@@ -959,8 +1024,8 @@
     const msg = document.createElement("div");
     msg.className = "empty-small";
     msg.textContent = why
-      ? `Preview failed: ${why} - use Download instead.`
-      : "Preview failed - the file may be unavailable. Use Download instead.";
+      ? t("preview.failedWhy", { why })
+      : t("preview.failed");
     body.appendChild(msg);
   }
 
@@ -999,12 +1064,12 @@
     if (encrypted) {
       const holder = document.createElement("div");
       holder.className = "empty-small";
-      holder.textContent = "Decrypting preview...";
+      holder.textContent = t("preview.decrypting");
       body.appendChild(holder);
       previewModal.style.display = "flex";
       try {
         if (!(await FXEnc.requestKeys())) {
-          throw new Error("this file is encrypted - turn encryption on from the badge to preview it");
+          throw new Error(t("preview.encHint"));
         }
         const blob = await FXEnc.previewBlob(entry);
         if (previewEntry !== entry) return; // closed or replaced meanwhile
@@ -1034,7 +1099,7 @@
 
   function closePreview() {
     // An edited file keeps its changes until the user says otherwise.
-    if (editorEntry && editorDirty() && !confirm("Discard unsaved changes?")) return;
+    if (editorEntry && editorDirty() && !confirm(t("confirm.discard"))) return;
     previewModal.style.display = "none";
     previewEntry = null;
     releasePreviewUrl();
@@ -1062,12 +1127,12 @@
 
   function setEditorStatus(text) {
     editorStatus.textContent = text;
-    editorStatus.classList.toggle("unsaved", text === "* unsaved");
+    editorStatus.classList.toggle("unsaved", text === t("editor.unsaved"));
   }
 
   function updateEditorMeta() {
     const lines = editorText.value === "" ? 1 : editorText.value.split("\n").length;
-    editorMeta.textContent = `${lines} lines, ${editorText.value.length} chars`;
+    editorMeta.textContent = t("editor.meta", { lines, chars: editorText.value.length });
   }
 
   function setEditorMdVisible(on) {
@@ -1083,7 +1148,7 @@
     editorIsMd = /\.(md|markdown)$/i.test(entry.name);
     editorText.value = "";
     editorBaseline = "";
-    setEditorStatus("loading...");
+    setEditorStatus(t("editor.loading"));
     updateEditorMeta();
     editorMdToggle.style.display = editorIsMd ? "" : "none";
     setEditorMdVisible(editorIsMd && editorMdOn);
@@ -1095,7 +1160,7 @@
       entry.enc_version > 0
         ? FXEnc.requestKeys().then((ok) => {
             if (!ok) {
-              throw new Error("this file is encrypted - turn encryption on from the badge to edit it");
+              throw new Error(t("preview.encEditHint"));
             }
             return FXEnc.readText(entry);
           })
@@ -1110,7 +1175,7 @@
         if (editorMdPane.style.display !== "none") renderMarkdown();
         editorText.focus();
       })
-      .catch((e) => setEditorStatus(`load failed: ${e.message}`));
+      .catch((e) => setEditorStatus(t("editor.loadFailed", { msg: e.message })));
   }
 
   function closeEditor() {
@@ -1126,7 +1191,7 @@
     if (!editorEntry) return;
     const entry = editorEntry;
     const content = editorText.value;
-    setEditorStatus("saving...");
+    setEditorStatus(t("editor.saving"));
     const save =
       entry.enc_version > 0
         ? FXEnc.writeText(entry, content)
@@ -1155,13 +1220,13 @@
         }
         if (editorEntry !== entry) return; // another file opened meanwhile
         editorBaseline = content;
-        setEditorStatus("saved");
+        setEditorStatus(t("editor.saved"));
         window.setTimeout(() => {
-          if (editorStatus.textContent === "saved") setEditorStatus("");
+          if (editorStatus.textContent === t("editor.saved")) setEditorStatus("");
         }, 2000);
         updateEditorMeta();
       })
-      .catch((e) => setEditorStatus(`save failed: ${e.message}`));
+      .catch((e) => setEditorStatus(t("editor.saveFailed", { msg: e.message })));
   }
 
   // Mini Markdown renderer for the preview pane. Everything is HTML-escaped
@@ -1409,7 +1474,7 @@
         cache.set(acc, parentId);
       } catch (e) {
         failedDirs.add(acc);
-        failures.push(`${acc}/ — ${e.message}`);
+        failures.push(t("upload.itemFail", { path: acc + "/", msg: e.message }));
         return undefined;
       }
     }
@@ -1457,8 +1522,8 @@
         const parentId = await ensurePath(base, parts.join("/"), cache, failures, failedDirs);
         if (parentId === undefined) continue; // reason already recorded
         setUploadStatus(
-          `Uploading ${done + 1}/${files.length} — ${item.path}` +
-            (encrypt ? " (encrypted)" : "")
+          t("upload.at", { i: done + 1, n: files.length, path: item.path }) +
+            (encrypt ? t("upload.encrypted") : "")
         );
         try {
           if (encrypt) {
@@ -1471,7 +1536,7 @@
             await api("/api/files/upload", { method: "POST", body: fd });
           }
         } catch (e) {
-          failures.push(`${item.path} — ${e.message}`);
+          failures.push(t("upload.itemFail", { path: item.path, msg: e.message }));
         }
         done += 1;
       }
@@ -1481,7 +1546,7 @@
 
     if (failures.length) {
       alert(
-        `${failures.length} of ${files.length} item(s) could not be uploaded:\n\n` +
+        t("upload.failed", { n: failures.length, m: files.length }) + "\n\n" +
           failures.slice(0, 8).join("\n") +
           (failures.length > 8 ? "\n…" : "")
       );
@@ -1537,23 +1602,23 @@
     if (mode === "copy") {
       const keyed = entries.filter((e) => (e.is_dir ? folderHasEnc[e.id] : e.enc_key));
       if (keyed.length > 0) {
-        const one = keyed.length === 1 ? `“${keyed[0].name}”` : `${keyed.length} item(s)`;
-        alert(
-          `Cannot copy ${one}.\n\n` +
-            "A copy gets a new row id, and re-wrapping a key record for a " +
-            "new row is not wired into copy yet. Move it instead, or " +
-            "download it and upload it again."
-        );
+        const one =
+          keyed.length === 1
+            ? "\u201c" + keyed[0].name + "\u201d"
+            : t("act.itemsP", { n: keyed.length });
+        alert(t("transfer.copyBlocked", { what: one }));
         return;
       }
     }
     transfer = { mode, entries };
     const what =
-      entries.length === 1 ? `"${entries[0].name}"` : `${entries.length} items`;
-    document.getElementById("transfer-title").textContent =
-      (mode === "move" ? "Move " : "Copy ") + what + " to…";
+      entries.length === 1 ? `"${entries[0].name}"` : t("act.items", { n: entries.length });
+    document.getElementById("transfer-title").textContent = t(
+      mode === "move" ? "transfer.moveTitle" : "transfer.copyTitle",
+      { what }
+    );
     document.getElementById("transfer-confirm").textContent =
-      mode === "move" ? "Move here" : "Copy here";
+      t(mode === "move" ? "transfer.moveHere" : "transfer.copyHere");
     pickStack = [{ id: null, name: "Home" }];
     transferModal.style.display = "flex";
     renderPick().catch((e) => alert(e.message));
@@ -1587,11 +1652,11 @@
       if (i === pickStack.length - 1) {
         const cur = document.createElement("span");
         cur.className = "current";
-        cur.textContent = c.name;
+        cur.textContent = crumbLabel(c);
         crumbEl.appendChild(cur);
       } else {
         const a = document.createElement("a");
-        a.textContent = c.name;
+        a.textContent = crumbLabel(c);
         a.addEventListener("click", () => pickAt(i));
         crumbEl.appendChild(a);
       }
@@ -1602,7 +1667,7 @@
     listEl.innerHTML = "";
     const dirs = res.entries.filter((e) => e.is_dir);
     if (dirs.length === 0) {
-      listEl.innerHTML = '<div class="empty-small">No subfolders here.</div>';
+      listEl.innerHTML = '<div class="empty-small">' + t("transfer.noSub") + "</div>";
       return;
     }
     for (const d of dirs) {
@@ -1633,7 +1698,7 @@
     // arrive and never open again, so the move waits for the unlock prompt.
     const keyed = transfer.mode === "move" ? transfer.entries.filter((e) => e.enc_key) : [];
     if (keyed.length > 0 && !(await FXEnc.requestKeys())) {
-      alert("Cannot move an encrypted item while this tab holds no keys.");
+      alert(t("transfer.noKeyMove"));
       return;
     }
     const oldParent = currentParent;
@@ -1663,12 +1728,7 @@
         try {
           await FXEnc.rewrapForParent(entry, dest.id, oldParent);
         } catch (e) {
-          alert(
-            `"${entry.name}" could not be moved (${e.message}), and its key ` +
-              "record could not be put back either.\n\n" +
-              "Its record now names the destination folder - move it there " +
-              "once the move is allowed, and it opens again."
-          );
+          alert(t("transfer.rollback", { name: entry.name, msg: e.message }));
         }
       }
       closeTransferDialog();
@@ -1686,9 +1746,7 @@
       mode === "move" ? permsOf(e) & PERM_UPDATE : permsOf(e) & PERM_READ
     );
     if (entries.length === 0) {
-      alert(
-        `None of the selected items may be ${mode === "move" ? "moved" : "copied"}.`
-      );
+      alert(t(mode === "move" ? "transfer.noneMove" : "transfer.noneCopy"));
       return;
     }
     openTransferDialog(mode, entries);
@@ -1700,14 +1758,15 @@
 
     const files = entries.filter((e) => !e.is_dir);
     const dirs = entries.filter((e) => e.is_dir);
-    let msg = `Move ${entries.length} of ${selected.size} selected item(s) to the trash?`;
+    let msg = t("confirm.bulkDelete", { n: entries.length, m: selected.size });
     if (files.length) {
-      msg += `\n\n${files.length} file(s) · ${formatSize(
-        files.reduce((sum, e) => sum + (e.size || 0), 0)
-      )}`;
+      msg += "\n\n" + t("batch.files", {
+        k: files.length,
+        size: formatSize(files.reduce((sum, e) => sum + (e.size || 0), 0)),
+      });
     }
     if (dirs.length) {
-      msg += `\n${dirs.length} folder(s) · with everything inside them`;
+      msg += "\n" + t("batch.folders", { k: dirs.length });
     }
     msg += skippedNote(entries.length);
     if (!confirm(msg)) return;
@@ -1784,8 +1843,8 @@
     shareEntries = entries;
     document.getElementById("share-title").textContent =
       entries.length === 1
-        ? `Share "${entries[0].name}"`
-        : `Share ${entries.length} items`;
+        ? t("share.title1", { name: entries[0].name })
+        : t("share.titleN", { n: entries.length });
     document
       .querySelectorAll("#perm-checks input")
       .forEach((cb) => (cb.checked = true));
@@ -1795,7 +1854,7 @@
     // the dialog opens so freshly registered users show up immediately.
     loadShareTargets().catch(() => {
       const sel = document.getElementById("share-username");
-      sel.innerHTML = "<option disabled>Cannot load users</option>";
+      sel.innerHTML = "<option disabled>" + t("share.cannotLoad") + "</option>";
       sel.disabled = true;
     });
     // The fingerprint appears with the dialog, not with the confirm: it is
@@ -1807,7 +1866,7 @@
       loadShareList().catch((e) => alert(e.message));
     } else {
       document.getElementById("share-list").innerHTML =
-        '<div class="empty-small">Every selected item gets the same share and permissions.</div>';
+        '<div class="empty-small">' + t("share.everySelected") + "</div>";
     }
   }
 
@@ -1823,7 +1882,7 @@
     const listEl = document.getElementById("share-list");
     listEl.innerHTML = "";
     if (res.shares.length === 0) {
-      listEl.innerHTML = '<div class="empty-small">Not shared with anyone yet.</div>';
+      listEl.innerHTML = '<div class="empty-small">' + t("share.none") + "</div>";
       return;
     }
     for (const s of res.shares) {
@@ -1833,11 +1892,13 @@
       info.className = "share-info";
       info.innerHTML =
         '<span class="share-user">' + escapeHtml(s.username) + "</span>" +
-        '<span class="share-perms">' + escapeHtml(s.permission_names.join(", ")) + "</span>";
+        '<span class="share-perms">' +
+        escapeHtml(s.permission_names.map((p) => t("perm." + p)).join(", ")) +
+        "</span>";
       row.appendChild(info);
       const rm = document.createElement("button");
       rm.className = "danger";
-      rm.textContent = "Remove";
+      rm.textContent = t("act.remove");
       rm.addEventListener("click", async () => {
         try {
           await api(`/api/shares/${s.id}`, { method: "DELETE" });
@@ -1860,7 +1921,7 @@
     sel.innerHTML = "";
     if (users.length === 0) {
       const opt = document.createElement("option");
-      opt.textContent = "No other users yet";
+      opt.textContent = t("share.noUsers");
       opt.disabled = true;
       sel.appendChild(opt);
       sel.disabled = true;
@@ -1873,7 +1934,7 @@
       const named = u.display_name && u.display_name !== u.username;
       opt.textContent =
         (named ? `${u.username} (${u.display_name})` : u.username) +
-        (u.is_active ? "" : " — inactive");
+        (u.is_active ? "" : t("share.inactive"));
       sel.appendChild(opt);
     }
   }
@@ -1920,12 +1981,11 @@
     try {
       const body = await api(`/api/keys/${encodeURIComponent(username)}`).then((r) => r.json());
       fpEl.textContent =
-        `${username}'s key fingerprint: ` +
+        t("share.fp", { user: username }) +
         FXEnc.formatFingerprint(body.key.fingerprint);
       fpEl.classList.remove("fp-warn");
     } catch (_) {
-      fpEl.textContent =
-        `${username} has no encryption set up - encrypted items stay unreadable for them.`;
+      fpEl.textContent = t("share.noEnc", { user: username });
     }
   }
 
@@ -1940,28 +2000,23 @@
     if (known && known !== fingerprint) {
       const fpEl = document.getElementById("share-fp");
       if (fpEl) {
-        fpEl.textContent =
-          `key changed: ${shown} (was ${FXEnc.formatFingerprint(known)})`;
+        fpEl.textContent = t("share.changedShort", {
+          new: shown,
+          old: FXEnc.formatFingerprint(known),
+        });
         fpEl.classList.add("fp-warn");
       }
       return confirm(
-        `${username}'s key fingerprint CHANGED.\n\n` +
-          `Before: ${FXEnc.formatFingerprint(known)}\n` +
-          `Now:    ${shown}\n\n` +
-          "A change is normal after a recovery or a new device - and it is " +
-          "also how a server in the middle would hand someone else its own " +
-          "key. Compare the new fingerprint with them out of band before " +
-          "sharing anything encrypted. Continue?"
+        t("share.confirmChanged", {
+          user: username,
+          before: FXEnc.formatFingerprint(known),
+          now: shown,
+        })
       );
     }
     rememberFingerprint(username, fingerprint);
     if (known) return true; // unchanged: nothing new to compare
-    return confirm(
-      `${username}'s key fingerprint:\n\n    ${shown}\n\n` +
-        "Compare it with what they see in their own fxcloud (badge, then " +
-        '"Show key info") if you want to be sure nobody sits in the middle. ' +
-        "It is remembered from now on, so a later change will be flagged. Continue?"
-    );
+    return confirm(t("share.confirmNew", { user: username, fp: shown }));
   }
 
   async function shareAdd() {
@@ -1993,10 +2048,7 @@
         const keyed = shareEntries.filter((e) => FXEnc.isEncrypted(e) || e.is_dir);
         if (
           keyed.length > 0 &&
-          !confirm(
-            `${username} has no encryption set up, so encrypted items ` +
-              "cannot be opened from their side.\n\nShare anyway?"
-          )
+          !confirm(t("share.noKeyConfirm", { user: username }))
         ) {
           return;
         }
@@ -2006,7 +2058,7 @@
       // exactly like opening one would.
       const needsKeys = shareEntries.some((e) => FXEnc.isEncrypted(e) || e.is_dir);
       if (needsKeys && !(await FXEnc.requestKeys())) {
-        alert("Sharing was cancelled: with locked keys no envelope can be sealed.");
+        alert(t("share.cancelled"));
         return;
       }
       // One envelope per item, never per selection: each record is wrapped
@@ -2033,8 +2085,12 @@
       } else {
         document.getElementById("share-list").innerHTML =
           out.ok.length > 0
-            ? `<div class="empty-small">${out.ok.length} of ${shareEntries.length} item(s) shared with ${escapeHtml(username)}.</div>`
-            : '<div class="empty-small">Nothing was shared.</div>';
+            ? '<div class="empty-small">' + t("share.result", {
+                n: out.ok.length,
+                m: shareEntries.length,
+                user: escapeHtml(username),
+              }) + "</div>"
+            : '<div class="empty-small">' + t("share.nothing") + "</div>";
       }
       reportOutcome(out);
     } catch (e) {
@@ -2084,10 +2140,13 @@
     document.getElementById("set-username").textContent = meData.username;
     document.getElementById("set-since").textContent = new Date(
       meData.created_at
-    ).toLocaleDateString();
+    ).toLocaleDateString(dateLocale());
     document.getElementById("set-storage").textContent =
       meData.used_bytes != null
-        ? `${fmtBytes(meData.used_bytes)} of ${fmtBytes(meData.quota_bytes)}`
+        ? t("storage.of", {
+            used: fmtBytes(meData.used_bytes),
+            quota: fmtBytes(meData.quota_bytes),
+          })
         : "";
     document.getElementById("set-name-input").value =
       meData.display_name || meData.username;
@@ -2106,7 +2165,7 @@
   async function saveDisplayName(name) {
     const trimmed = name.trim();
     if (!trimmed) {
-      setSettingsStatus("Display name cannot be empty.", true);
+      setSettingsStatus(t("settings.nameEmpty"), true);
       return;
     }
     try {
@@ -2120,7 +2179,7 @@
         meData.display_name || meData.username;
       document.getElementById("set-name-input").value =
         meData.display_name || meData.username;
-      setSettingsStatus("Display name saved.");
+      setSettingsStatus(t("settings.nameSaved"));
     } catch (e) {
       setSettingsStatus(e.message, true);
     }
@@ -2140,7 +2199,7 @@
         body: JSON.stringify({ theme }),
       });
       meData = await res.json();
-      setSettingsStatus("Theme saved.");
+      setSettingsStatus(t("settings.themeSaved"));
     } catch (e) {
       applyTheme(meData && meData.theme);
       markThemeChoice((meData && meData.theme) || "light");
@@ -2150,7 +2209,7 @@
 
   async function savePassword(current, next) {
     if (next.length < 8) {
-      setSettingsStatus("New password must be at least 8 characters.", true);
+      setSettingsStatus(t("settings.passShort"), true);
       return;
     }
     // Deliberately not api(): a wrong current password is a 401, and api()
@@ -2163,16 +2222,18 @@
         body: JSON.stringify({ current_password: current, new_password: next }),
       });
       if (!res.ok) {
-        let message = `Request failed (${res.status})`;
+        let message;
         try {
           const body = await res.json();
-          if (body.error) message = body.error;
-        } catch (_) {}
+          message = errMessage(res.status, body);
+        } catch (_) {
+          message = t("err.request_failed", { status: res.status });
+        }
         throw new Error(message);
       }
       document.getElementById("set-pass-current").value = "";
       document.getElementById("set-pass-new").value = "";
-      setSettingsStatus("Password changed.");
+      setSettingsStatus(t("settings.passChanged"));
     } catch (e) {
       setSettingsStatus(e.message, true);
     }
@@ -2198,9 +2259,17 @@
   }
 
   function passkeySubtitle(pk) {
-    const parts = ["added " + new Date(pk.created_at).toLocaleDateString()];
+    const parts = [
+      t("passkey.added", {
+        date: new Date(pk.created_at).toLocaleDateString(dateLocale()),
+      }),
+    ];
     if (pk.last_used_at) {
-      parts.push("last used " + new Date(pk.last_used_at).toLocaleDateString());
+      parts.push(
+        t("passkey.lastUsed", {
+          date: new Date(pk.last_used_at).toLocaleDateString(dateLocale()),
+        })
+      );
     }
     if (pk.transports && pk.transports.length) {
       parts.push(pk.transports.join(", "));
@@ -2214,7 +2283,7 @@
     if (!rows.length) {
       const empty = document.createElement("p");
       empty.className = "passkey-empty";
-      empty.textContent = "No passkeys registered yet.";
+      empty.textContent = t("passkey.empty");
       list.appendChild(empty);
       return;
     }
@@ -2237,12 +2306,12 @@
       actions.className = "passkey-actions";
       const rename = document.createElement("button");
       rename.type = "button";
-      rename.textContent = "Rename";
+      rename.textContent = t("act.rename");
       rename.addEventListener("click", () => renamePasskey(pk));
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "danger";
-      remove.textContent = "Remove";
+      remove.textContent = t("act.remove");
       remove.addEventListener("click", () => removePasskey(pk));
       actions.appendChild(rename);
       actions.appendChild(remove);
@@ -2256,11 +2325,11 @@
   // Rename via prompt(): the field is edited rarely and briefly, and the
   // row it changes is right there on screen.
   async function renamePasskey(pk) {
-    const next = prompt("New name for this passkey:", pk.label);
+    const next = prompt(t("passkey.renamePrompt"), pk.label);
     if (next === null) return;
     const trimmed = next.trim();
     if (!trimmed) {
-      setSettingsStatus("Passkey name cannot be empty.", true);
+      setSettingsStatus(t("passkey.nameEmpty"), true);
       return;
     }
     try {
@@ -2269,7 +2338,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label: trimmed }),
       });
-      setSettingsStatus("Passkey renamed.");
+      setSettingsStatus(t("passkey.renamed"));
       await loadPasskeys();
     } catch (e) {
       setSettingsStatus(e.message, true);
@@ -2277,13 +2346,11 @@
   }
 
   async function removePasskey(pk) {
-    const sure = confirm(
-      'Remove the passkey "' + pk.label + '"? This device can no longer sign in with it.'
-    );
+    const sure = confirm(t("passkey.removeConfirm", { label: pk.label }));
     if (!sure) return;
     try {
       await api("/api/me/passkeys/" + pk.id, { method: "DELETE" });
-      setSettingsStatus("Passkey removed.");
+      setSettingsStatus(t("passkey.removed"));
       await loadPasskeys();
     } catch (e) {
       setSettingsStatus(e.message, true);
@@ -2299,16 +2366,10 @@
       !navigator.credentials ||
       !navigator.credentials.create
     ) {
-      setSettingsStatus(
-        "Passkeys need HTTPS (or localhost) - this browser blocks them here.",
-        true
-      );
+      setSettingsStatus(t("passkey.https"), true);
       return;
     }
-    const label = prompt(
-      'Name for the new passkey (for example: "phone", "security key"):',
-      "Passkey"
-    );
+    const label = prompt(t("passkey.namePrompt"), "Passkey");
     if (label === null) return;
     try {
       const startRes = await api("/api/passkeys/register/start", {
@@ -2324,15 +2385,13 @@
         });
       } catch (err) {
         setSettingsStatus(
-          err.name === "NotAllowedError"
-            ? "Passkey creation was cancelled or refused by the device."
-            : err.message,
+          err.name === "NotAllowedError" ? t("passkey.deviceRefused") : err.message,
           true
         );
         return;
       }
       if (!cred) {
-        setSettingsStatus("Passkey creation was cancelled.", true);
+        setSettingsStatus(t("passkey.cancelled"), true);
         return;
       }
       await api("/api/passkeys/register/finish", {
@@ -2343,7 +2402,7 @@
           credential: FxWebAuthn.credentialToJson(cred, "register"),
         }),
       });
-      setSettingsStatus("Passkey added.");
+      setSettingsStatus(t("passkey.addedStatus"));
       await loadPasskeys();
     } catch (e) {
       setSettingsStatus(e.message, true);
@@ -2420,13 +2479,13 @@
       const tdStatus = document.createElement("td");
       const statusBadge = document.createElement("span");
       statusBadge.className = "admin-badge " + (u.is_active ? "on" : "off");
-      statusBadge.textContent = u.is_active ? "Active" : "Inactive";
+      statusBadge.textContent = u.is_active ? t("admin.active") : t("admin.inactive");
       tdStatus.appendChild(statusBadge);
 
       const tdRole = document.createElement("td");
       const roleBadge = document.createElement("span");
       roleBadge.className = "admin-badge " + (u.is_admin ? "admin" : "member");
-      roleBadge.textContent = u.is_admin ? "Admin" : "Member";
+      roleBadge.textContent = u.is_admin ? t("admin.admin") : t("admin.member");
       tdRole.appendChild(roleBadge);
 
       const tdQuota = document.createElement("td");
@@ -2437,12 +2496,12 @@
       quotaInput.min = "0";
       quotaInput.step = "1";
       quotaInput.value = String(mibFromBytes(u.quota_bytes));
-      quotaInput.title = "Quota in MiB";
+      quotaInput.title = t("admin.quotaMiB");
       quotaInput.dataset.id = String(u.id);
       quotaInput.dataset.action = "quota";
       const usedEl = document.createElement("span");
       usedEl.className = "used";
-      usedEl.textContent = fmtBytes(u.used_bytes) + " used";
+      usedEl.textContent = t("admin.used", { size: fmtBytes(u.used_bytes) });
       tdQuota.appendChild(quotaInput);
       tdQuota.appendChild(document.createElement("br"));
       tdQuota.appendChild(usedEl);
@@ -2461,7 +2520,7 @@
       statusBtn.dataset.id = String(u.id);
       statusBtn.dataset.action = "toggle-active";
       statusBtn.dataset.active = u.is_active ? "1" : "0";
-      statusBtn.textContent = u.is_active ? "Deactivate" : "Activate";
+      statusBtn.textContent = u.is_active ? t("admin.deactivate") : t("admin.activate");
       if (u.id === myId) statusBtn.style.display = "none";
       actions.appendChild(statusBtn);
 
@@ -2471,7 +2530,7 @@
       roleBtn.dataset.id = String(u.id);
       roleBtn.dataset.action = "toggle-admin";
       roleBtn.dataset.admin = u.is_admin ? "1" : "0";
-      roleBtn.textContent = u.is_admin ? "Revoke admin" : "Make admin";
+      roleBtn.textContent = u.is_admin ? t("admin.revoke") : t("admin.make");
       actions.appendChild(roleBtn);
 
       const resetBtn = document.createElement("button");
@@ -2479,7 +2538,7 @@
       resetBtn.className = "btn secondary";
       resetBtn.dataset.id = String(u.id);
       resetBtn.dataset.action = "reset-password";
-      resetBtn.textContent = "Reset password";
+      resetBtn.textContent = t("admin.resetPw");
       actions.appendChild(resetBtn);
 
       tdActions.appendChild(actions);
@@ -2533,7 +2592,7 @@
     const id = Number(input.dataset.id);
     const mib = Number(input.value);
     if (!Number.isFinite(mib) || mib < 0) {
-      setAdminStatus("Quota must be a non-negative number of MiB.", true);
+      setAdminStatus(t("admin.quotaBad"), true);
       return;
     }
     setAdminStatus("");
@@ -2549,7 +2608,7 @@
   // copy. It is never retrievable again, so the dialog is the only place it
   // appears.
   function showResetModal(username, password) {
-    document.getElementById("reset-user").textContent = "For " + username + ":";
+    document.getElementById("reset-user").textContent = t("reset.user", { user: username });
     document.getElementById("reset-pass").textContent = password;
     resetModal.style.display = "flex";
   }
@@ -2725,6 +2784,34 @@
     if (e.dataTransfer) {
       uploadDropped(e.dataTransfer).catch((err) => alert(err.message));
     }
+  });
+
+  // A language switch repaints everything that was built from the old
+  // dictionary: the rows (purge dates, folder labels, enc tooltips), the
+  // bulk bar, the storage chip, open dialogs and the editor's counts. No
+  // data changes here - only the labels around it.
+  document.addEventListener("fxcloud:langchange", () => {
+    renderRows(rawEntries);
+    updateBulkBar();
+    renderStorageLabel();
+    if (meData) {
+      document.getElementById("set-since").textContent = new Date(
+        meData.created_at
+      ).toLocaleDateString(dateLocale());
+      document.getElementById("set-storage").textContent =
+        meData.used_bytes != null
+          ? t("storage.of", {
+              used: fmtBytes(meData.used_bytes),
+              quota: fmtBytes(meData.quota_bytes),
+            })
+          : "";
+    }
+    if (settingsModal.style.display !== "none") loadPasskeys().catch(() => {});
+    if (adminModal.style.display !== "none") loadAdminUsers().catch(() => {});
+    if (shareModal.style.display !== "none" && shareEntries.length === 1) {
+      loadShareList().catch(() => {});
+    }
+    if (editorEntry) updateEditorMeta();
   });
 
   // ---------- init ----------

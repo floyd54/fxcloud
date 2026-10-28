@@ -11,16 +11,18 @@
     <div class="brand">fx<span>cloud</span><b class="brand-version">{{version}}</b></div>
     <div class="spacer"></div>
     <button class="enc-badge" id="enc-badge" type="button" style="display:none"></button>
-    <span class="storage" id="storage-label" title="storage used of quota"></span>
+    <span class="storage" id="storage-label" title="storage used of quota"
+          data-i18n-title="storage.title"></span>
+    <div class="lang-switch" id="lang-switch" data-i18n-aria="lang.aria"></div>
     <div class="user-menu">
       <button class="user-btn" id="user-menu-btn" type="button"
               aria-haspopup="true" aria-expanded="false">
         <span id="user-label"></span><span class="caret">▾</span>
       </button>
       <div class="user-dropdown" id="user-dropdown" style="display:none">
-        <button type="button" id="user-settings-btn">Settings</button>
-        <button type="button" id="user-admin-btn" style="display:none">User administration</button>
-        <button type="button" id="logout-btn">Sign out</button>
+        <button type="button" id="user-settings-btn" data-i18n="nav.settings">Settings</button>
+        <button type="button" id="user-admin-btn" style="display:none" data-i18n="nav.admin">User administration</button>
+        <button type="button" id="logout-btn" data-i18n="nav.signout">Sign out</button>
       </div>
     </div>
   </header>
@@ -29,22 +31,23 @@
     <div class="breadcrumb" id="breadcrumb"></div>
 
     <div class="toolbar">
-      <button class="btn" id="new-file-btn">＋ New file</button>
-      <button class="btn" id="new-folder-btn">＋ New folder</button>
-      <button class="btn" id="upload-btn">⬆ Upload file</button>
-      <button class="btn" id="upload-folder-btn">⬆ Upload folder</button>
-      <button class="btn secondary" id="trash-btn">Trash</button>
-      <button class="btn secondary" id="empty-trash-btn" style="display:none">Empty trash</button>
+      <button class="btn" id="new-file-btn" data-i18n="files.new">＋ New file</button>
+      <button class="btn" id="new-folder-btn" data-i18n="files.newFolder">＋ New folder</button>
+      <button class="btn" id="upload-btn" data-i18n="files.upload">⬆ Upload file</button>
+      <button class="btn" id="upload-folder-btn" data-i18n="files.uploadFolder">⬆ Upload folder</button>
+      <button class="btn secondary" id="trash-btn" data-i18n="files.trash">Trash</button>
+      <button class="btn secondary" id="empty-trash-btn" style="display:none" data-i18n="files.emptyTrash">Empty trash</button>
       <input type="file" id="file-input" style="display:none" multiple />
       <input type="file" id="folder-input" webkitdirectory multiple style="display:none" />
       <div class="grow"></div>
       <button class="btn secondary" id="hidden-toggle" type="button" aria-pressed="false"
-              title="Show files and folders whose name starts with a dot">Show hidden</button>
+              title="Show files and folders whose name starts with a dot"
+              data-i18n="files.showHidden" data-i18n-title="files.showHiddenHint">Show hidden</button>
     </div>
 
     <div class="dropzone" id="dropzone">
-      Drop files <strong>or whole folders</strong> here to upload, or use the
-      upload buttons above.
+      <span data-i18n="drop.a">Drop files</span> <strong data-i18n="drop.b">or whole folders</strong>
+      <span data-i18n="drop.c">here to upload, or use the upload buttons above.</span>
     </div>
 
     <div class="upload-status" id="upload-status" style="display:none"></div>
@@ -53,14 +56,14 @@
     <div class="bulkbar" id="bulkbar" style="display:none">
       <span class="bulk-count" id="bulk-count">0 selected</span>
       <div class="grow"></div>
-      <button class="btn" id="bulk-download" type="button">⬇ Download</button>
-      <button class="btn secondary" id="bulk-move" type="button">Move to…</button>
-      <button class="btn secondary" id="bulk-copy" type="button">Copy to…</button>
-      <button class="btn secondary" id="bulk-share" type="button">Share</button>
-      <button class="btn danger" id="bulk-delete" type="button">Delete</button>
-      <button class="btn" id="bulk-restore" type="button" style="display:none">♻ Restore</button>
-      <button class="btn danger" id="bulk-purge" type="button" style="display:none">Delete permanently</button>
-      <button class="btn secondary" id="bulk-clear" type="button">Clear</button>
+      <button class="btn" id="bulk-download" type="button" data-i18n="bulk.download">⬇ Download</button>
+      <button class="btn secondary" id="bulk-move" type="button" data-i18n="bulk.move">Move to…</button>
+      <button class="btn secondary" id="bulk-copy" type="button" data-i18n="bulk.copy">Copy to…</button>
+      <button class="btn secondary" id="bulk-share" type="button" data-i18n="bulk.share">Share</button>
+      <button class="btn danger" id="bulk-delete" type="button" data-i18n="bulk.delete">Delete</button>
+      <button class="btn" id="bulk-restore" type="button" style="display:none" data-i18n="bulk.restore">♻ Restore</button>
+      <button class="btn danger" id="bulk-purge" type="button" style="display:none" data-i18n="bulk.purge">Delete permanently</button>
+      <button class="btn secondary" id="bulk-clear" type="button" data-i18n="bulk.clear">Clear</button>
     </div>
 
     <div class="panel">
@@ -68,16 +71,17 @@
         <thead>
           <tr>
             <th class="check-col">
-              <input type="checkbox" id="select-all" title="Select all items in this folder" />
+              <input type="checkbox" id="select-all" title="Select all items in this folder"
+                     data-i18n-title="files.selectAll" />
             </th>
-            <th class="sortable active" data-sort="name">Name<span class="arrow"></span></th>
-            <th class="sortable size-col" data-sort="size">Size<span class="arrow"></span></th>
-            <th class="sortable date-col" data-sort="date">Modified<span class="arrow"></span></th>
+            <th class="sortable active" data-sort="name"><span data-i18n="table.name">Name</span><span class="arrow"></span></th>
+            <th class="sortable size-col" data-sort="size"><span data-i18n="table.size">Size</span><span class="arrow"></span></th>
+            <th class="sortable date-col" data-sort="date"><span data-i18n="table.modified">Modified</span><span class="arrow"></span></th>
             <th class="actions-col"></th>
           </tr>
         </thead>
         <tbody id="file-rows">
-          <tr><td colspan="5"><div class="empty">Loading…</div></td></tr>
+          <tr><td colspan="5"><div class="empty" data-i18n="files.loading">Loading…</div></td></tr>
         </tbody>
       </table>
     </div>
@@ -86,22 +90,23 @@
   <!-- Share dialog -->
   <div class="modal-backdrop" id="share-modal" style="display:none">
     <div class="modal">
-      <h3 id="share-title">Share</h3>
+      <h3 id="share-title" data-i18n="bulk.share">Share</h3>
       <div id="share-list"></div>
       <div class="share-form">
-        <select id="share-username" aria-label="User to share with"></select>
+        <select id="share-username" aria-label="User to share with"
+                data-i18n-aria="share.userAria"></select>
         <div id="share-fp" class="share-fp"></div>
         <div class="perm-checks" id="perm-checks">
-          <label><input type="checkbox" value="1" checked /> Read</label>
-          <label><input type="checkbox" value="2" checked /> Write</label>
-          <label><input type="checkbox" value="4" checked /> Create</label>
-          <label><input type="checkbox" value="8" checked /> Delete</label>
-          <label><input type="checkbox" value="16" checked /> Share</label>
+          <label><input type="checkbox" value="1" checked /> <span data-i18n="share.perm.read">Read</span></label>
+          <label><input type="checkbox" value="2" checked /> <span data-i18n="share.perm.write">Write</span></label>
+          <label><input type="checkbox" value="4" checked /> <span data-i18n="share.perm.create">Create</span></label>
+          <label><input type="checkbox" value="8" checked /> <span data-i18n="share.perm.delete">Delete</span></label>
+          <label><input type="checkbox" value="16" checked /> <span data-i18n="share.perm.share">Share</span></label>
         </div>
-        <button class="btn" id="share-add-btn" type="button">Share</button>
+        <button class="btn" id="share-add-btn" type="button" data-i18n="share.add">Share</button>
       </div>
       <div class="modal-footer">
-        <button class="btn" id="share-close-btn" type="button">Close</button>
+        <button class="btn" id="share-close-btn" type="button" data-i18n="act.close">Close</button>
       </div>
     </div>
   </div>
@@ -109,12 +114,12 @@
   <!-- Move/Copy destination picker -->
   <div class="modal-backdrop" id="transfer-modal" style="display:none">
     <div class="modal pick-modal">
-      <h3 id="transfer-title">Move to…</h3>
+      <h3 id="transfer-title" data-i18n="bulk.move">Move to…</h3>
       <div class="pick-crumb" id="pick-crumb"></div>
       <div class="pick-list" id="pick-list"></div>
       <div class="modal-footer">
-        <button class="btn secondary" id="transfer-cancel" type="button">Cancel</button>
-        <button class="btn" id="transfer-confirm" type="button">Move here</button>
+        <button class="btn secondary" id="transfer-cancel" type="button" data-i18n="act.cancel">Cancel</button>
+        <button class="btn" id="transfer-confirm" type="button" data-i18n="transfer.moveHere">Move here</button>
       </div>
     </div>
   </div>
@@ -122,59 +127,69 @@
   <!-- User settings (opened from the topbar menu) -->
   <div class="modal-backdrop" id="settings-modal" style="display:none">
     <div class="modal settings-modal">
-      <h3>Settings</h3>
+      <h3 data-i18n="settings.title">Settings</h3>
 
       <section class="settings-section">
-        <h4>Account</h4>
+        <h4 data-i18n="settings.account">Account</h4>
         <div class="settings-info">
-          <div><span class="label">Username</span><span id="set-username"></span></div>
-          <div><span class="label">Member since</span><span id="set-since"></span></div>
-          <div><span class="label">Storage</span><span id="set-storage"></span></div>
+          <div><span class="label" data-i18n="settings.username">Username</span><span id="set-username"></span></div>
+          <div><span class="label" data-i18n="settings.since">Member since</span><span id="set-since"></span></div>
+          <div><span class="label" data-i18n="settings.storage">Storage</span><span id="set-storage"></span></div>
         </div>
       </section>
 
       <section class="settings-section">
-        <h4>Display name</h4>
+        <h4 data-i18n="settings.displayName">Display name</h4>
         <form id="set-name-form" class="settings-form">
           <input type="text" id="set-name-input" maxlength="100" autocomplete="name" />
-          <button class="btn" type="submit">Save</button>
+          <button class="btn" type="submit" data-i18n="act.save">Save</button>
         </form>
       </section>
 
       <section class="settings-section">
-        <h4>Theme</h4>
+        <h4 data-i18n="settings.theme">Theme</h4>
         <div class="theme-picker" id="theme-picker">
-          <button type="button" id="theme-light">Light</button>
-          <button type="button" id="theme-dark">Dark</button>
+          <button type="button" id="theme-light" data-i18n="settings.light">Light</button>
+          <button type="button" id="theme-dark" data-i18n="settings.dark">Dark</button>
         </div>
       </section>
 
       <section class="settings-section">
-        <h4>Password</h4>
+        <h4 data-i18n="settings.lang">Language</h4>
+        <div class="lang-switch settings-lang" id="settings-lang"></div>
+        <p class="settings-hint" data-i18n="settings.langHint">
+          Applies immediately and is remembered in this browser.
+        </p>
+      </section>
+
+      <section class="settings-section">
+        <h4 data-i18n="settings.password">Password</h4>
         <form id="set-pass-form" class="settings-form">
           <input type="password" id="set-pass-current" placeholder="Current password"
+                 data-i18n-ph="settings.passCurrent"
                  autocomplete="current-password" />
           <input type="password" id="set-pass-new" placeholder="New password (min 8 characters)"
+                 data-i18n-ph="settings.passNew"
                  autocomplete="new-password" />
-          <button class="btn" type="submit">Change password</button>
+          <button class="btn" type="submit" data-i18n="settings.passChange">Change password</button>
         </form>
       </section>
 
       <section class="settings-section">
-        <h4>Passkeys</h4>
-        <p class="settings-hint">
+        <h4 data-i18n="settings.passkeys">Passkeys</h4>
+        <p class="settings-hint" data-i18n="settings.passkeysHint">
           A passkey signs you in with a PIN or biometrics instead of a
           password. The private half stays on your device; the server only
           stores the public key, so a lost device can be removed here.
         </p>
         <div id="passkey-list" class="passkey-list"></div>
-        <button class="btn secondary" id="passkey-add-btn" type="button">Add passkey</button>
+        <button class="btn secondary" id="passkey-add-btn" type="button" data-i18n="settings.addPasskey">Add passkey</button>
       </section>
 
       <p class="settings-status" id="set-status"></p>
 
       <div class="modal-footer">
-        <button class="btn secondary" id="set-close-btn" type="button">Close</button>
+        <button class="btn secondary" id="set-close-btn" type="button" data-i18n="act.close">Close</button>
       </div>
     </div>
   </div>
@@ -182,16 +197,16 @@
   <!-- User administration (admin accounts only, opened from the topbar menu) -->
   <div class="modal-backdrop" id="admin-modal" style="display:none">
     <div class="modal admin-modal">
-      <h3>User administration</h3>
+      <h3 data-i18n="admin.title">User administration</h3>
 
       <div class="admin-table-wrap">
         <table class="admin-table">
           <thead>
             <tr>
-              <th>User</th>
-              <th>Status</th>
-              <th>Role</th>
-              <th>Quota</th>
+              <th data-i18n="admin.user">User</th>
+              <th data-i18n="admin.status">Status</th>
+              <th data-i18n="admin.role">Role</th>
+              <th data-i18n="admin.quota">Quota</th>
               <th class="admin-actions-col"></th>
             </tr>
           </thead>
@@ -202,7 +217,7 @@
       <p class="settings-status" id="admin-status"></p>
 
       <div class="modal-footer">
-        <button class="btn secondary" id="admin-close-btn" type="button">Close</button>
+        <button class="btn secondary" id="admin-close-btn" type="button" data-i18n="act.close">Close</button>
       </div>
     </div>
   </div>
@@ -210,18 +225,18 @@
   <!-- Password reset result (generated temporary password) -->
   <div class="modal-backdrop" id="reset-modal" style="display:none">
     <div class="modal reset-modal">
-      <h3>Temporary password</h3>
+      <h3 data-i18n="reset.title">Temporary password</h3>
       <p class="reset-user" id="reset-user"></p>
-      <p class="reset-hint">
+      <p class="reset-hint" data-i18n="reset.hint">
         Give this password to the user. It works for the next sign-in only --
         the user should change it in Settings right away.
       </p>
       <div class="reset-pass-box">
         <code id="reset-pass"></code>
-        <button class="btn secondary" id="reset-copy-btn" type="button">Copy</button>
+        <button class="btn secondary" id="reset-copy-btn" type="button" data-i18n="reset.copy">Copy</button>
       </div>
       <div class="modal-footer">
-        <button class="btn" id="reset-close-btn" type="button">Done</button>
+        <button class="btn" id="reset-close-btn" type="button" data-i18n="reset.done">Done</button>
       </div>
     </div>
   </div>
@@ -232,8 +247,8 @@
       <div class="preview-head">
         <span id="preview-name"></span>
         <div class="grow"></div>
-        <a id="preview-newtab" href="#" target="_blank" rel="noopener">Open in new tab</a>
-        <button class="btn secondary" id="preview-close-btn" type="button">Close</button>
+        <a id="preview-newtab" href="#" target="_blank" rel="noopener" data-i18n="preview.newTab">Open in new tab</a>
+        <button class="btn secondary" id="preview-close-btn" type="button" data-i18n="act.close">Close</button>
       </div>
       <div class="preview-body" id="preview-body"></div>
       <div class="editor" id="editor-root" style="display:none">
@@ -242,8 +257,8 @@
           <span class="editor-meta" id="editor-meta"></span>
           <div class="grow"></div>
           <button class="btn secondary" id="editor-md-toggle" type="button"
-                  aria-pressed="false" style="display:none">Markdown</button>
-          <button class="btn" id="editor-save-btn" type="button">Save</button>
+                  aria-pressed="false" style="display:none" data-i18n="editor.markdown">Markdown</button>
+          <button class="btn" id="editor-save-btn" type="button" data-i18n="act.save">Save</button>
         </div>
         <div class="editor-main">
           <textarea id="editor-text" spellcheck="false" wrap="off"></textarea>
@@ -259,131 +274,132 @@
 
       <!-- First run: choose the storage passphrase -->
       <div class="enc-pane" id="enc-pane-setup" style="display:none">
-        <h3>Enable file encryption</h3>
+        <h3 data-i18n="enc.setup.title">Enable file encryption</h3>
         <p class="enc-lead">
-          Files you upload are encrypted <strong>in this browser</strong> before
-          they leave your device. The server receives ciphertext, a wrapped key
+          <span data-i18n="enc.setup.lead1">Files you upload are encrypted</span>
+          <strong data-i18n="enc.setup.lead2">in this browser</strong>
+          <span data-i18n="enc.setup.lead3">before they leave your device. The server receives ciphertext, a wrapped key
           and no readable content for them - it can still see file names,
-          sizes and sharing, because those are what the storage service needs.
+          sizes and sharing, because those are what the storage service needs.</span>
         </p>
         <!-- ENCRYPTION.md 5.7 / DECISION 3: reusing the login password is the
              default, and the separate passphrase stays one click away. -->
         <div class="enc-choice">
           <label class="enc-option" for="enc-use-login">
             <input type="radio" name="enc-secret" id="enc-use-login" value="login" checked />
-            <span>Use my fxcloud login password</span>
+            <span data-i18n="enc.setup.useLogin">Use my fxcloud login password</span>
           </label>
           <label class="enc-option" for="enc-use-pass">
             <input type="radio" name="enc-secret" id="enc-use-pass" value="pass" />
-            <span>Choose a separate passphrase</span>
+            <span data-i18n="enc.setup.usePass">Choose a separate passphrase</span>
           </label>
         </div>
         <div class="field">
-          <label for="enc-setup-pass" id="enc-setup-pass-label">Your fxcloud login password</label>
+          <label for="enc-setup-pass" id="enc-setup-pass-label" data-i18n="enc.setup.passLabel">Your fxcloud login password</label>
           <input type="password" id="enc-setup-pass" autocomplete="current-password" />
         </div>
         <div class="field" id="enc-setup-row2" style="display:none">
-          <label for="enc-setup-pass2">Repeat passphrase</label>
+          <label for="enc-setup-pass2" data-i18n="enc.repeatPass">Repeat passphrase</label>
           <input type="password" id="enc-setup-pass2" autocomplete="new-password" />
         </div>
         <p class="enc-lead" id="enc-setup-hint"></p>
         <div class="modal-footer">
-          <button class="btn secondary" id="enc-setup-cancel" type="button">Cancel</button>
-          <button class="btn" id="enc-setup-go" type="button" disabled>Continue</button>
+          <button class="btn secondary" id="enc-setup-cancel" type="button" data-i18n="act.cancel">Cancel</button>
+          <button class="btn" id="enc-setup-go" type="button" disabled data-i18n="enc.setup.go">Continue</button>
         </div>
       </div>
 
       <!-- Shown once, right after setup: the recovery key -->
       <div class="enc-pane" id="enc-pane-saved" style="display:none">
-        <h3>Save your recovery key</h3>
-        <p class="enc-lead">
+        <h3 data-i18n="enc.saved.title">Save your recovery key</h3>
+        <p class="enc-lead" data-i18n="enc.saved.lead">
           This is the only way back into your encrypted files if the
           passphrase is forgotten. It is shown once and never stored anywhere
           you can retrieve it later.
         </p>
         <pre class="enc-recovery" id="enc-saved-key"></pre>
         <div class="modal-footer">
-          <button class="btn secondary" id="enc-saved-dl" type="button">
+          <button class="btn secondary" id="enc-saved-dl" type="button" data-i18n="enc.saved.dl">
             Download recovery key
           </button>
         </div>
         <label class="enc-ack">
           <input type="checkbox" id="enc-saved-ack" />
-          I have saved this recovery key somewhere safe and offline.
+          <span data-i18n="enc.saved.ack">I have saved this recovery key somewhere safe and offline.</span>
         </label>
-        <p class="hint">
+        <p class="hint" data-i18n="enc.saved.hint">
           Anyone holding this file can decrypt your files. Losing both it and
           the passphrase means nobody - including us - can read them again.
         </p>
         <div class="modal-footer">
-          <button class="btn" id="enc-saved-go" type="button" disabled>Enable encryption</button>
+          <button class="btn" id="enc-saved-go" type="button" disabled data-i18n="enc.saved.go">Enable encryption</button>
         </div>
       </div>
 
       <!-- Every later tab: unlock -->
       <div class="enc-pane" id="enc-pane-unlock" style="display:none">
-        <h3>This tab is unencrypted</h3>
-        <p class="enc-lead">
+        <h3 data-i18n="enc.unlock.title">This tab is unencrypted</h3>
+        <p class="enc-lead" data-i18n="enc.unlock.lead">
           Enter your storage passphrase to turn encryption on here: new files
           and uploads are then encrypted in this browser, and this account's
           encrypted files open. The keys stay in this tab's memory only - a
           reload puts you back to Unencrypted.
         </p>
         <div class="field">
-          <label for="enc-unlock-pass">Storage passphrase</label>
+          <label for="enc-unlock-pass" data-i18n="enc.passphrase">Storage passphrase</label>
           <input type="password" id="enc-unlock-pass" autocomplete="current-password" />
         </div>
         <div class="modal-footer">
-          <button class="btn secondary" id="enc-unlock-recover" type="button">
+          <button class="btn secondary" id="enc-unlock-recover" type="button" data-i18n="enc.unlock.recover">
             Use recovery key
           </button>
-          <button class="btn secondary" id="enc-unlock-cancel" type="button">Cancel</button>
-          <button class="btn" id="enc-unlock-go" type="button">Unlock</button>
+          <button class="btn secondary" id="enc-unlock-cancel" type="button" data-i18n="act.cancel">Cancel</button>
+          <button class="btn" id="enc-unlock-go" type="button" data-i18n="enc.unlock.go">Unlock</button>
         </div>
       </div>
 
       <!-- Forgotten passphrase: recovery key + new passphrase -->
       <div class="enc-pane" id="enc-pane-recover" style="display:none">
-        <h3>Recover with your recovery key</h3>
-        <p class="enc-lead">
+        <h3 data-i18n="enc.recover.title">Recover with your recovery key</h3>
+        <p class="enc-lead" data-i18n="enc.recover.lead">
           Paste the 64 hex digits, then pick a new storage passphrase. Every
           existing encrypted file keeps working: only the outer wrapper
           changes.
         </p>
         <div class="field">
-          <label for="enc-rcv-key">Recovery key</label>
+          <label for="enc-rcv-key" data-i18n="enc.recover.keyLabel">Recovery key</label>
           <textarea id="enc-rcv-key" rows="4" spellcheck="false"
                     placeholder="a1b2c3d4 e5f6..."></textarea>
         </div>
         <div class="field">
-          <label for="enc-rcv-pass">New storage passphrase</label>
+          <label for="enc-rcv-pass" data-i18n="enc.recover.passLabel">New storage passphrase</label>
           <input type="password" id="enc-rcv-pass" autocomplete="new-password" />
         </div>
         <div class="field">
-          <label for="enc-rcv-pass2">Repeat passphrase</label>
+          <label for="enc-rcv-pass2" data-i18n="enc.repeatPass">Repeat passphrase</label>
           <input type="password" id="enc-rcv-pass2" autocomplete="new-password" />
         </div>
         <div class="modal-footer">
-          <button class="btn secondary" id="enc-rcv-back" type="button">Back</button>
-          <button class="btn" id="enc-rcv-go" type="button">Recover</button>
+          <button class="btn secondary" id="enc-rcv-back" type="button" data-i18n="enc.recover.back">Back</button>
+          <button class="btn" id="enc-rcv-go" type="button" data-i18n="enc.recover.go">Recover</button>
         </div>
       </div>
 
       <!-- Unlocked: what this account's key looks like, and a lock switch -->
       <div class="enc-pane" id="enc-pane-info" style="display:none">
-        <h3>Encryption is on</h3>
-        <p class="enc-lead">
+        <h3 data-i18n="enc.info.title">Encryption is on</h3>
+        <p class="enc-lead" data-i18n="enc.info.lead">
           Uploads are encrypted in this browser. Compare the fingerprint below
           with the one shown to the other person before you trust a key
           exchange (DECISION 6).
         </p>
         <div class="field">
-          <label>Key fingerprint</label>
+          <label data-i18n="enc.info.fpLabel">Key fingerprint</label>
           <div class="enc-fingerprint" id="enc-info-fp">—</div>
         </div>
         <div class="modal-footer">
-          <button class="btn secondary" id="enc-info-lock" type="button">Turn off for this tab</button>
-          <button class="btn" id="enc-info-close" type="button">Close</button>
+          <button class="btn secondary" id="enc-info-lock" type="button" data-i18n="enc.info.lock">Turn off for this tab</button>
+          <button class="btn" id="enc-info-close" type="button" data-i18n="act.close">Close</button>
         </div>
       </div>
 
@@ -391,6 +407,7 @@
     </div>
   </div>
 
+  <script src="/assets/i18n.js"></script>
   <script src="/assets/hashwasm-argon2.js"></script>
   <script src="/assets/fxcrypto.js"></script>
   <script src="/assets/fxenc.js"></script>

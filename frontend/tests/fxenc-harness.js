@@ -258,6 +258,10 @@ if (USE_WORKER) {
   };
 }
 
+// i18n.js first, exactly like both pages load it: fxenc.js translates its
+// badge and pane strings through it. English is the default and the engine
+// needs no init() here - without a real document it stays on the source.
+require(path.join(ASSETS, "i18n.js"));
 // The module under test: an IIFE that publishes globalThis.FXEnc.
 require(path.join(ASSETS, "fxenc.js"));
 const FXEnc = globalThis.FXEnc;

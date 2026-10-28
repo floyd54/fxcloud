@@ -439,6 +439,9 @@ pub struct BatchFailure {
     /// Entry name when it could still be looked up, `None` otherwise.
     pub name: Option<String>,
     pub error: String,
+    /// Stable error code, same vocabulary as the `code` field of a plain
+    /// error response, so the UI can translate per-item failures.
+    pub code: String,
 }
 
 /// Result of a batch operation: what went through, and what didn't.
@@ -459,10 +462,17 @@ impl BatchOutcome {
 
     /// Record a failed item, keeping the entry's name for the error message.
     ///
-    /// The caller passes [`crate::error::AppError::user_message`] so internal
-    /// 5xx details never reach the client.
-    pub fn failure(&mut self, id: i64, name: Option<String>, error: String) {
-        self.failed.push(BatchFailure { id, name, error });
+    /// The caller passes the [`crate::error::AppError`] itself: the client
+    /// gets the redacted `user_message` plus the stable `code`, so internal
+    /// 5xx details still never reach it while the UI can translate the
+    /// failure (i18n.js `err.*`).
+    pub fn failure(&mut self, id: i64, name: Option<String>, error: crate::error::AppError) {
+        self.failed.push(BatchFailure {
+            id,
+            name,
+            error: error.user_message(),
+            code: error.code().to_string(),
+        });
     }
 }
 

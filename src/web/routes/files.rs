@@ -722,7 +722,7 @@ pub async fn batch_delete(
             Ok(()) => out.success(id),
             Err(e) => {
                 let name = entry_name(&state, user.id(), id).await;
-                out.failure(id, name, e.user_message());
+                out.failure(id, name, e);
             }
         }
     }
@@ -822,7 +822,7 @@ pub async fn batch_move(
             Ok(()) => out.success(id),
             Err(e) => {
                 let name = entry_name(&state, user.id(), id).await;
-                out.failure(id, name, e.user_message());
+                out.failure(id, name, e);
             }
         }
     }
@@ -858,7 +858,7 @@ pub async fn batch_copy(
             Ok(()) => out.success(id),
             Err(e) => {
                 let name = entry_name(&state, user.id(), id).await;
-                out.failure(id, name, e.user_message());
+                out.failure(id, name, e);
             }
         }
     }
