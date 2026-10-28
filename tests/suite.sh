@@ -2070,6 +2070,38 @@ grep -q 'entries = showHidden ? entries : entries\.filter' "$UI" \
   && ok "rows are filtered by the toggle before the sort" \
   || bad "the toggle does not filter the rows"
 
+# ---- gallery arrows (lightbox navigation) ----
+# The lightbox walks the listing on screen: previewable rows in display
+# order, arrows at both ends, click or arrow key, one dirty-guard away from
+# unsaved text.
+note "gallery arrows walk the listing inside the lightbox"
+IDX=$REPO/frontend/index.html
+CSS=$REPO/frontend/assets/style.css
+grep -q 'id="preview-prev-btn"' "$IDX" && grep -q 'id="preview-next-btn"' "$IDX" \
+  && ok "the lightbox carries prev/next buttons" \
+  || bad "index.html lacks the gallery arrow buttons"
+grep -q 'function buildGallery' "$UI" && grep -q 'currentEntries\.filter' "$UI" \
+  && ok "the gallery is the listing on screen, in display order" \
+  || bad "app.js does not build the gallery from currentEntries"
+grep -q 'function stepPreview' "$UI" && grep -q 'editorEntry && editorDirty() && !confirm(t("confirm.discard"))' "$UI" \
+  && ok "stepping away from a dirty editor asks first (same rule as Close)" \
+  || bad "stepPreview has no dirty-editor guard"
+grep -q 'e\.key === "ArrowLeft"' "$UI" && grep -q 'e\.key === "ArrowRight"' "$UI" \
+  && ok "arrow keys walk the gallery next to the buttons" \
+  || bad "no ArrowLeft/ArrowRight handling for the lightbox"
+grep -q 'el\.tagName === "INPUT" || el\.tagName === "TEXTAREA" || el\.isContentEditable' "$UI" \
+  && ok "arrows never fire while the caret sits in the editor" \
+  || bad "the arrow handler does not spare text inputs"
+NAVL=$(grep -c '"preview\.\(prev\|next\)"' "$REPO/frontend/assets/i18n.js")
+[ "$NAVL" = "6" ] && ok "both arrow labels exist in all three dictionaries" \
+  || bad "preview.prev/next appear $NAVL times in i18n.js, expected 6"
+grep -q 'buildGallery(previewEntry)' "$UI" \
+  && ok "a language switch restamps the arrow labels" \
+  || bad "the arrow labels stay in the old language"
+grep -q '^\.preview-nav {' "$CSS" && grep -q '\.preview-nav\[hidden\]' "$CSS" \
+  && ok "the arrows are styled and honour the hidden attribute" \
+  || bad "style.css lacks the .preview-nav block"
+
 # ---- toolbar button hierarchy ----
 # One rule across the file list's two button rows: a primary (.btn) action
 # carries an icon, a secondary or danger one is plain text. Every glyph is

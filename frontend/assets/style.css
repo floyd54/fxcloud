@@ -486,6 +486,7 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
 
 /* ---------- file preview (lightbox) ---------- */
 .preview-modal {
+  position: relative; /* the gallery arrows anchor to the panel */
   width: min(920px, calc(100vw - 32px));
   padding: 0;
   display: flex;
@@ -521,6 +522,29 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
   border: 0;
   background: #fff;
 }
+/* Gallery arrows: dark discs over the panel edges, one step per click.
+   app.js hides them at the ends of the gallery (`hidden` attribute). */
+.preview-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  cursor: pointer;
+}
+.preview-nav:hover { background: rgba(0, 0, 0, 0.7); }
+.preview-nav[hidden] { display: none; }
+.preview-nav.preview-prev { left: 10px; }
+.preview-nav.preview-next { right: 10px; }
+.preview-nav svg { width: 22px; height: 22px; display: block; }
 tr.previewable { cursor: pointer; }
 
 /* ---------- text editor (lightbox) ---------- */

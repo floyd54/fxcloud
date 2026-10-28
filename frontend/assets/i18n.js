@@ -215,6 +215,8 @@
     "preview.encEditHint":
       "diese Datei ist verschl\u00fcsselt - Verschl\u00fcsselung \u00fcber das Abzeichen aktivieren, um sie zu bearbeiten",
     "preview.newTab": "In neuem Tab \u00f6ffnen",
+    "preview.prev": "Vorheriges",
+    "preview.next": "N\u00e4chstes",
     "editor.loading": "l\u00e4dt...",
     "editor.saving": "speichert...",
     "editor.saved": "gespeichert",
@@ -646,6 +648,8 @@
     "preview.encEditHint":
       "this file is encrypted - turn encryption on from the badge to edit it",
     "preview.newTab": "Open in new tab",
+    "preview.prev": "Previous",
+    "preview.next": "Next",
     "editor.loading": "loading...",
     "editor.saving": "saving...",
     "editor.saved": "saved",
@@ -1067,6 +1071,8 @@
     "preview.encEditHint":
       "che'vam chuS - choHmeH chuSQang yIchu'",
     "preview.newTab": "tab chu' poS",
+    "preview.prev": "Qav",
+    "preview.next": "wav'",
     "editor.loading": "laD...",
     "editor.saving": "qan...",
     "editor.saved": "qanlu'",

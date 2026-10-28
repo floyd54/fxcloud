@@ -1043,11 +1043,50 @@
     body.appendChild(msg);
   }
 
+  // The gallery the arrows walk: every previewable row of the listing on
+  // screen, in its display order - an image folder becomes an image
+  // gallery, a mixed folder its natural sequence. A preview opened from
+  // somewhere that is not the listing (right after creating a row, a
+  // dialog) finds no match and shows no arrows.
+  let previewGallery = [];
+  let previewIndex = -1;
+
+  function buildGallery(entry) {
+    previewGallery = currentEntries.filter(
+      (f) => !f.is_dir && (permsOf(f) & PERM_READ) && previewKind(f.name, f.mime)
+    );
+    previewIndex = previewGallery.findIndex((f) => f.id === entry.id);
+    updateNav();
+  }
+
+  function updateNav() {
+    const prev = document.getElementById("preview-prev-btn");
+    const next = document.getElementById("preview-next-btn");
+    prev.title = t("preview.prev");
+    prev.setAttribute("aria-label", prev.title);
+    next.title = t("preview.next");
+    next.setAttribute("aria-label", next.title);
+    // Arrows vanish at the ends of the gallery - and when this preview is
+    // not part of one.
+    prev.hidden = previewIndex <= 0;
+    next.hidden = previewIndex < 0 || previewIndex + 1 >= previewGallery.length;
+  }
+
+  // One step through the gallery; the same dirty-editor guard Close uses,
+  // so arrowing away from unsaved text still asks first.
+  async function stepPreview(delta) {
+    const target = previewGallery[previewIndex + delta];
+    if (!target) return;
+    if (editorEntry && editorDirty() && !confirm(t("confirm.discard"))) return;
+    await openPreview(target);
+  }
+
   async function openPreview(entry) {
     const kind = previewKind(entry.name, entry.mime);
     if (!kind || entry.is_dir) return;
     previewEntry = entry;
     releasePreviewUrl();
+    buildGallery(entry);
     document.getElementById("preview-name").textContent = entry.name;
     const src = `/api/files/preview?id=${entry.id}`;
     const encrypted = entry.enc_version > 0;
@@ -2714,6 +2753,20 @@
   previewModal.addEventListener("click", (e) => {
     if (e.target === previewModal) closePreview();
   });
+  // Arrow keys walk the gallery while the lightbox is open - but never
+  // while the caret sits in the editor or an input, where arrows move text.
+  document.addEventListener("keydown", (e) => {
+    if (previewModal.style.display !== "flex") return;
+    const el = e.target;
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      stepPreview(-1);
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      stepPreview(1);
+    }
+  });
   // Multi-selection: header checkbox selects the whole listing (deselecting
   // it clears everything, including a partial selection).
   document.getElementById("select-all").addEventListener("change", (e) => {
@@ -2806,6 +2859,7 @@
   // data changes here - only the labels around it.
   document.addEventListener("fxcloud:langchange", () => {
     renderRows(rawEntries);
+    if (previewEntry) buildGallery(previewEntry); // arrow labels follow the language
     updateBulkBar();
     renderStorageLabel();
     if (meData) {

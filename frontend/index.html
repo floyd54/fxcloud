@@ -250,6 +250,22 @@
         <a id="preview-newtab" href="#" target="_blank" rel="noopener" data-i18n="preview.newTab">Open in new tab</a>
         <button class="btn secondary" id="preview-close-btn" type="button" data-i18n="act.close">Close</button>
       </div>
+      <!-- Gallery arrows: hidden until app.js finds prev/next rows of the
+           listing on screen (buildGallery/stepPreview). -->
+      <button class="preview-nav preview-prev" id="preview-prev-btn" type="button" hidden
+              aria-label="Previous" title="Previous">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-width="2.5"
+                stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+      <button class="preview-nav preview-next" id="preview-next-btn" type="button" hidden
+              aria-label="Next" title="Next">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.5"
+                stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
       <div class="preview-body" id="preview-body"></div>
       <div class="editor" id="editor-root" style="display:none">
         <div class="editor-toolbar">
