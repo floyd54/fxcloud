@@ -1,0 +1,9 @@
+# Not part of the image build - and target/ must stay out or it would shadow
+# the in-container build and bloat the context to gigabytes.
+.git
+.github
+target
+tests
+deploy
+data
+*.md

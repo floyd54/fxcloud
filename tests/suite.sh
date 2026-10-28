@@ -2380,6 +2380,89 @@ grep -q 'FXCLOUD_ORIGIN' "$REPO/src/config.rs" \
   && ok "the deployment origin is configurable (FXCLOUD_ORIGIN)" \
   || bad "no FXCLOUD_ORIGIN knob in config.rs"
 
+# ---- install.sh, Dockerfile, --version: the shipped routines ----
+note "one-line install/update and the container build"
+# --version must answer and exit, not start a server (timeout would fire).
+V_OUT=$(timeout 5 "$BIN" --version 2>&1) && V_RC=0 || V_RC=$?
+[ "$V_RC" = "0" ] && [ "$V_OUT" = "fxcloud v$VER" ] \
+  && ok "--version answers fxcloud v$VER and exits" \
+  || bad "--version: rc=$V_RC out=$V_OUT"
+timeout 5 "$BIN" --help 2>&1 | grep -q 'FXCLOUD_DATA' \
+  && ok "--help documents the environment knobs" \
+  || bad "--help does not mention FXCLOUD_DATA"
+timeout 5 "$BIN" --oops >/dev/null 2>&1; RC=$?
+[ "$RC" = "2" ] \
+  && ok "an unknown argument exits 2 instead of starting a server" \
+  || bad "unknown argument gave rc=$RC"
+
+INSTALL="$REPO/install.sh"
+README="$REPO/README.md"
+head -n 1 "$INSTALL" | grep -q '^#!/bin/sh' \
+  && ok "install.sh is a POSIX sh script" \
+  || bad "install.sh lacks the #!/bin/sh shebang"
+grep -q 'set -eu' "$INSTALL" \
+  && ok "install.sh fails loudly on the first error" \
+  || bad "install.sh does not run with set -eu"
+grep -q 'id -u' "$INSTALL" \
+  && ok "install.sh refuses to run without root" \
+  || bad "install.sh has no root check"
+grep -q 'releases/download' "$INSTALL" \
+  && ok "install.sh downloads release assets" \
+  || bad "install.sh does not fetch from GitHub releases"
+grep -q 'fxcloud-$TAG-x86_64-unknown-linux-musl' "$INSTALL" \
+  && grep -q 'files: fxcloud-\*-x86_64-unknown-linux-musl' "$REPO/.github/workflows/release.yml" \
+  && ok "the installer's asset name matches what the release CI attaches" \
+  || bad "install.sh and release.yml disagree on the asset name"
+grep -q 'curl -fsSL https://raw.githubusercontent.com/.*/install.sh | sh' "$README" \
+  && grep -q 'raw.githubusercontent.com/.*/install.sh | sh' "$REPO/USERGUIDE.md" \
+  && ok "README and USERGUIDE carry the install one-liner" \
+  || bad "the one-liner is missing from README or USERGUIDE"
+grep -q '$BIN.bak' "$INSTALL" \
+  && ok "an update keeps the previous binary as a .bak" \
+  || bad "install.sh does not back up the running binary"
+grep -q 'rm -rf "$DATA_DIR"' "$INSTALL" \
+  && bad "install.sh deletes the data directory" \
+  || ok "the data directory is never touched"
+grep -q 'keeping the existing' "$INSTALL" \
+  && ok "an existing unit is kept, only the binary is replaced" \
+  || bad "install.sh would overwrite a customized unit"
+grep -q 'NoNewPrivileges' "$INSTALL" && grep -q 'ReadWritePaths' "$INSTALL" \
+  && ok "the generated unit ships the hardened profile" \
+  || bad "install.sh writes an unhardened unit"
+grep -q '127.0.0.1:$PORT/login' "$INSTALL" \
+  && ok "the installer waits for /login before reporting success" \
+  || bad "install.sh does not health-check the service"
+
+DOCKERFILE="$REPO/Dockerfile"
+grep -q '^FROM rust:alpine AS build' "$DOCKERFILE" \
+  && ok "the image builds the static binary on rust:alpine" \
+  || bad "Dockerfile has no rust:alpine build stage"
+grep -q '^FROM alpine' "$DOCKERFILE" \
+  && ok "the runtime stage is plain alpine" \
+  || bad "Dockerfile has no alpine runtime stage"
+grep -q '^VOLUME /data' "$DOCKERFILE" \
+  && ok "the container keeps its data in the /data volume" \
+  || bad "Dockerfile declares no data volume"
+grep -q '^EXPOSE 8080' "$DOCKERFILE" \
+  && ok "the container exposes port 8080" \
+  || bad "Dockerfile does not expose 8080"
+grep -q '^HEALTHCHECK' "$DOCKERFILE" \
+  && ok "the container has a health check on /login" \
+  || bad "Dockerfile has no HEALTHCHECK"
+grep -q '^USER fxcloud' "$DOCKERFILE" \
+  && ok "the container runs as a non-root user" \
+  || bad "Dockerfile does not switch USER"
+grep -q '^target' "$REPO/.dockerignore" \
+  && ok ".dockerignore keeps the host build out of the context" \
+  || bad ".dockerignore does not exclude target/"
+grep -q 'docker build -t fxcloud' "$README" \
+  && grep -q 'docker run -d --name fxcloud' "$README" \
+  && ok "the README shows how to build and run the container" \
+  || bad "README lacks the docker build/run lines"
+grep -q 'docker build' "$REPO/.github/workflows/test.yml" \
+  && ok "CI builds the image so the instructions stay honest" \
+  || bad "test.yml does not build the Dockerfile"
+
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true
 

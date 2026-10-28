@@ -17,8 +17,48 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::web::state::AppState;
 
+/// Text of `fxcloud --help`: the flags plus the environment knobs, kept in
+/// step with `Config::from_env` and the README's configuration table.
+const HELP: &str = "\
+fxcloud - a personal cloud in a single binary
+
+usage: fxcloud [--version] [--help]
+
+Without arguments fxcloud starts the HTTP server. Configuration comes from
+environment variables:
+
+  FXCLOUD_BIND             listen address (default 127.0.0.1)
+  FXCLOUD_PORT             listen port (default 8080)
+  FXCLOUD_DATA             data directory (default ./data)
+  FXCLOUD_SESSION_TTL      session lifetime in seconds (default 2592000)
+  FXCLOUD_SECURE_COOKIE    set Secure on cookies: 1/true/yes/on (behind HTTPS)
+  FXCLOUD_MAX_UPLOAD_MB    max upload size in MiB (default 1024)
+  FXCLOUD_TRASH_DAYS       days a trashed entry is kept (default 30)
+  FXCLOUD_TRASH_SWEEP_SECS trash purge sweep interval in seconds (default 3600)
+  FXCLOUD_ORIGIN           public origin for passkeys (e.g. https://cloud.example.com)
+  RUST_LOG                 log filter (default fxcloud=info)
+";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `--version` and `--help` answer before anything starts, so installers
+    // can verify a fresh download without opening a port or the database.
+    match std::env::args().nth(1).as_deref() {
+        Some("--version") | Some("-V") => {
+            println!("fxcloud v{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("--help") | Some("-h") => {
+            print!("{HELP}");
+            return Ok(());
+        }
+        Some(arg) => {
+            eprintln!("fxcloud: unknown argument {arg:?} (try --help)");
+            std::process::exit(2);
+        }
+        None => {}
+    }
+
     // Structured logging to stdout.
     tracing_subscriber::fmt()
         .with_env_filter(

@@ -58,6 +58,51 @@ with sharing, quotas and WebDAV. New to fxcloud? The
 
 ## Install
 
+### One-line install & update
+
+On any Linux with systemd and `curl` (as root):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/floyd54/fxcloud/main/install.sh | sh
+```
+
+That is both the install *and* the update command:
+
+- **install** - creates the `fxcloud` system user, downloads the newest
+  release binary (built and attached by GitHub Actions), writes a hardened
+  systemd unit, enables and starts the service.
+- **update** - running the same line again replaces only the binary (the
+  previous one is kept as `/home/fxcloud/fxcloud.bak`) and restarts. The
+  unit and the data directory are never touched.
+
+The first line prints `fxcloud v... is running` once
+`http://<host>:8080/login` answers. Open it and register: the **first
+account** becomes the administrator.
+
+Environment variables in front of the command configure the unit it writes
+(all optional, defaults in brackets):
+
+```bash
+# example: public HTTPS address + bigger uploads
+FXCLOUD_ORIGIN=https://cloud.example.com FXCLOUD_SECURE_COOKIE=1 \
+FXCLOUD_MAX_UPLOAD_MB=4096 curl -fsSL https://raw.githubusercontent.com/floyd54/fxcloud/main/install.sh | sh
+```
+
+| Variable               | Meaning (default)                                          |
+| ---------------------- | ---------------------------------------------------------- |
+| `FXCLOUD_VERSION`      | release tag to install (latest)                            |
+| `FXCLOUD_USER` / `FXCLOUD_HOME` / `FXCLOUD_DATA` | service user, its home, the data dir (`fxcloud`, `/home/fxcloud`, `.../data`) |
+| `FXCLOUD_BIND` / `FXCLOUD_PORT` | listen address and port (`0.0.0.0`, `8080`)         |
+| `FXCLOUD_ORIGIN`       | public URL for passkeys (unset)                            |
+| `FXCLOUD_SECURE_COOKIE`| `1` for Secure cookies, behind HTTPS (unset)               |
+| `FXCLOUD_MAX_UPLOAD_MB` / `FXCLOUD_TRASH_DAYS` / `FXCLOUD_SESSION_TTL` | upload limit, trash lifetime, session TTL (`1024`, `30`, `2592000`) |
+| `RUST_LOG`             | log filter (`fxcloud=info`)                                |
+
+Afterwards the knobs live in the unit file: edit
+`/etc/systemd/system/fxcloud.service` and `systemctl restart fxcloud`.
+Pin a version with `FXCLOUD_VERSION=v0.0.25`; other platforms (macOS,
+ARM64, ...) build from source or run the Docker image below.
+
 ### Prebuilt binary
 
 Every tagged release on [GitHub
@@ -110,9 +155,10 @@ FXCLOUD_BIND=0.0.0.0 FXCLOUD_PORT=9000 FXCLOUD_DATA=/srv/fxcloud ./fxcloud
 
 ### systemd
 
-The provided hardened unit
-([`deploy/fxcloud.service`](deploy/fxcloud.service)) runs as an
-unprivileged system user, never as root:
+The [one-liner above](#one-line-install--update) writes this unit for you.
+To place fxcloud by hand - e.g. a build from source - the provided
+hardened unit ([`deploy/fxcloud.service`](deploy/fxcloud.service)) runs as
+an unprivileged system user, never as root:
 
 ```bash
 sudo useradd --system --user-group --create-home --home-dir /home/fxcloud \
@@ -129,7 +175,38 @@ sudo systemctl status fxcloud         # logs: sudo journalctl -u fxcloud -f
 ```
 
 Rolling out a new build: `sudo systemctl stop fxcloud`, replace the binary,
-`sudo systemctl start fxcloud`.
+`sudo systemctl start fxcloud` - or just run the one-liner again.
+
+### Docker
+
+The repository carries a [`Dockerfile`](Dockerfile): a multi-stage build
+(Rust on Alpine -> ~8 MB runtime image, the binary runs as a non-root user
+and has a health check on `/login`). Build and run:
+
+```bash
+docker build -t fxcloud .
+
+docker run -d --name fxcloud \
+  -p 8080:8080 \
+  -v fxcloud-data:/data \
+  fxcloud
+
+open http://localhost:8080    # first account becomes the admin
+```
+
+All the [configuration knobs](#configuration) are `-e` flags; behind a
+reverse proxy add `-e FXCLOUD_ORIGIN=https://cloud.example.com -e
+FXCLOUD_SECURE_COOKIE=1`. Data (database + file blobs) lives in the
+`/data` volume and survives rebuilds:
+
+```bash
+docker stop fxcloud && docker rm fxcloud
+docker build -t fxcloud .    # update = rebuild, the volume keeps the data
+docker run -d --name fxcloud -p 8080:8080 -v fxcloud-data:/data fxcloud
+```
+
+Logs: `docker logs -f fxcloud`. A bind mount works the same way
+(`-v /srv/fxcloud:/data`, chown it to the container user first).
 
 ### Behind a reverse proxy (HTTPS)
 
@@ -225,7 +302,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 443 checks against a throwaway instance
+./tests/suite.sh    # integration: 466 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

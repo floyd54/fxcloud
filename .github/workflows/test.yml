@@ -44,3 +44,13 @@ jobs:
       # Cargo.toml) and then runs every integration check.
       - name: Integration suite
         run: ./tests/suite.sh
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Dockerfile is what the README tells users to build; a red job
+      # here means those published instructions stopped working.
+      - name: Build the image
+        run: docker build -t fxcloud:ci .

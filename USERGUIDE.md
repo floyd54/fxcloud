@@ -34,6 +34,13 @@ Developer-facing documents:
 fxcloud is a single binary: SQLite and the web interface are built in, there
 is no database server and no runtime dependency.
 
+**One line** - installs fxcloud as a systemd service on any Linux with
+`curl` (as root); running the same line again updates it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/floyd54/fxcloud/main/install.sh | sh
+```
+
 **Prebuilt binary** - every tagged release on [GitHub
 Releases](https://github.com/floyd54/fxcloud/releases) ships a fully static
 Linux x86_64 build (~6 MB):
