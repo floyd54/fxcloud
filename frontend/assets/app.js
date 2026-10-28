@@ -2753,6 +2753,9 @@
   previewModal.addEventListener("click", (e) => {
     if (e.target === previewModal) closePreview();
   });
+  // The gallery arrows step on click - the main way through a gallery.
+  document.getElementById("preview-prev-btn").addEventListener("click", () => stepPreview(-1));
+  document.getElementById("preview-next-btn").addEventListener("click", () => stepPreview(1));
   // Arrow keys walk the gallery while the lightbox is open - but never
   // while the caret sits in the editor or an input, where arrows move text.
   document.addEventListener("keydown", (e) => {

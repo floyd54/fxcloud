@@ -2080,6 +2080,12 @@ CSS=$REPO/frontend/assets/style.css
 grep -q 'id="preview-prev-btn"' "$IDX" && grep -q 'id="preview-next-btn"' "$IDX" \
   && ok "the lightbox carries prev/next buttons" \
   || bad "index.html lacks the gallery arrow buttons"
+grep -q 'getElementById("preview-prev-btn").addEventListener("click"' "$UI" \
+  && ok "the left arrow steps the gallery on click" \
+  || bad "the prev button has no click handler"
+grep -q 'getElementById("preview-next-btn").addEventListener("click"' "$UI" \
+  && ok "the right arrow steps the gallery on click" \
+  || bad "the next button has no click handler"
 grep -q 'function buildGallery' "$UI" && grep -q 'currentEntries\.filter' "$UI" \
   && ok "the gallery is the listing on screen, in display order" \
   || bad "app.js does not build the gallery from currentEntries"
