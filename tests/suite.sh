@@ -1703,9 +1703,15 @@ grep -q 'class="lang-switch auth-lang" id="lang-switch"' "$LOGIN_HTML" \
 grep -q 'var currentCode = "en"' "$I18N_JS" \
   && ok "English is the default language" \
   || bad "the default language is not English"
-grep -q 'var CODES = \["de", "en"\]' "$I18N_JS" \
-  && ok "German is the first flag in the switcher" \
-  || bad "the switcher does not start with German"
+grep -q 'var CODES = \["de", "en", "tlh"\]' "$I18N_JS" \
+  && ok "the switcher offers German, English and Klingon - German first" \
+  || bad "the switcher order is not de, en, tlh"
+grep -q 'code === "tlh"' "$I18N_JS" \
+  && ok "Klingon carries its own flag" \
+  || bad "no flag is drawn for Klingon"
+grep -q 'tlhIngan Hol' "$I18N_JS" \
+  && ok "the Klingon flag names itself tlhIngan Hol" \
+  || bad "the Klingon endonym is missing"
 LC_ALL=C grep -q 'navigator.language' "$I18N_JS" \
   && bad "the UI sniffs the browser language instead of asking" \
   || ok "no browser-language guessing: the flags decide"
@@ -1715,23 +1721,29 @@ grep -q 'fxcloud.lang' "$I18N_JS" \
 LC_ALL=C grep -q '[^ -~	]' "$I18N_JS" \
   && bad "i18n.js contains non-ASCII bytes (glyphs must be \XXXX escapes)" \
   || ok "i18n.js stays pure ASCII"
-# One pass for parity, JS call sites and the data-i18n marks in both pages.
+# One pass for parity across every offered language, JS call sites and the
+# data-i18n marks in both pages: the parity walk is what stops a
+# half-translated language from shipping.
 if "$NODE" -e '
   const fs = require("fs");
   globalThis.window = globalThis;
   require(process.argv[1]);
   const I = globalThis.I18N;
-  const de = Object.keys(I.dict("de")).sort();
-  const en = Object.keys(I.dict("en")).sort();
+  const codes = ["de", "en", "tlh"];
+  const ref = Object.keys(I.dict("en")).sort();
   let bad = 0;
-  if (de.join("\n") !== en.join("\n")) {
-    console.error("dictionary parity: DE=" + de.length + " EN=" + en.length);
-    bad = 1;
+  for (const c of codes) {
+    const keys = Object.keys(I.dict(c)).sort();
+    if (keys.join("\n") !== ref.join("\n")) {
+      console.error("dictionary " + c + " disagrees: " + keys.length + " vs " + ref.length + " keys");
+      bad = 1;
+    }
   }
+  const have = (k) => codes.every((c) => k in I.dict(c));
   for (const f of ["app", "fxenc", "login"]) {
     const src = fs.readFileSync(process.argv[2] + "/assets/" + f + ".js", "utf8");
     for (const m of src.matchAll(/\bt\("([a-z][a-zA-Z0-9_.]*)"\)/g)) {
-      if (!(m[1] in I.dict("en")) || !(m[1] in I.dict("de"))) {
+      if (!have(m[1])) {
         console.error(f + ".js uses an unknown key: " + m[1]);
         bad = 1;
       }
@@ -1740,7 +1752,7 @@ if "$NODE" -e '
   for (const h of ["index.html", "login.html"]) {
     const src = fs.readFileSync(process.argv[2] + "/" + h, "utf8");
     for (const m of src.matchAll(/data-i18n(?:-title|-aria|-ph)?="([^"]+)"/g)) {
-      if (!(m[1] in I.dict("en")) || !(m[1] in I.dict("de"))) {
+      if (!have(m[1])) {
         console.error(h + " marks an unknown key: " + m[1]);
         bad = 1;
       }
@@ -1748,7 +1760,7 @@ if "$NODE" -e '
   }
   process.exit(bad ? 1 : 0);
 ' "$I18N_JS" "$REPO/frontend"; then
-  ok "both dictionaries agree and every marked or used key exists"
+  ok "every language dictionary agrees and every marked or used key exists"
 else
   bad "i18n dictionary or key usage is broken"
 fi

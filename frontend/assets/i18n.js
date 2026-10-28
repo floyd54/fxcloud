@@ -1,17 +1,19 @@
 /*
  * i18n.js - the whole translation layer, no framework, no fetch.
  *
- * Both dictionaries live in this one file, so a language switch costs zero
+ * Every dictionary lives in this one file, so a language switch costs zero
  * round trips and the pages can never render half-translated while a second
- * asset loads. German strings are spelled with \uXXXX escapes for umlauts so
- * this file stays pure ASCII (see the cheat sheet below); the browser
- * decodes them and the UI renders proper German.
+ * asset loads. Non-ASCII letters are spelled with \uXXXX escapes (German
+ * umlauts; see the cheat sheet below) so this file stays pure ASCII; the
+ * browser decodes them and the UI renders proper text. See TRANSLATING.md
+ * for what a new language needs.
  *
  * English stays the default: without a stored choice the UI starts on
  * English. German is the first flag in the switcher (and the first
- * language this file translates), so anyone who wants German picks it
- * once and the choice sticks. English is also the source text in the
- * HTML and the safety net for a key no dictionary has covered yet.
+ * language this file translates), Klingon the last - the order is CODES.
+ * Anyone who wants another language picks it once and the choice sticks.
+ * English is also the source text in the HTML and the safety net for a
+ * key no dictionary has covered yet.
  *
  *   t(key, params)   translate; falls back to English, then to the key itself
  *   setLang(code)    switch, persist in localStorage, re-apply, notify
@@ -886,11 +888,415 @@
     "perm.share": "share",
   };
 
+  /*
+   * Klingon (tlhIngan Hol) - the third flag, and the proof that the engine
+   * carries no hard-coded pair anywhere. Canonical vocabulary where the
+   * language has a word (juH home, poS open, qaw forget, yuD download,
+   * laD load, quj key, Sa' wait), consistent KLI-style compounds where it
+   * does not (bIQroq folder, quj pon fingerprint). No umlauts to escape,
+   * so this dictionary is plain ASCII like the rest of the file.
+   */
+  var TLH = {
+    // topbar
+    "nav.settings": "choH",
+    "nav.admin": "lo'wI' Qap",
+    "nav.signout": "nomta'",
+    "storage.title": "nI' qan",
+    "storage.of": "{used}/{quota} nI'",
+    "lang.aria": "Hol",
+
+    // toolbar
+    "files.new": "\uff0b che' chu'",
+    "files.newFolder": "\uff0b bIQroq chu'",
+    "files.upload": "\u2b06 che' laD",
+    "files.uploadFolder": "\u2b06 bIQroq laD",
+    "files.trash": "bIQtIq",
+    "files.emptyTrash": "bIQtIq yIQaw",
+    "files.showHidden": "nogh yItu'",
+    "files.showHiddenHint":
+      "che' bIQroq nogh yItu' - pong -mo'",
+    "files.selectAll": "bIQroqvam Hoch yIwIv",
+    "files.loading": "laDtaH\u2026",
+    "crumb.home": "juH",
+
+    // dropzone (three pieces around the <strong>)
+    "drop.a": "yIQong",
+    "drop.b": "bIQroq",
+    "drop.c": "chen - laDmeH qup yIlo'.",
+
+    // table headers
+    "table.name": "pong",
+    "table.size": "nI'",
+    "table.modified": "choH",
+
+    // bulk action bar
+    "bulk.one": "nat wa' wIv",
+    "bulk.n": "{n} nat wIv",
+    "bulk.download": "yuD",
+    "bulk.move": "ghoS\u2026",
+    "bulk.copy": "qon\u2026",
+    "bulk.share": "boq",
+    "bulk.delete": "qaw",
+    "bulk.restore": "\u267d qa'",
+    "bulk.purge": "qawmo'",
+    "bulk.clear": "wIv yIchIm",
+
+    // shared verbs (row menu and dialogs)
+    "act.open": "poS",
+    "act.edit": "choH",
+    "act.preview": "legh",
+    "act.rename": "pong chu'",
+    "act.close": "rap",
+    "act.cancel": "taHbe'",
+    "act.save": "qan",
+    "act.remove": "yu'",
+    "act.restore": "qa'",
+    "act.items": "{n} nat",
+    "act.itemsP": "{n} nat",
+
+    // rows
+    "row.select": "wIv",
+    "row.actions": "Qap",
+    "row.folder": "bIQroq",
+    "row.purgeOn": "{date} chIj yIQaw",
+    "row.encTitle":
+      "buS yIchuSQang - qanwI' chay' puS",
+
+    // empty states
+    "empty.hidden1": "nogh che' tlhIj.",
+    "empty.hidden2": "che' <b>nogh yItu'</b> yIlo'.",
+    "empty.trash": "bIQtIq chIm.",
+    "empty.folder1": "bIQroqvam chIm.",
+    "empty.folder2": "che' laD pagh bIQroq chu'.",
+
+    // share dialog
+    "share.title1": "boq \"{name}\"",
+    "share.titleN": "{n} nat boq",
+    "share.userAria": "boq lo'wI'",
+    "share.perm.read": "legh",
+    "share.perm.write": "choH",
+    "share.perm.create": "chu'",
+    "share.perm.delete": "qaw",
+    "share.perm.share": "boq",
+    "share.add": "boq",
+    "share.cannotLoad": "lo'wI' laDlaHbe'",
+    "share.everySelected":
+      "nat wIvpu' Hoch ram boq quv.",
+    "share.none": "latlh boqbe'.",
+    "share.noUsers": "latlh lo'wI' wa'be'",
+    "share.inactive": " \u2014 nombe'",
+    "share.fp": "{user} quj pon: ",
+    "share.noEnc":
+      "{user} chuSQang chIm - chuS chay' yIleghbe'.",
+    "share.changedShort": "quj choH: {new} ({old} chu')",
+    "share.confirmChanged":
+      "{user} quj pon CHOHLU'.\n\n" +
+      "chu': {before}\nDaH: {now}\n\n" +
+      "choH chu' yIleghbe' - chuSQang yIlo' latlh yIpar bIqab. " +
+      "chuSQang boq qel quj chu' latlh qab. chIk?",
+    "share.confirmNew":
+      "{user} quj pon:\n\n    {fp}\n\n" +
+      "latlhvaD fxcloud chIm leghbogh qel - \"quj pon\" yIlegh. " +
+      "DaHjaj mon - choH chIj yIpuj. chIk?",
+    "share.noKeyConfirm":
+      "{user} chuSQang chIm - chuS chay' poSbe'.\n\nchIk boq?",
+    "share.cancelled":
+      "boq qetlu' - quj chImchugh chuSbe'.",
+    "share.result": "{user}vaD {n}/{m} nat boqlu'.",
+    "share.nothing": "ram boqbe'.",
+
+    // move / copy dialog
+    "transfer.moveTitle": "{what} ghoS\u2026",
+    "transfer.copyTitle": "{what} qon\u2026",
+    "transfer.moveHere": "ghoS",
+    "transfer.copyHere": "qon",
+    "transfer.noSub": "bIQroq chIm.",
+    "transfer.noKeyMove":
+      "quj chImchugh bIQroq vIghoSbe'.",
+    "transfer.noneMove": "wIvpu' nat wa' ghoSlaHbe'.",
+    "transfer.noneCopy": "wIvpu' nat wa' qonlaHbe'.",
+    "transfer.copyBlocked":
+      "{what} qonlaHbe'.\n\n" +
+      "qon nat chu' chu' - quj yIchu' qon rIntai'be'. " +
+      "ghoS pagh yuD qon laD.",
+    "transfer.rollback":
+      "\"{name}\" ghoSlaHbe' ({msg}), quj yIchu'be'bogh quj chImbe'.\n\n" +
+      "quj DaH bIQroqvam pong - ghoS chay' poS chIj.",
+
+    // prompts (client-side, one line each) and inline file creation
+    "prompt.newFolder": "bIQroq chu' pong:",
+    "prompt.newFile": "che' chu' pong:",
+    "prompt.rename": "pong chu':",
+    "file.textOnly":
+      "che' text qonlaHbe' - vIt.\n" +
+      "che' laD.",
+    "file.encFail":
+      "che' chu' chuSQanglaHbe' - qawlu': {msg}",
+
+    // confirms and batch reports
+    "confirm.purgeOne":
+      "natvam qawmo'? cha' yIQawbe'.",
+    "confirm.purgeN":
+      "{n} nat qawmo'? cha' yIQawbe'.",
+    "confirm.emptyTrash":
+      "bIQtIq yIQaw? Hoch yIQaw.",
+    "confirm.moveFolder":
+      "bIQroq \"{name}\" Hoch bIQtIq ghoS?",
+    "confirm.moveFile": "che' \"{name}\" bIQtIq ghoS?",
+    "confirm.discard": "choH chIm?",
+    "confirm.bulkDelete":
+      "wIvpu' {m} nat chIm {n} bIQtIq ghoS?",
+    "batch.files": "{k} che' \u00b7 {size}",
+    "batch.folders": "{k} bIQroq \u00b7 chuy Hoch",
+    "batch.skipped":
+      "wIvpu' {total} nat chIm {missing} - qawlaHbe'.",
+    "batch.failed": "{n} nat chIm {failed}:",
+
+    // upload, preview, editor
+    "upload.at": "laDtaH {i}/{n} \u2014 {path}",
+    "upload.encrypted": " (chuSQang)",
+    "upload.failed": "{m} nat chIm {n}:",
+    "upload.itemFail": "{path} \u2014 {msg}",
+    "preview.failedWhy": "leghlaHbe': {why} - yuD yIlo'.",
+    "preview.failed":
+      "leghlaHbe' - che' rap. yuD yIlo'.",
+    "preview.decrypting": "chuSlegh...",
+    "preview.encHint":
+      "che'vam chuS - leghmeH chuSQang yIchu'",
+    "preview.encEditHint":
+      "che'vam chuS - choHmeH chuSQang yIchu'",
+    "preview.newTab": "tab chu' poS",
+    "editor.loading": "laD...",
+    "editor.saving": "qan...",
+    "editor.saved": "qanlu'",
+    "editor.loadFailed": "laDlaHbe': {msg}",
+    "editor.saveFailed": "qanlaHbe': {msg}",
+    "editor.unsaved": "* qanbe'",
+    "editor.meta": "{lines} gram, {chars} nat",
+    "editor.markdown": "Markdown",
+
+    // settings dialog
+    "settings.title": "choH",
+    "settings.account": "yuQ",
+    "settings.username": "lo'wI' pong",
+    "settings.since": "nom wa'Hu'",
+    "settings.storage": "qan",
+    "settings.displayName": "pong",
+    "settings.theme": "Dung",
+    "settings.light": "wov",
+    "settings.dark": "yIv",
+    "settings.password": "mu'mu'",
+    "settings.passCurrent": "mu'mu' DaHjaj",
+    "settings.passNew": "mu'mu' chu' (8 pong puS)",
+    "settings.passChange": "mu'mu' yIchoH",
+    "settings.passkeys": "quj mu'mu'",
+    "settings.passkeysHint":
+      "quj mu'mu' PIN biometric yIlo' - mu'mu' yIlo'be'. " +
+      "qan nIteb device chIm; qanwI' quj yIqan - device qawchugh yIyu'.",
+    "settings.addPasskey": "quj mu'mu' chu'",
+    "settings.lang": "Hol",
+    "settings.langHint":
+      "DaHjaj yIlo' - browser mon.",
+    "settings.nameEmpty": "pong chImlaHbe'.",
+    "settings.nameSaved": "pong qanlu'.",
+    "settings.themeSaved": "Dung qanlu'.",
+    "settings.passShort":
+      "mu'mu' chu' 8 pong puS.",
+    "settings.passChanged": "mu'mu' choHlu'.",
+
+    // passkeys
+    "passkey.added": "{date} chu'",
+    "passkey.lastUsed": "{date} lo'",
+    "passkey.empty": "quj mu'mu' wa'be'.",
+    "passkey.nameEmpty": "quj mu'mu' pong chImlaHbe'.",
+    "passkey.renamed": "pong choHlu'.",
+    "passkey.removed": "yu'lu'.",
+    "passkey.cancelled": "quj mu'mu' qetlu'be'.",
+    "passkey.addedStatus": "quj mu'mu' chu'lu'.",
+    "passkey.https":
+      "quj mu'mu' meH HTTPS - browser yIqaw.",
+    "passkey.namePrompt":
+      "quj mu'mu' chu' pong (juv: \"quj\"):",
+    "passkey.renamePrompt": "quj mu'mu'vam pong chu':",
+    "passkey.deviceRefused":
+      "quj mu'mu' device yIchu'be'.",
+    "passkey.removeConfirm":
+      "quj mu'mu' \"{label}\" yIyu'? devicevam nomlaHbe'.",
+
+    // admin table + reset dialog
+    "admin.title": "lo'wI' Qap",
+    "admin.user": "lo'wI'",
+    "admin.status": "SaH",
+    "admin.role": "Qap",
+    "admin.quota": "nI'",
+    "admin.active": "SaH",
+    "admin.inactive": "SaHbe'",
+    "admin.admin": "QapwI'",
+    "admin.member": "puq",
+    "admin.quotaMiB": "nI' MiB",
+    "admin.used": "{size} qan",
+    "admin.deactivate": "SaHbe'",
+    "admin.activate": "SaH",
+    "admin.revoke": "QapwI' yIqaw",
+    "admin.make": "QapwI' yIchoH",
+    "admin.resetPw": "mu'mu' yIchoH",
+    "admin.quotaBad":
+      "nI' MiB ram - yIqawbe'.",
+    "reset.title": "mu'mu' chu'",
+    "reset.user": "{user}:",
+    "reset.hint":
+      "mu'mu'vam yInob - nom wa' lo'; Settings choH yIqan.",
+    "reset.copy": "chel",
+    "reset.done": "qawlu'",
+
+    // encryption panes (static HTML)
+    "enc.setup.title": "chuSQang yIchu'",
+    "enc.setup.lead1": "che' laD chuSQanglu'",
+    "enc.setup.lead2": "buS yIchuSQang",
+    "enc.setup.lead3":
+      "device yIchu'bogh che' chuSQanglu' buS. " +
+      "qanwI' yIchu' nung yIchu'; yIchu'be'bogh che' yIlegh. " +
+      "pong nI' boq je yIlegh - qanwI' meH raS.",
+    "enc.setup.useLogin": "nom mu'mu' yIlo'",
+    "enc.setup.usePass": "mu'mu' nIteb chu'",
+    "enc.setup.passLabel": "nom mu'mu'",
+    "enc.passphrase": "mu'mu' qan",
+    "enc.repeatPass": "mu'mu' yIchu'",
+    "enc.setup.go": "yIghoS",
+    "enc.setup.hintLogin":
+      "nomchugh qanwI' Argon2id 64 MiB yIlo' - mu'mu' wa' rap. " +
+      "browser mu'mu' qon; nom yIchu'be'bogh yIqaw - yIchu'bogh mu'mu' " +
+      "yuQ yIqel quj yIchu'be'bogh.",
+    "enc.setup.hintSep":
+      "mu'mu' nIteb ram yIchu'be' - buS Argon2id 64 MiB chIm. " +
+      "mu'mu' chu' yIqan - qawchugh che' poSbe'.",
+    "enc.saved.title": "quj yIqan",
+    "enc.saved.lead":
+      "mu'mu' qawchugh chuSQang che' poSmeH ram. " +
+      "wa' legh yIchu'; yIchu'be'bogh.",
+    "enc.saved.dl": "quj yIyuD",
+    "enc.saved.ack":
+      "qujvam offline qan rIntai'.",
+    "enc.saved.hint":
+      "qujvam tu'chugh latlh che' yIpoS. mu'mu' quj je qawchugh latlh yIleghbe'.",
+    "enc.saved.go": "chuSQang yIchu'",
+    "enc.unlock.title": "tabvam chuSQangbe'",
+    "enc.unlock.lead":
+      "mu'mu' qan yIpar - tabvam chuSQang yIchu'. che' chu' laD chuSQanglu'; " +
+      "yuQ chuSQang che' poS. quj tab memo - reload chuSQangbe'.",
+    "enc.unlock.recover": "quj yIlo'",
+    "enc.unlock.go": "yIpar",
+    "enc.recover.title": "quj yIlo'choH",
+    "enc.recover.lead":
+      "hex pong 64 yIpar, mu'mu' qan chu' yIwIv. chuSQang che' Hoch choHbe' - " +
+      "qon ram.",
+    "enc.recover.keyLabel": "quj",
+    "enc.recover.passLabel": "mu'mu' qan chu'",
+    "enc.recover.back": "qab",
+    "enc.recover.go": "qa'",
+    "enc.info.title": "chuSQang DaHjaj",
+    "enc.info.lead":
+      "buS chuSQang. quj ponvam latlh qab qel - boq quj chu' yIqelchugh.",
+    "enc.info.fpLabel": "quj pon",
+    "enc.info.lock": "tab yIrap",
+
+    // fxenc runtime strings
+    "enc.badge.setup": "chuSQang laD",
+    "enc.badge.locked": "\uD83D\uDD13 chuSQangbe'",
+    "enc.badge.unlocked": "\uD83D\uDD12 chuSQang",
+    "enc.badge.unlocking": "par\u2026",
+    "enc.title.setup":
+      "buS chuSQang chIm. che' laD qanlu' - chuSQang yIchu'meH yIchu'.",
+    "enc.title.locked":
+      "che' chu' laD tabvam qanlu'. chuSQang yIchu' yIpoS - yuQ chuSQang che' je poS.",
+    "enc.title.unlocked":
+      "buS chuSQang device yIchu'bogh. tab yIrap pagh yuQ quj pon yIlegh.",
+    "enc.unsupported":
+      "browservam WebCrypto chIm - chuSQang laDlaHbe'. HTTPS pagh localhost 'ej browser chu'.",
+    "enc.checkLoginFail":
+      "nom mu'mu' qellaHbe' ({status})",
+    "enc.enterLogin": "nom mu'mu' yIpar.",
+    "enc.choosePass": "mu'mu' qan yIwIv.",
+    "enc.mismatch": "mu'mu' ram.",
+    "enc.checking": "nom mu'mu' yIqel\u2026",
+    "enc.wrongLogin": "mu'mu'vam nombe'.",
+    "enc.deriving": "quj Derive (Argon2id, 64 MiB)\u2026",
+    "enc.enterPass": "mu'mu' qan yIpar.",
+    "enc.pasteRcv": "quj hex pong 64 yIpar.",
+    "enc.chooseNew": "mu'mu' qan chu' yIwIv.",
+    "enc.rcvLen": "quj 32 byte - hex pong 64.",
+    "enc.openRoot": "yuQ quj poS\u2026",
+    "enc.rewrapping": "mu'mu' chu' yIchuSQang\u2026",
+    "enc.exists":
+      "yuQvam quj qan - mu'mu' yIpar.",
+
+    // guards below surface as messages in alerts, previews and the editor
+    "enc.err.open": "che'vam poSmeH chuSQang yIpar",
+    "enc.err.download": "che'vam yuDmeH chuSQang yIpar",
+    "enc.err.preview": "che'vam leghmeH chuSQang yIpar",
+    "enc.err.save": "che'vam qanmeH chuSQang yIpar",
+    "enc.err.unkeyed": "che'vam quj qanbe'",
+    "enc.err.unwrapped":
+      "quj chuSQanglaHbe' - mu'mu' ram pagh yIchu'",
+    "enc.err.notFolder": "bIQroq ram",
+    "enc.err.uploadCancelled": "chuSQang laD qetlu'be'",
+    "enc.err.worker": "quj Qap ram",
+    "enc.err.workerStopped": "quj Qap ta'",
+
+    // login / register page
+    "login.title": "nom \u00b7 fxcloud",
+    "login.tagline": "che'pu' - wa' chIm.",
+    "login.tab.signin": "nom",
+    "login.tab.passkey": "quj mu'mu'",
+    "login.tab.register": "yuQ chu'",
+    "login.username": "lo'wI' pong",
+    "login.display": "pong",
+    "login.password": "mu'mu'",
+    "login.wait": "Sa'\u2026",
+    "login.waiting": "device yIpar...",
+    "login.passkeyHint":
+      "yuQvam quj mu'mu' yIlo' - device PIN biometric yIpar mu'mu' yIlo'be'.",
+    "login.passkeyBtn": "quj mu'mu' yIlo'",
+    "login.err.generic": "ram.",
+    "login.err.invalid": "lo'wI' pong mu'mu' ram.",
+    "login.err.inactive":
+      "yuQ chu'lu'. nommeH SaHbe' - QapwI' yIchu'legh.",
+    "login.err.network": "net ram. qanwI' SaHbe'?",
+    "login.err.https":
+      "browser quj mu'mu' laDlaHbe' - HTTPS localhost je yIpoS.",
+    "login.err.needUser": "lo'wI' pong yIpar.",
+    "login.err.startFail": "quj nom qetlaHbe'.",
+    "login.err.noPasskeyUsed":
+      "quj wa'be' - yIqet, pagh DIS, pagh yuQvam device quj chIm.",
+    "login.err.passkeyFail": "quj nom ram: {msg}",
+    "login.err.noPasskey": "quj wa'be'.",
+    "login.err.finishFail": "quj nom ram.",
+    "login.err.unknown": "lo'wI' DatlhIjbe' pagh quj ram.",
+
+    // server error codes (the server sends the code, this side translates)
+    "err.not_found": "Tu'lu'be'.",
+    "err.unauthorized": "nom.",
+    "err.forbidden": "qawlu'be'.",
+    "err.inactive_account": "yuQvam SaHbe' DaHjaj.",
+    "err.quota_exceeded": "nI' puS: {used}/{quota} qan.",
+    "err.bad_request": "raS ram.",
+    "err.conflict": "DaHjaj tu'lu' pagh choH ram.",
+    "err.internal": "qanwI' ram.",
+    "err.request_failed": "raS ram ({status})",
+
+    // permission names as the server reports them in share rows
+    "perm.read": "legh",
+    "perm.update": "choH",
+    "perm.create": "chu'",
+    "perm.delete": "qaw",
+    "perm.share": "boq",
+  };
+
   // The catalogue both the UI and tests/check-i18n.js read. German is
   // first wherever the languages are ordered (switcher, this map); English
   // is the default language and the fallback dictionary in t().
-  var LANGS = { de: DE, en: EN };
-  var CODES = ["de", "en"];
+  var LANGS = { de: DE, en: EN, tlh: TLH };
+  var CODES = ["de", "en", "tlh"];
   var STORAGE_KEY = "fxcloud.lang";
   var currentCode = "en";
 
@@ -903,8 +1309,9 @@
   }
 
   /** Locale tag for date/number formatting, or undefined for the browser's. */
+  var LOCALES = { de: "de-DE" }; // tlh has no Intl locale: browser default
   function dateLocale() {
-    return currentCode === "de" ? "de-DE" : undefined;
+    return LOCALES[currentCode];
   }
 
   function t(key, params) {
@@ -962,6 +1369,17 @@
         '<rect width="5" height="1" y="1" fill="#DD0000"/>' +
         '<rect width="5" height="1" y="2" fill="#FFCE00"/></svg>';
     }
+    if (code === "tlh") {
+      // The Empire's flag: red field, the black trefoil - three notched
+      // blades 120 degrees apart, one path drawn three times.
+      var blade =
+        'M15 2.5c2.4 3.2 3 5.4 2.5 7.2L15 8.8 12.5 9.7C12 7.9 12.6 5.7 15 2.5z';
+      return '<svg viewBox="0 0 30 18" width="18" height="11" aria-hidden="true">' +
+        '<rect width="30" height="18" fill="#B22222"/>' +
+        '<path fill="#111111" d="' + blade + '"/>' +
+        '<path fill="#111111" d="' + blade + '" transform="rotate(120 15 9)"/>' +
+        '<path fill="#111111" d="' + blade + '" transform="rotate(240 15 9)"/></svg>';
+    }
     return '<svg viewBox="0 0 60 30" width="18" height="11" aria-hidden="true">' +
       '<clipPath id="i18n-union"><path d="M0,0 v30 h60 v-30 z"/></clipPath>' +
       '<path d="M0,0 v30 h60 v-30 z" fill="#012169"/>' +
@@ -971,8 +1389,11 @@
       '<path d="M30,0 v30 M0,15 h60" stroke="#C8102E" stroke-width="6"/></svg>';
   }
 
+  // The language's own name for itself, one per flag button.
+  var ENDONYMS = { de: "Deutsch", en: "English", tlh: "tlhIngan Hol" };
+
   function endonym(code) {
-    return code === "de" ? "Deutsch" : "English";
+    return ENDONYMS[code] || ENDONYMS.en;
   }
 
   /**
