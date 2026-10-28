@@ -2420,6 +2420,12 @@ grep -q 'curl -fsSL https://raw.githubusercontent.com/.*/install.sh | sh' "$READ
 grep -q '$BIN.bak' "$INSTALL" \
   && ok "an update keeps the previous binary as a .bak" \
   || bad "install.sh does not back up the running binary"
+grep -q 'timeout 5 "$BIN" --version' "$INSTALL" \
+  && ok "a pre-version binary cannot hang the update" \
+  || bad "install.sh does not guard the old binary's --version probe"
+grep -q 'curl -fsSL --retry' "$INSTALL" \
+  && ok "the download is silent and retries" \
+  || bad "install.sh downloads without -sS and --retry"
 grep -q 'rm -rf "$DATA_DIR"' "$INSTALL" \
   && bad "install.sh deletes the data directory" \
   || ok "the data directory is never touched"

@@ -42,6 +42,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # ---- preflight ------------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || die "must run as root: curl -fsSL ... | sudo sh"
 command -v curl >/dev/null 2>&1 || die "curl is required"
+command -v timeout >/dev/null 2>&1 || die "coreutils timeout is required"
 command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 
 # ---- pick the release -----------------------------------------------------
@@ -59,14 +60,18 @@ ASSET_URL="https://github.com/$REPO/releases/download/$TAG/fxcloud-$TAG-x86_64-u
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 log "downloading $TAG"
-curl -fSL --retry 3 "$ASSET_URL" -o "$TMP/fxcloud" ||
+curl -fsSL --retry 3 "$ASSET_URL" -o "$TMP/fxcloud" ||
   die "download failed: $ASSET_URL"
 head -c 4 "$TMP/fxcloud" | od -An -tx1 | grep -q '7f 45 4c 46' ||
   die "the download is not an ELF binary"
 chmod 755 "$TMP/fxcloud"
-"$TMP/fxcloud" --version >/dev/null 2>&1 ||
-  die "the binary does not run here (prebuilt binaries are x86_64; build from source, see README)"
-NEW=$("$TMP/fxcloud" --version)
+# timeout: a release from before v0.0.25 has no --version, and a foreign
+# architecture fails to exec - both must end here, not hang or start
+# anything.
+timeout 5 "$TMP/fxcloud" --version >/dev/null 2>&1 ||
+  die "cannot verify the binary: it does not run here (prebuilt is x86_64) or predates --version (v0.0.25+)"
+NEW=$(timeout 5 "$TMP/fxcloud" --version | sed -n '/^fxcloud v/p' | head -n 1)
+[ -n "$NEW" ] || NEW="fxcloud vX.Y.Z"
 
 # ---- user and directories -------------------------------------------------
 if id "$USER_NAME" >/dev/null 2>&1; then
@@ -83,7 +88,10 @@ chmod 750 "$HOME_DIR"
 
 # ---- binary (an update keeps the previous one) ----------------------------
 if [ -x "$BIN" ]; then
-  OLD=$("$BIN" --version 2>/dev/null || echo "fxcloud (unknown version)")
+  # timeout: a binary from before v0.0.25 has no --version flag and would
+  # start a server here instead of answering.
+  OLD=$(timeout 5 "$BIN" --version 2>/dev/null | sed -n '/^fxcloud v/p' | head -n 1)
+  [ -n "$OLD" ] || OLD="fxcloud (pre-v0.0.25)"
   log "updating: $OLD -> $NEW"
   cp -p "$BIN" "$BIN.bak"
 else
