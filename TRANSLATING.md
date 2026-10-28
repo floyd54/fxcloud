@@ -46,9 +46,11 @@ Five pieces, all in `frontend/assets/i18n.js`:
    (`Intl` tag like `de-DE`). Languages without one fall back to the
    browser's own formatting.
 
-The switcher needs no further work: `renderSwitch()` draws one button per
-`CODES` entry into every `.lang-switch` container (topbar, settings
-dialog, login card) and repaints all of them on a switch.
+The switcher needs no further work: `renderSwitch()` draws a dropdown
+into every `.lang-switch` container (topbar, settings dialog, login
+card) - a button with the current flag opens a menu with one row per
+`CODES` entry (flag plus endonym) - and repaints all of them on a
+switch.
 
 ## Rules for strings
 

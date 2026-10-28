@@ -18,7 +18,8 @@
  *   t(key, params)   translate; falls back to English, then to the key itself
  *   setLang(code)    switch, persist in localStorage, re-apply, notify
  *   apply(root)      re-stamp every [data-i18n*] node under root
- *   init()           detect the language, stamp the document, draw the flags
+ *   init()           detect the language, stamp the document, draw the
+ *                    language dropdown (current flag opens the menu)
  *
  * Static HTML keeps its English text as the fallback (and for no-JS readers);
  * every translated element carries a data-i18n* attribute naming its key:
@@ -1396,18 +1397,67 @@
     return ENDONYMS[code] || ENDONYMS.en;
   }
 
+  // The one open dropdown (or null): opening one closes the rest, and a
+  // language switch redraws every copy closed.
+  var openSwitch = null;
+
+  function closeSwitch() {
+    if (!openSwitch) return;
+    var menu = openSwitch.querySelector(".lang-menu");
+    var trigger = openSwitch.querySelector(".lang-current");
+    if (menu) menu.hidden = true;
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+    openSwitch = null;
+  }
+
+  // Outside click and Escape act on whichever dropdown is open, so they
+  // are wired once against the document, not per redraw.
+  var switchWired = false;
+  function wireSwitch() {
+    if (switchWired || typeof document === "undefined") return;
+    switchWired = true;
+    document.addEventListener("click", function (ev) {
+      if (openSwitch && !openSwitch.contains(ev.target)) closeSwitch();
+    });
+    document.addEventListener("keydown", function (ev) {
+      if (!openSwitch) return;
+      if (ev.key !== "Escape" && ev.key !== "Esc") return;
+      var trigger = openSwitch.querySelector(".lang-current");
+      closeSwitch();
+      if (trigger && typeof trigger.focus === "function") trigger.focus();
+    });
+  }
+
   /**
-   * Draw the flag switcher into every .lang-switch container (topbar,
-   * settings dialog, login/register card): one class, one code path, and
-   * every copy repaints together on setLang().
+   * Draw the language dropdown into every .lang-switch container (topbar,
+   * settings dialog, login/register card): a button with the current flag
+   * opens a menu with one row per language - its flag plus the endonym, so
+   * an unfamiliar flag still says what it is. The row stays one button
+   * wide however many languages exist. One class, one code path; every
+   * copy repaints together on setLang().
    */
   function renderSwitch() {
     if (typeof document === "undefined" || typeof document.querySelectorAll !== "function") return;
+    openSwitch = null;
+    wireSwitch();
     var boxes = document.querySelectorAll(".lang-switch");
     for (var b = 0; b < boxes.length; b++) {
       var box = boxes[b];
       if (!box || typeof box.appendChild !== "function") continue;
       while (box.firstChild) box.removeChild(box.firstChild);
+
+      var trigger = document.createElement("button");
+      trigger.type = "button";
+      trigger.className = "lang-current";
+      trigger.setAttribute("aria-haspopup", "true");
+      trigger.setAttribute("aria-expanded", "false");
+      trigger.setAttribute("aria-label", t("lang.aria"));
+      trigger.title = t("lang.aria");
+      trigger.innerHTML = flag(currentCode);
+
+      var menu = document.createElement("div");
+      menu.className = "lang-menu";
+      menu.hidden = true;
       for (var i = 0; i < CODES.length; i++) {
         var code = CODES[i];
         var btn = document.createElement("button");
@@ -1416,14 +1466,35 @@
         btn.setAttribute("data-lang", code);
         btn.setAttribute("aria-label", endonym(code));
         btn.title = endonym(code);
-        btn.innerHTML = flag(code);
-        /* istanbul ignore next - the handler is what the click test drives */
-        btn.addEventListener("click", function (ev) {
-          var el = ev.currentTarget || ev.target;
+        btn.innerHTML = flag(code) + "<span>" + endonym(code) + "</span>";
+        menu.appendChild(btn);
+      }
+
+      /* istanbul ignore next - the handlers are what the click test drives */
+      (function (box, menu, trigger) {
+        trigger.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          var wasOpen = !menu.hidden;
+          closeSwitch();
+          if (!wasOpen) {
+            menu.hidden = false;
+            trigger.setAttribute("aria-expanded", "true");
+            openSwitch = box;
+          }
+        });
+        // A click may land on the flag or the endonym <span> inside a row.
+        menu.addEventListener("click", function (ev) {
+          var el = ev.target;
+          while (el && el !== menu && !el.getAttribute("data-lang")) {
+            el = el.parentNode;
+          }
+          if (!el || el === menu) return;
           setLang(el.getAttribute("data-lang"));
         });
-        box.appendChild(btn);
-      }
+      })(box, menu, trigger);
+
+      box.appendChild(trigger);
+      box.appendChild(menu);
     }
   }
 

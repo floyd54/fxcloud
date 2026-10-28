@@ -1712,6 +1712,93 @@ grep -q 'code === "tlh"' "$I18N_JS" \
 grep -q 'tlhIngan Hol' "$I18N_JS" \
   && ok "the Klingon flag names itself tlhIngan Hol" \
   || bad "the Klingon endonym is missing"
+# The switcher is a dropdown, not a row of flags: one current-flag button
+# opens a menu with every language, however many CODES grows.
+grep -q 'className = "lang-current"' "$I18N_JS" \
+  && ok "the switcher opens as a dropdown (one current-flag button)" \
+  || bad "no current-flag button is drawn"
+grep -q 'className = "lang-menu"' "$I18N_JS" \
+  && ok "every language lives in the dropdown menu" \
+  || bad "no dropdown menu is drawn"
+grep -q 'aria-haspopup' "$I18N_JS" \
+  && ok "the dropdown button announces the popup" \
+  || bad "the dropdown button lacks aria-haspopup"
+grep -q 'Escape' "$I18N_JS" \
+  && ok "the dropdown closes on Escape" \
+  || bad "the dropdown cannot be closed with the keyboard"
+# A fake DOM: render the dropdown, count its parts, switch to Klingon,
+# and read the redrawn trigger - the structure a browser would get.
+if "$NODE" -e '
+  function fake(tag) {
+    return {
+      tag: tag, children: [], attrs: {}, className: "", hidden: false,
+      innerHTML: "", title: "", type: "", firstChild: null,
+      appendChild: function (c) { this.children.push(c); this.firstChild = this.children[0]; return c; },
+      removeChild: function (c) {
+        this.children = this.children.filter(function (x) { return x !== c; });
+        this.firstChild = this.children[0] || null;
+        return c;
+      },
+      setAttribute: function (k, v) { this.attrs[k] = String(v); },
+      getAttribute: function (k) { return k in this.attrs ? this.attrs[k] : null; },
+      addEventListener: function () {},
+      focus: function () {},
+      contains: function () { return false; },
+      querySelector: function (sel) {
+        var name = sel.slice(1);
+        var walk = function (n) {
+          for (var i = 0; i < n.children.length; i++) {
+            var c = n.children[i];
+            if ((" " + c.className + " ").indexOf(" " + name + " ") >= 0) return c;
+            var f = walk(c);
+            if (f) return f;
+          }
+          return null;
+        };
+        return walk(this);
+      },
+    };
+  }
+  var boxes = [fake("div"), fake("div"), fake("div")];
+  globalThis.document = {
+    readyState: "complete",
+    documentElement: {},
+    querySelectorAll: function (sel) {
+      return sel === ".lang-switch" ? boxes : [];
+    },
+    createElement: function (tag) { return fake(tag); },
+    addEventListener: function () {},
+    dispatchEvent: function () {},
+  };
+  globalThis.window = globalThis;
+  require(process.argv[1]);
+  var I = globalThis.I18N;
+  var ok = true;
+  var fail = function (msg) { console.error(msg); ok = false; };
+  var box = boxes[0];
+  if (box.children.length !== 2) fail("expected trigger + menu, got " + box.children.length);
+  var trigger = box.children[0];
+  var menu = box.children[1];
+  if (trigger.className !== "lang-current") fail("no current-flag button on top");
+  if (trigger.getAttribute("aria-haspopup") !== "true") fail("trigger lacks aria-haspopup");
+  if (trigger.getAttribute("aria-expanded") !== "false") fail("trigger starts announced-open");
+  if (!menu.hidden) fail("the menu starts open");
+  if (menu.children.length !== 3) fail("menu lists " + menu.children.length + " languages");
+  if (menu.children[0].getAttribute("data-lang") !== "de") fail("menu does not start with German");
+  if (menu.children[1].className.indexOf("active") < 0) fail("English is not marked active");
+  I.setLang("tlh");
+  trigger = box.children[0];
+  menu = box.children[1];
+  if (trigger.innerHTML.indexOf("rotate(240") < 0) fail("switching to Klingon does not redraw the trigger flag");
+  if (menu.children[2].className.indexOf("active") < 0) fail("Klingon is not marked active after the switch");
+  if (trigger.getAttribute("aria-expanded") !== "false") fail("a switch leaves the trigger announced-open");
+  I.setLang("en");
+  process.exit(ok ? 0 : 1);
+' "$I18N_JS"; then
+  ok "the flag switcher is a dropdown: current flag opens a list of all languages"
+else
+  bad "the language dropdown is not built as expected"
+fi
 LC_ALL=C grep -q 'navigator.language' "$I18N_JS" \
   && bad "the UI sniffs the browser language instead of asking" \
   || ok "no browser-language guessing: the flags decide"
