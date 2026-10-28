@@ -98,13 +98,23 @@ pub fn new_challenge() -> String {
 /// POSTs of a ceremony) it must equal the derived origin. A mismatch means
 /// deployment config disagrees with what browsers actually see, which would
 /// fail verification anyway - better a clear 400 with a pointer to
-/// `FXCLOUD_ORIGIN` before a single challenge is spent.
+/// `FXCLOUD_ORIGIN` before a single challenge is spent. Every refusal here
+/// is journaled at WARN with the headers in play: a wrong `FXCLOUD_ORIGIN`
+/// is otherwise invisible (the browser shows a generic "Invalid request"
+/// and the journal said nothing), so `journalctl -u fxcloud` is the first
+/// place to look when passkeys stop working.
 pub fn origin_and_rp(headers: &HeaderMap, config: &Config) -> Result<(String, String), AppError> {
     let host = headers
         .get(HOST)
         .and_then(|v| v.to_str().ok())
         .filter(|h| !h.is_empty())
-        .ok_or_else(|| AppError::BadRequest("missing Host header".into()))?
+        .ok_or_else(|| {
+            tracing::warn!(
+                forwarded_proto = ?headers.get("x-forwarded-proto"),
+                "passkey request refused: no Host header to derive the origin from"
+            );
+            AppError::BadRequest("missing Host header".into())
+        })?
         .to_string();
 
     let raw = match &config.webauthn_origin {
@@ -126,10 +136,31 @@ pub fn origin_and_rp(headers: &HeaderMap, config: &Config) -> Result<(String, St
             format!("{scheme}://{host}")
         }
     };
-    let (origin, rp_id) = split_origin(&raw)?;
+    let (origin, rp_id) = match split_origin(&raw) {
+        Ok(pair) => pair,
+        Err(err) => {
+            tracing::warn!(
+                origin = %raw,
+                fxcloud_origin_set = config.webauthn_origin.is_some(),
+                "passkey request refused: the origin is not http(s)://host[:port]"
+            );
+            return Err(err);
+        }
+    };
 
     if let Some(sent) = headers.get(ORIGIN).and_then(|v| v.to_str().ok()) {
         if sent != origin {
+            tracing::warn!(
+                browser_origin = %sent,
+                derived_origin = %origin,
+                host = %host,
+                forwarded_proto = ?headers.get("x-forwarded-proto"),
+                secure_cookie = config.secure_cookie,
+                fxcloud_origin_set = config.webauthn_origin.is_some(),
+                "passkey request refused: the browser's Origin does not match this \
+                 deployment - set FXCLOUD_ORIGIN to the URL users open it under \
+                 (and FXCLOUD_SECURE_COOKIE=1 behind HTTPS)"
+            );
             return Err(AppError::BadRequest(
                 "Origin does not match this server's address - set FXCLOUD_ORIGIN to the URL \
                  users open it under"

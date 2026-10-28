@@ -70,6 +70,18 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env().context("loading configuration")?;
     tracing::info!(?config, "starting fxcloud");
 
+    // Passkeys bind to an exact origin: say up front which one this
+    // deployment serves under, so a reverse-proxy surprise is one journal
+    // read away instead of a mystery "Invalid request" in the browser.
+    match &config.webauthn_origin {
+        Some(origin) => tracing::info!(%origin, "passkey origin taken from FXCLOUD_ORIGIN"),
+        None => tracing::info!(
+            secure_cookie = config.secure_cookie,
+            "passkey origin derived from the Host header - set FXCLOUD_ORIGIN when a \
+             reverse proxy rewrites it"
+        ),
+    }
+
     let db = Db::open(&config.db_path()).context("opening database")?;
     tracing::info!(path = %config.db_path().display(), "database ready");
 

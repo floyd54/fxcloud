@@ -2171,6 +2171,31 @@ RC=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "$JA" -c "$JA" \
 [ "$RC" = "400" ] && ok "a foreign Origin header fails before a challenge is spent" \
   || bad "foreign Origin: $RC"
 
+# A refused origin is a deployment misconfiguration - it must be visible
+# in the journal, with the knob that fixes it and the headers in play.
+# The log carries ANSI colors, so strip them before reading the line.
+grep -q 'FXCLOUD_ORIGIN' "$ROOT/server.log" \
+  && ok "the refused origin is journaled with the FXCLOUD_ORIGIN hint" \
+  || bad "the journal says nothing about the refused origin"
+WARNLINE=$(perl -pe 's/\e\[[0-9;]*m//g' "$ROOT/server.log" | grep 'refused: the browser' | tail -n 1)
+case "$WARNLINE" in
+  *browser_origin=https://evil.example*derived_origin=*fxcloud_origin_set=false*)
+    ok "the journal carries the debugging fields (origins, knob state)" ;;
+  *) bad "the origin warning lacks its debugging fields: $WARNLINE" ;;
+esac
+grep -q 'fxcloud_origin_set' "$REPO/src/webauthn.rs" \
+  && ok "origin refusals log every knob that matters" \
+  || bad "webauthn.rs does not journal the refusal context"
+grep -q 'challenge unknown or older than the ceremony timeout' "$REPO/src/web/routes/passkeys.rs" \
+  && ok "expired or replayed ceremonies are journaled" \
+  || bad "passkeys.rs does not log ceremony refusals"
+grep -q 'passkey origin derived from the Host header' "$REPO/src/main.rs" \
+  && ok "the journal states the passkey origin mode at startup" \
+  || bad "main.rs does not log the origin mode"
+grep -q 'code !== "bad_request" && code !== "conflict"' "$REPO/frontend/assets/app.js" \
+  && ok "bad_request and conflict show the server's reason, not just the label" \
+  || bad "app.js hides the actionable reason behind the generic label"
+
 "$NODE" "$WA" register "$ROOT/pk-rstart.json" "$ROOT/pk-state.json" \
   "$ROOT/pk-rcred.json" --origin=$PKB \
   && ok "the virtual authenticator answers with an attestation" \
@@ -2438,6 +2463,9 @@ grep -q 'NoNewPrivileges' "$INSTALL" && grep -q 'ReadWritePaths' "$INSTALL" \
 grep -q '127.0.0.1:$PORT/login' "$INSTALL" \
   && ok "the installer waits for /login before reporting success" \
   || bad "install.sh does not health-check the service"
+grep -q 'this unit sets no FXCLOUD_ORIGIN' "$INSTALL" \
+  && ok "an upgraded unit without FXCLOUD_ORIGIN gets a passkey hint" \
+  || bad "install.sh does not point at the missing origin knob"
 
 DOCKERFILE="$REPO/Dockerfile"
 grep -q '^FROM rust:alpine AS build' "$DOCKERFILE" \

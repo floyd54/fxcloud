@@ -198,3 +198,10 @@ printf '    configure: edit %s, then systemctl restart fxcloud\n' "$UNIT"
 if [ -f "$BIN.bak" ]; then
   printf '    rollback:  systemctl stop fxcloud && cp %s %s && systemctl start fxcloud\n' "$BIN.bak" "$BIN"
 fi
+# An upgraded unit can predate a knob: the update keeps the unit (on
+# purpose), so point at what passkeys behind a proxy would now need.
+if ! grep -q '^Environment=FXCLOUD_ORIGIN=' "$UNIT"; then
+  printf '    note:      this unit sets no FXCLOUD_ORIGIN - behind a reverse proxy, passkeys\n'
+  printf '               need it: add Environment=FXCLOUD_ORIGIN=https://<public-url> and\n'
+  printf '               FXCLOUD_SECURE_COOKIE=1 to %s, then systemctl restart fxcloud\n' "$UNIT"
+fi

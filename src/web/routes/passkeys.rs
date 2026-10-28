@@ -99,16 +99,34 @@ pub async fn register_finish(
     // the stored copy.
     let client =
         webauthn::read_client_data(&req.credential.response.client_data_json, "clientDataJSON")?;
-    let ceremony = state
-        .take_ceremony(&client.challenge, CeremonyKind::Register)
-        .ok_or(AppError::Unauthorized)?;
+    let Some(ceremony) = state.take_ceremony(&client.challenge, CeremonyKind::Register) else {
+        tracing::warn!(
+            user = %user.0.username,
+            "registration refused: challenge unknown or older than the ceremony timeout"
+        );
+        return Err(AppError::Unauthorized);
+    };
     if ceremony.user_id != Some(user.id()) {
         // The session changed underneath the ceremony - restart it.
+        tracing::warn!(
+            user = %user.0.username,
+            "registration refused: the session changed underneath the ceremony"
+        );
         return Err(AppError::Unauthorized);
     }
 
     let result =
-        webauthn::verify_registration(&rp_id, &origin, &ceremony.challenge, &req.credential)?;
+        webauthn::verify_registration(&rp_id, &origin, &ceremony.challenge, &req.credential)
+            .map_err(|err| {
+                tracing::warn!(
+                    user = %user.0.username,
+                    %origin,
+                    %rp_id,
+                    %err,
+                    "registration refused by verification"
+                );
+                err
+            })?;
     let label = check_label(req.label.as_deref().unwrap_or(DEFAULT_LABEL))?;
 
     let info = state
@@ -179,23 +197,36 @@ pub async fn login_finish(
     let (origin, rp_id) = webauthn::origin_and_rp(&headers, &state.config)?;
     let client =
         webauthn::read_client_data(&req.credential.response.client_data_json, "clientDataJSON")?;
-    let ceremony = state
-        .take_ceremony(&client.challenge, CeremonyKind::Login)
-        .ok_or(AppError::Unauthorized)?;
+    let Some(ceremony) = state.take_ceremony(&client.challenge, CeremonyKind::Login) else {
+        tracing::warn!("sign-in refused: challenge unknown or older than the ceremony timeout");
+        return Err(AppError::Unauthorized);
+    };
     let Some(user_id) = ceremony.user_id else {
         // The challenge was issued for a name nobody has.
+        tracing::warn!("sign-in refused: the challenge was issued for an unknown account");
         return Err(AppError::Unauthorized);
     };
 
     let credential_id = webauthn::b64url_decode(&req.credential.id, "credential id")?;
-    let record = state
+    let Some(record) = state
         .db
         .find_passkey_by_credential_id(credential_id)
         .await?
-        .ok_or(AppError::Unauthorized)?;
+    else {
+        tracing::warn!(
+            user_id,
+            "sign-in refused: no credential with this id is registered"
+        );
+        return Err(AppError::Unauthorized);
+    };
     if record.user_id != user_id {
         // A credential of another account pasted into this ceremony - do
         // not switch users silently.
+        tracing::warn!(
+            ceremony_user = user_id,
+            credential_user = record.user_id,
+            "sign-in refused: the credential belongs to another account"
+        );
         return Err(AppError::Unauthorized);
     }
 
@@ -207,7 +238,11 @@ pub async fn login_finish(
         &req.credential,
         &record.public_key,
         record.sign_count,
-    )?;
+    )
+    .map_err(|err| {
+        tracing::warn!(user_id, %origin, %rp_id, %err, "sign-in refused by verification");
+        err
+    })?;
     state
         .db
         .touch_passkey(record.id, i64::from(assertion.sign_count))
@@ -219,6 +254,10 @@ pub async fn login_finish(
         .await?
         .ok_or(AppError::Unauthorized)?;
     if !user.is_active {
+        tracing::warn!(
+            user = %user.username,
+            "sign-in refused: the account is not activated yet"
+        );
         return Err(AppError::InactiveAccount);
     }
     let token = state

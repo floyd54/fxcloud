@@ -90,13 +90,25 @@
    */
   function errMessage(status, body) {
     if (body && body.code && t("err." + body.code) !== "err." + body.code) {
-      return t("err." + body.code, {
+      var msg = t("err." + body.code, {
         used: body.used != null ? fmtBytes(body.used) : "",
         quota: body.quota != null ? fmtBytes(body.quota) : "",
       });
+      return withReason(msg, body.code, body.error);
     }
     if (body && body.error) return body.error;
     return t("err.request_failed", { status });
+  }
+
+  /**
+   * bad_request and conflict answers carry the actionable reason ("set
+   * FXCLOUD_ORIGIN ...", which name already exists); the generic
+   * translation must not hide it. The server prefixes the text with the
+   * code again - drop that duplicate.
+   */
+  function withReason(msg, code, error) {
+    if (!error || (code !== "bad_request" && code !== "conflict")) return msg;
+    return msg + " " + String(error).replace(/^[a-z_]+: /, "");
   }
 
   function escapeHtml(s) {
@@ -453,14 +465,16 @@
   }
 
   // One failed batch item, in the selected language: the stable `code`
-  // wins (i18n.js `err.*`), the server's English text stays as the fallback
-  // for a code this build does not know yet.
+  // wins (i18n.js `err.*`) with the server's reason appended for
+  // bad_request/conflict; the English text is the fallback for a code this
+  // build does not know yet.
   function failureText(f) {
     if (f.code && t("err." + f.code) !== "err." + f.code) {
-      return t("err." + f.code, {
+      var msg = t("err." + f.code, {
         used: f.used != null ? fmtBytes(f.used) : "",
         quota: f.quota != null ? fmtBytes(f.quota) : "",
       });
+      return withReason(msg, f.code, f.error);
     }
     return f.error;
   }
