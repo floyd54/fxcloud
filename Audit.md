@@ -9,7 +9,7 @@ Method: manual review of every authentication, authorization, cryptographic
 and file-handling code path in this repository, plus an automated
 dependency scan (`cargo audit`, RustSec advisory database: **0
 vulnerabilities across 211 crate dependencies**). The integration suite
-(534 checks) and the unit tests (41) were green at the time of review.
+(539 checks) and the unit tests (41) were green at the time of review.
 
 This document is a living record. Findings carry an id, a severity and a
 status; the status line moves as fixes land. Severity uses the usual
@@ -45,7 +45,7 @@ side-channel attacks against WebCrypto/Argon2 implementations.
 | F4 | sessions are long-lived (30 days) with no rotation or management UI | Medium | fixed in v0.0.33 |
 | F5 | a share UPDATE-grantee can replace an existing file/folder key record | Low-Med | fixed in v0.0.30 |
 | F6 | `covering_share` walks parents without a depth cap | Low | open |
-| F7 | the installer does not verify a checksum of the downloaded binary | Low | open |
+| F7 | the installer does not verify a checksum of the downloaded binary | Low | fixed (installer + CI) |
 | F8 | without `FXCLOUD_ORIGIN` the WebAuthn origin follows the Host header | Low | open |
 | F9 | no connection/request rate limits beyond the body cap | Info | accepted |
 | F10 | login timing differs for unknown usernames (fast 401) | Info | open |
@@ -305,7 +305,7 @@ instead of failing. Robustness, not an exploit path.
 
 *Recommendation.* Same 64-hop cap, returning "no share".
 
-### F7 - The installer verifies the download only by ELF magic and `--version` (Low)
+### F7 - The installer verifies the download only by ELF magic and `--version` (Low) - fixed (no binary change: installer + CI only)
 
 `install.sh` checks that the download starts with `\x7fELF` and answers
 `--version` under a timeout. The transport is TLS to GitHub; the asset
@@ -319,6 +319,24 @@ risk; the finding is the missing *cheap* mitigation.
 write a `SHA256SUMS` asset, and have the installer fetch and verify it
 (only when present, so old releases keep installing). An optional
 minisign/GPG signature is the stronger follow-up.
+
+*Fixed (installer + CI, no binary change).* The release workflow now
+writes a `SHA256SUMS` asset next to the binary - one line in the
+standard `sha256sum` format - and `install.sh` fetches it right after
+the download, before the ELF check, the exec probe or the install step
+see the file: the asset's line is picked by name, the hash is computed
+over the download and compared, and a mismatch - or a `SHA256SUMS` that
+fails to mention the asset - ends the install with `die`. Absence
+stays legal: releases tagged before v0.0.34 have no checksum file, a
+host without `sha256sum` is noted, and both fall through to the
+pre-existing ELF magic + `--version` checks, so no old tag ever becomes
+uninstallable. The transport was already TLS to GitHub; this binds the
+asset's bytes to what the repository's own workflow published - the
+cheap mitigation the finding asks for (minisign/GPG stays the stronger
+follow-up). Five suite pins cover the CI step, the installer's
+verification and its optional-file fallback, plus a functional round
+trip of the shared format: an intact file matches, a tampered one does
+not.
 
 ### F8 - Without `FXCLOUD_ORIGIN` the WebAuthn origin follows the Host header (Low)
 
@@ -538,5 +556,6 @@ future changes know which properties to preserve.
 4. ~~F1 (rate limiting)~~ - done in v0.0.32.
 5. ~~F4 (session TTL default, rotation, management UI)~~ - done in
    v0.0.33.
-6. F7 (release checksums) - CI + installer, no server change.
+6. ~~F7 (release checksums)~~ - done (CI + installer, no server change;
+   in effect with the next tagged release).
 7. F6, F8, F10 - small hardening items.

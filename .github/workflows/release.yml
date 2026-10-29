@@ -32,6 +32,11 @@ jobs:
           cp target/x86_64-unknown-linux-musl/release/fxcloud
           "fxcloud-${GITHUB_REF_NAME}-x86_64-unknown-linux-musl"
 
+      # The checksum rides the release as a second asset, in the exact
+      # format `sha256sum` writes and the installer checks (audit F7).
+      - name: Write checksums
+        run: sha256sum "fxcloud-${GITHUB_REF_NAME}-x86_64-unknown-linux-musl" > SHA256SUMS
+
       # The release text is written when the release is prepared and lives
       # in the repository (notes/<tag>.md), so it is reviewable history and
       # a tag without notes still publishes a readable page.
@@ -46,6 +51,8 @@ jobs:
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          files: fxcloud-*-x86_64-unknown-linux-musl
+          files: |
+            fxcloud-*-x86_64-unknown-linux-musl
+            SHA256SUMS
           fail_on_unmatched_files: true
           body_path: release-notes.md

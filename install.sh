@@ -62,6 +62,27 @@ trap 'rm -rf "$TMP"' EXIT
 log "downloading $TAG"
 curl -fsSL --retry 3 "$ASSET_URL" -o "$TMP/fxcloud" ||
   die "download failed: $ASSET_URL"
+# ---- checksum against what the release publishes ---------------------------
+# SHA256SUMS rides the release as a second asset, written by CI in the
+# standard sha256sum format (hash, two spaces, file name). Releases
+# before v0.0.34 carry none: those keep installing on the ELF and
+# --version checks below, so a missing file is a note, never a failure -
+# but a file that is present and does not match must end the install.
+SUMS_URL="https://github.com/$REPO/releases/download/$TAG/SHA256SUMS"
+ASSET_NAME="fxcloud-$TAG-x86_64-unknown-linux-musl"
+if ! command -v sha256sum >/dev/null 2>&1; then
+  log "no sha256sum on this host - relying on the ELF and --version checks"
+elif curl -fsSL --retry 3 "$SUMS_URL" -o "$TMP/SHA256SUMS" 2>/dev/null; then
+  WANT=$(awk -v n="$ASSET_NAME" '$2 == n {print $1; exit}' "$TMP/SHA256SUMS")
+  [ -n "$WANT" ] ||
+    die "SHA256SUMS does not mention $ASSET_NAME - refusing an unchecksummed download"
+  GOT=$(sha256sum "$TMP/fxcloud" | awk '{print $1}')
+  [ "$GOT" = "$WANT" ] ||
+    die "checksum mismatch: the download does not match the release's SHA256SUMS"
+  log "checksum verified against SHA256SUMS"
+else
+  log "no SHA256SUMS for $TAG (pre-v0.0.34 release) - relying on the ELF and --version checks"
+fi
 head -c 4 "$TMP/fxcloud" | od -An -tx1 | grep -q '7f 45 4c 46' ||
   die "the download is not an ELF binary"
 chmod 755 "$TMP/fxcloud"

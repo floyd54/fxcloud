@@ -2835,9 +2835,10 @@ grep -q 'releases/download' "$INSTALL" \
   && ok "install.sh downloads release assets" \
   || bad "install.sh does not fetch from GitHub releases"
 grep -q 'fxcloud-$TAG-x86_64-unknown-linux-musl' "$INSTALL" \
-  && grep -q 'files: fxcloud-\*-x86_64-unknown-linux-musl' "$REPO/.github/workflows/release.yml" \
-  && ok "the installer's asset name matches what the release CI attaches" \
-  || bad "install.sh and release.yml disagree on the asset name"
+  && grep -q 'fxcloud-\*-x86_64-unknown-linux-musl' "$REPO/.github/workflows/release.yml" \
+  && grep -q '^            SHA256SUMS' "$REPO/.github/workflows/release.yml" \
+  && ok "the installer's asset name matches what the release CI attaches, next to the checksums" \
+  || bad "install.sh and release.yml disagree on the asset name or the checksums"
 grep -q 'curl -fsSL https://raw.githubusercontent.com/.*/install.sh | sh' "$README" \
   && grep -q 'raw.githubusercontent.com/.*/install.sh | sh' "$REPO/USERGUIDE.md" \
   && ok "README and USERGUIDE carry the install one-liner" \
@@ -2866,6 +2867,42 @@ grep -q '127.0.0.1:$PORT/login' "$INSTALL" \
 grep -q 'this unit sets no FXCLOUD_ORIGIN' "$INSTALL" \
   && ok "an upgraded unit without FXCLOUD_ORIGIN gets a passkey hint" \
   || bad "install.sh does not point at the missing origin knob"
+
+# -- release checksums (F7) ------------------------------------------------
+# CI publishes SHA256SUMS next to the binary and the installer compares
+# the download against it. A release that predates the checksums has no
+# file to fetch, and that must stay installable - the ELF and --version
+# checks below still run.
+grep -q 'sha256sum "fxcloud-${GITHUB_REF_NAME}-x86_64-unknown-linux-musl" > SHA256SUMS' \
+    "$REPO/.github/workflows/release.yml" \
+  && ok "the release CI writes SHA256SUMS next to the asset" \
+  || bad "release.yml does not generate SHA256SUMS"
+grep -q 'checksum mismatch' "$INSTALL" \
+  && grep -q 'SHA256SUMS' "$INSTALL" \
+  && ok "the installer verifies the download against SHA256SUMS and dies on mismatch" \
+  || bad "install.sh has no checksum verification"
+grep -q 'pre-v0.0.34 release' "$INSTALL" \
+  && ok "a release without SHA256SUMS still installs (the file is optional)" \
+  || bad "install.sh would refuse a release that predates the checksums"
+# Functional: the format contract both sides share - CI writes plain
+# sha256sum output, the installer picks the asset's line by name and
+# compares the hashes. A round trip must pass on the intact file and
+# fail on a tampered one.
+CKD="$ROOT/ckd"
+mkdir -p "$CKD"
+printf 'not-a-real-binary' > "$CKD/fxcloud-vTEST-x86_64-unknown-linux-musl"
+(cd "$CKD" && sha256sum "fxcloud-vTEST-x86_64-unknown-linux-musl" > SHA256SUMS)
+WANT=$(awk -v n="fxcloud-vTEST-x86_64-unknown-linux-musl" \
+  '$2 == n {print $1; exit}' "$CKD/SHA256SUMS")
+GOT=$(sha256sum "$CKD/fxcloud-vTEST-x86_64-unknown-linux-musl" | awk '{print $1}')
+[ -n "$WANT" ] && [ "$WANT" = "$GOT" ] \
+  && ok "the checksum line format round-trips through the installer's own check" \
+  || bad "the SHA256SUMS format and the installer's extraction disagree"
+printf 'tampered' > "$CKD/fxcloud-vTEST-x86_64-unknown-linux-musl"
+GOT=$(sha256sum "$CKD/fxcloud-vTEST-x86_64-unknown-linux-musl" | awk '{print $1}')
+[ -n "$WANT" ] && [ "$WANT" != "$GOT" ] \
+  && ok "a tampered download no longer matches the published checksum" \
+  || bad "the tampered file still matches SHA256SUMS"
 
 DOCKERFILE="$REPO/Dockerfile"
 grep -q '^FROM rust:alpine AS build' "$DOCKERFILE" \
