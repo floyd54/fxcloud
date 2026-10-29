@@ -860,16 +860,20 @@ impl Db {
     /// Store a row's key record, replacing whatever it held (ENCRYPTION.md
     /// 5.5), without touching the row's bytes.
     ///
-    /// Permission is PERM_UPDATE, the same mask the content write asks for:
-    /// the owner re-binding a record after a move or during the share-time
-    /// migration, and a share's UPDATE grantee re-binding one they hold the
-    /// raw key for (the crypto mirrors the API permission, it does not
-    /// replace it). The server cannot check the wrapping - it holds no key -
-    /// but a caller with UPDATE can already overwrite the bytes, so this
-    /// hands out no new capability. A plaintext file has no record to
-    /// replace and is refused; a folder may gain one at any time, because
-    /// folders start unkeyed and are keyed on the first encrypted write
-    /// below them.
+    /// Permission is PERM_UPDATE, the same mask the content write asks for -
+    /// but an UPDATE grantee may only *give* a row its record, never take a
+    /// record it already has away. Setting a record where none exists is the
+    /// first encrypted write below a folder: nothing is keyed under the old
+    /// record yet, so there is nothing for a swapped-in key to orphan. A
+    /// record that exists may only change by the row's owner's hand, exactly
+    /// like the content write's key field (see `save_content`): the server
+    /// cannot see through a wrapper - it holds no key - so it cannot tell the
+    /// owner's re-binding after a move from a grantee handing it a wrapper
+    /// only the grantee can open. The owner re-binds moved rows and migrates
+    /// subtrees for a share; a grantee who moves an encrypted row within a
+    /// share leaves it to the owner to re-bind (the frontend refuses that
+    /// move up front rather than landing an unopenable row). A plaintext
+    /// file has no record to set and is refused.
     pub async fn set_enc_key(
         &self,
         user_id: i64,
@@ -881,16 +885,27 @@ impl Db {
                 return Err(AppError::BadRequest("key is empty".into()));
             }
             let tree_owner = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
-            let (is_dir, enc_version): (bool, i64) = conn
+            let (is_dir, enc_version, has_record): (bool, i64, bool) = conn
                 .query_row(
-                    "SELECT is_dir != 0, enc_version FROM files WHERE id = ?1 AND owner_id = ?2",
+                    "SELECT is_dir != 0, enc_version, enc_key IS NOT NULL
+                       FROM files WHERE id = ?1 AND owner_id = ?2",
                     params![id, tree_owner],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?
                 .ok_or(AppError::NotFound)?;
             if !is_dir && enc_version == 0 {
                 return Err(AppError::BadRequest("this file is not encrypted".into()));
+            }
+            // F5 (Audit.md): swapping a keyed row's record is how a share
+            // UPDATE-grantee would hand themselves the row for good - the
+            // owner's chain stops opening it and every write below a folder
+            // record is wrapped for the grantee's key from then on. Same
+            // line `save_content` draws, same words.
+            if has_record && user_id != tree_owner {
+                return Err(AppError::ForbiddenDetail(
+                    "only the row's owner may change its key record".into(),
+                ));
             }
             conn.execute(
                 "UPDATE files SET enc_key = ?1 WHERE id = ?2 AND owner_id = ?3",

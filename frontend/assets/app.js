@@ -1754,6 +1754,16 @@
       alert(t("transfer.noKeyMove"));
       return;
     }
+    // Re-binding a moved row's record is the owner's move alone (the server
+    // refuses a grantee's replacement of a record that exists, and for good
+    // reason: the wrapper is opaque, so a grantee's replacement is
+    // indistinguishable from the sabotage it usually is). The re-bind below
+    // runs before the move, so a grantee's attempt would just fail there -
+    // better to say so here than to half-run a transfer that cannot land.
+    if (keyed.some((e) => e.owner_id !== meId)) {
+      alert(t("transfer.ownerMoveOnly"));
+      return;
+    }
     const oldParent = currentParent;
     try {
       // Re-bind first, move second: the record has to name the destination

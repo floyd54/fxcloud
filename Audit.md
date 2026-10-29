@@ -9,7 +9,7 @@ Method: manual review of every authentication, authorization, cryptographic
 and file-handling code path in this repository, plus an automated
 dependency scan (`cargo audit`, RustSec advisory database: **0
 vulnerabilities across 211 crate dependencies**). The integration suite
-(496 checks) and the unit tests (41) were green at the time of review.
+(500 checks) and the unit tests (41) were green at the time of review.
 
 This document is a living record. Findings carry an id, a severity and a
 status; the status line moves as fixes land. Severity uses the usual
@@ -43,7 +43,7 @@ side-channel attacks against WebCrypto/Argon2 implementations.
 | F2 | no security headers on the UI (CSP, clickjacking, HSTS, nosniff) | Medium | fixed in v0.0.29 |
 | F3 | password change and admin reset keep existing sessions alive | Medium | open |
 | F4 | sessions are long-lived (30 days) with no rotation or management UI | Medium | open |
-| F5 | a share UPDATE-grantee can replace an existing file/folder key record | Low-Med | open |
+| F5 | a share UPDATE-grantee can replace an existing file/folder key record | Low-Med | fixed in v0.0.30 |
 | F6 | `covering_share` walks parents without a depth cap | Low | open |
 | F7 | the installer does not verify a checksum of the downloaded binary | Low | open |
 | F8 | without `FXCLOUD_ORIGIN` the WebAuthn origin follows the Host header | Low | open |
@@ -163,7 +163,28 @@ authenticated requests, plus a `GET /api/me/sessions` /
 `DELETE /api/me/sessions` pair and a settings entry listing the current
 sessions.
 
-### F5 - A share UPDATE-grantee can replace an existing key record (Low-Medium)
+### F5 - A share UPDATE-grantee can replace an existing key record (Low-Medium) - fixed in v0.0.30
+
+*Fixed.* `Db::set_enc_key` now draws the line `save_content` draws on
+its key field, in the same words: a record that exists may only be
+replaced by the row's owner (`user_id == tree_owner`), refused with the
+same `ForbiddenDetail` message. A row with *no* record may still be
+given one by anyone holding UPDATE - the first encrypted write below a
+folder, the documented purpose of this door, where nothing is keyed
+under the old record yet and so nothing a swapped-in key could orphan.
+The wrapper stays opaque to the server, which is exactly why the rule
+is a narrower door rather than a check: there is no condition on which
+a grantee's replacement is verifiably benign, so there is no exception
+to grant. The cost is stated openly: an UPDATE-grantee can no longer
+re-bind a moved encrypted row inside a share (the server would refuse
+it), so the frontend refuses that transfer up front - before the
+re-bind half-runs - naming the reason in a new string in all three
+dictionaries, and the row stays where it was rather than arriving
+unopenable. The owner moves it instead. Four suite pins cover the
+grantee's first record, the grantee's refused replacement (message and
+stored bytes untouched), and the owner's unchanged ability to replace.
+
+The original report follows, kept for the record.
 
 `PUT /api/files/key` (`routes/files::put_key` -> `Db::set_enc_key`)
 authorizes with `PERM_UPDATE` via `update_target` and then writes
@@ -426,8 +447,7 @@ future changes know which properties to preserve.
 ## Suggested order of work
 
 1. ~~F2 (security headers)~~ - done in v0.0.29.
-2. F5 (key-record replace rule) - small, closes a real abuse path in
-   the share model.
+2. ~~F5 (key-record replace rule)~~ - done in v0.0.30.
 3. F3 (invalidate sessions on password change / admin reset) - one
    statement per path.
 4. F1 (rate limiting) - the in-memory bucket pattern is already in the

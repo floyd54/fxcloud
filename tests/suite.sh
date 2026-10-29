@@ -1538,6 +1538,39 @@ RC=$(curl -s -o "$ROOT/kg2.json" -w '%{http_code}' -X PUT -b "$JB" -c "$JB" \
 [ "$RC" = "200" ] && ok "the same grantee passing their own record back -> 200" \
   || bad "identical record: $RC $(cat "$ROOT/kg2.json")"
 
+note "the same line on the key door: only the owner replaces a record that exists (F5)"
+# PUT /api/files/key asks the question /files/content asks of its key
+# field, and now answers it the same way. A folder shared with
+# READ|UPDATE (3) - the mask a collaborative subtree carries - may
+# still be given its FIRST record by the grantee: that is the first
+# encrypted write below it, nothing is keyed under a record yet, so
+# there is nothing a swapped-in key could orphan.
+F5F=$(jget "$(req POST /api/files/folder "$JA" '{"name":"f5key"}')" entry.id)
+req POST /api/shares "$JA" "{\"file_id\":$F5F,\"username\":\"bob\",\"permissions\":3}" >/dev/null
+F5A=$(printf 'aaaaaaaa-f5-first-record-aaaaaaaaaaaa' | base64 | tr -d '\n')
+RC=$(reqsave PUT /api/files/key "$JB" "$ROOT/k.json" "{\"id\":$F5F,\"key\":\"$F5A\"}")
+[ "$RC" = "200" ] \
+  && ok "an update-grantee may still give a folder with no record its first one" \
+  || bad "first record: $RC $(cat "$ROOT/k.json")"
+# Replacing it is the owner's move alone. The wrapper is opaque - the
+# server holds no key - so it cannot tell the owner's re-binding after a
+# move from a grantee handing themselves the row for good; the audit
+# called the second one the one real abuse path in the share model, and
+# the only answer to an unverifiable wrapper is a narrower door.
+F5B=$(printf 'bbbbbbbb-f5-swapped-record-bbbbbbbbbbbb' | base64 | tr -d '\n')
+RC=$(reqsave PUT /api/files/key "$JB" "$ROOT/k.json" "{\"id\":$F5F,\"key\":\"$F5B\"}")
+[ "$RC" = "403" ] && grep -q "only the row's owner may change its key record" "$ROOT/k.json" \
+  && ok "the same grantee replacing that record -> 403 naming the line" \
+  || bad "record replace: $RC $(cat "$ROOT/k.json")"
+F5I=$(req GET "/api/files/info?id=$F5F" "$JB")
+[ "$(jget "$F5I" entry.enc_key)" = "$F5A" ] \
+  && ok "the refused replacement left the stored record alone" \
+  || bad "record after refusal: $F5I"
+RC=$(reqsave PUT /api/files/key "$JA" "$ROOT/k.json" "{\"id\":$F5F,\"key\":\"$F5B\"}")
+[ "$RC" = "200" ] && [ "$(jget "$(cat "$ROOT/k.json")" entry.enc_key)" = "$F5B" ] \
+  && ok "the owner replaces a record that exists without asking anyone" \
+  || bad "owner replace: $RC $(cat "$ROOT/k.json")"
+
 note "the WebCrypto round-trip harness (DECISION 10)"
 if [ -x "$NODE" ] || command -v "$NODE" >/dev/null 2>&1; then
   if "$NODE" "$REPO/frontend/tests/crypto-roundtrip.js" > "$ROOT/crypto.log" 2>&1; then

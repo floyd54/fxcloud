@@ -800,10 +800,12 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **496 checks**. The additions cover the key
+- Testing: the suite now runs **500 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
-  `GET /api/keys/<username>` does and does not expose), the encrypted
+  `GET /api/keys/<username>` does and does not expose, and the record
+  ownership line: an UPDATE-grantee gives a folder its first record and
+  is refused every replacement of one it already has), the encrypted
   write matrix (`enc`/`key` combinations, FXE1 body rule, preview and ZIP
   refusal), the copy refusal, WebDAV's opaque view of an encrypted row,
   and one real encrypt -> upload -> download -> decrypt trip driven through

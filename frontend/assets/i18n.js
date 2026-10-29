@@ -160,6 +160,8 @@
     "transfer.noSub": "Keine Unterordner hier.",
     "transfer.noKeyMove":
       "Ein verschl\u00fcsselter Eintrag kann nicht verschoben werden, solange dieser Tab keine Schl\u00fcssel h\u00e4lt.",
+    "transfer.ownerMoveOnly":
+      "Ein verschl\u00fcsselter Eintrag kann nur von seinem Eigent\u00fcmer verschoben werden: sein Schl\u00fcsselrecord muss an das Ziel neu gebunden werden.",
     "transfer.noneMove": "Keiner der ausgew\u00e4hlten Eintr\u00e4ge darf verschoben werden.",
     "transfer.noneCopy": "Keiner der ausgew\u00e4hlten Eintr\u00e4ge darf kopiert werden.",
     "transfer.copyBlocked":
@@ -589,6 +591,8 @@
     "transfer.noSub": "No subfolders here.",
     "transfer.noKeyMove":
       "Cannot move an encrypted item while this tab holds no keys.",
+    "transfer.ownerMoveOnly":
+      "An encrypted item can only be moved by its owner: its key record has to be re-bound to the destination.",
     "transfer.noneMove":
       "None of the selected items may be moved.",
     "transfer.noneCopy":
@@ -1018,6 +1022,8 @@
     "transfer.noSub": "bIQroq chIm.",
     "transfer.noKeyMove":
       "quj chImchugh bIQroq vIghoSbe'.",
+    "transfer.ownerMoveOnly":
+      "quj chImchugh chavwI' neH bIQroq vIghoSbe'.",
     "transfer.noneMove": "wIvpu' nat wa' ghoSlaHbe'.",
     "transfer.noneCopy": "wIvpu' nat wa' qonlaHbe'.",
     "transfer.copyBlocked":

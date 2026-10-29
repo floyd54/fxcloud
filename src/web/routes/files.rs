@@ -686,7 +686,11 @@ pub async fn save_content(
 /// through `/files/content` for that would mean re-uploading ciphertext just
 /// to swap a 32-byte wrapper, so it gets its own door - gated on PERM_UPDATE,
 /// the same mask the content write asks for (crypto mirrors the API
-/// permission), and a plaintext file has no record to replace.
+/// permission), and a plaintext file has no record to replace. Replacing a
+/// record that already exists is the owner's move alone (`Db::set_enc_key`
+/// draws the same line `save_content` draws on its key field): the wrapper
+/// is opaque to the server, so a grantee's replacement of a keyed row's
+/// record is indistinguishable from the sabotage it usually is.
 pub async fn put_key(
     State(state): State<SharedState>,
     user: AuthUser,
