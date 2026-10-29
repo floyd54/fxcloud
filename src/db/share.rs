@@ -226,7 +226,15 @@ pub(super) fn covering_share(
     entry_id: i64,
 ) -> Result<Option<ShareAccess>, AppError> {
     let mut cur = Some(entry_id);
+    let mut hops = 0;
     while let Some(id) = cur {
+        // The depth cap turns a corrupt parent cycle into "no share" -
+        // the same guard under_trash uses, in its own currency: a walk
+        // that never finds a share must end, not spin (Audit.md F6).
+        hops += 1;
+        if hops > 64 {
+            return Ok(None);
+        }
         if let Some(access) = share_on(conn, grantee_id, id)? {
             return Ok(Some(access));
         }

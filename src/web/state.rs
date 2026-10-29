@@ -436,3 +436,96 @@ fn rate_limited(reason: String, retry_after_secs: u64) -> AppError {
         reason,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One shared state on a throwaway database. The limiter tests only
+    /// touch the in-memory maps, but AppState insists on a database, and
+    /// the directory carries the test's name so parallel tests stay apart.
+    fn limiter_state(name: &str) -> AppState {
+        let dir = std::env::temp_dir().join(format!("fxcloud-limit-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = Db::open(&dir.join("fxcloud.db")).expect("migrations must apply");
+        let config = Config {
+            bind: "127.0.0.1".to_string(),
+            port: 0,
+            data_dir: dir,
+            session_ttl: 604800,
+            secure_cookie: false,
+            max_upload_bytes: 1 << 20,
+            trash_days: 30,
+            trash_sweep_secs: 3600,
+            webauthn_origin: None,
+        };
+        AppState::new(db, config)
+    }
+
+    /// The source half of F1: LOGIN_FAIL_BUDGET failed sign-ins a minute
+    /// from one address are refused before any database or Argon2 work,
+    /// keyed by the address alone - and a success never refunds it.
+    ///
+    /// The integration suite cannot pin this behaviourally: its debug
+    /// build spends seconds per Argon2 verification, and on two cores the
+    /// budget then fills exactly as fast as the window lapses. The unit
+    /// test carries the semantics instead, at real speed.
+    #[test]
+    fn the_source_budget_trips_on_its_own_key_and_expires() {
+        let state = limiter_state("source");
+        for i in 0..LOGIN_FAIL_BUDGET {
+            // Distinct names, one address: the account backoff must stay
+            // out of what this test measures.
+            state.login_failed(&format!("ghost-{i}"), "203.0.113.9");
+        }
+        assert!(
+            state.login_gate("fresh-name", "203.0.113.9").is_err(),
+            "a full source budget must refuse with 429"
+        );
+        assert!(
+            state.login_gate("fresh-name", "203.0.113.10").is_ok(),
+            "another address carries its own budget"
+        );
+        state.login_succeeded("ghost-0");
+        assert!(
+            state.login_gate("fresh-name", "203.0.113.9").is_err(),
+            "a success forgives the account, never the source"
+        );
+        // The window lapses on its own; tests do not sleep - the window
+        // start is moved back by hand (same module, private field).
+        {
+            let mut auth = state.auth.lock().expect("limiter lock");
+            for spend in auth.login_fails.values_mut() {
+                spend.window_start -= Duration::seconds(120);
+            }
+        }
+        assert!(
+            state.login_gate("fresh-name", "203.0.113.9").is_ok(),
+            "an emptied window opens the door again"
+        );
+    }
+
+    /// The account half of F1: AUTH_LOCK_AFTER failures lock the name
+    /// across every source, and a successful sign-in clears the count.
+    #[test]
+    fn the_account_backoff_locks_the_name_and_a_success_clears_it() {
+        let state = limiter_state("account");
+        for i in 0..AUTH_LOCK_AFTER {
+            state.login_failed("alice", &format!("203.0.113.{}", 20 + i));
+        }
+        assert!(
+            state.login_gate("alice", "203.0.113.99").is_err(),
+            "five failures must lock the name"
+        );
+        assert!(
+            state.login_gate("bob", "203.0.113.99").is_ok(),
+            "the lock names the account, not its neighbours"
+        );
+        state.login_succeeded("alice");
+        assert!(
+            state.login_gate("alice", "203.0.113.99").is_ok(),
+            "a successful sign-in clears the backoff"
+        );
+    }
+}

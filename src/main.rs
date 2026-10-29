@@ -82,6 +82,20 @@ async fn main() -> anyhow::Result<()> {
              reverse proxy rewrites it"
         ),
     }
+    // Deriving the origin is right for http:// dev mode, but listening
+    // beyond loopback without FXCLOUD_ORIGIN is the deployment that
+    // silently loses passkeys behind a rewriting proxy - say so at WARN
+    // once, at startup (Audit.md F8).
+    if config.webauthn_origin.is_none()
+        && !matches!(config.bind.as_str(), "127.0.0.1" | "localhost" | "::1")
+    {
+        tracing::warn!(
+            bind = %config.bind,
+            "listening beyond loopback with FXCLOUD_ORIGIN unset: the passkey origin \
+             follows the Host header and breaks silently behind a rewriting proxy - \
+             set FXCLOUD_ORIGIN to the public origin"
+        );
+    }
 
     let db = Db::open(&config.db_path()).context("opening database")?;
     tracing::info!(path = %config.db_path().display(), "database ready");

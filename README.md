@@ -234,6 +234,12 @@ large uploads:
 - Forward `Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`.
 - Set `FXCLOUD_SECURE_COOKIE=1` so cookies get the `Secure` attribute.
 
+A public deployment needs both halves - HTTPS (browsers only expose
+passkeys in a secure context) and the exact `FXCLOUD_ORIGIN` - and
+fxcloud says so itself: listening beyond loopback without the knob logs
+a WARN at startup naming the bind address, because the derived origin
+breaks silently behind a proxy that rewrites `Host`.
+
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:8080;
@@ -310,7 +316,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 539 checks against a throwaway instance
+./tests/suite.sh    # integration: 550 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

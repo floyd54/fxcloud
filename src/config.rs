@@ -14,7 +14,8 @@ pub struct Config {
     pub port: u16,
     /// Directory where the database and file blobs are stored.
     pub data_dir: PathBuf,
-    /// Lifetime of a login session in seconds (default: 30 days).
+    /// Lifetime of a login session in seconds (default: 7 days; slides
+    /// while the session is in use).
     pub session_ttl: i64,
     /// Set the `Secure` attribute on session cookies. Enable this when serving
     /// over HTTPS (e.g. behind a TLS-terminating reverse proxy).

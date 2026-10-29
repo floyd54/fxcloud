@@ -15,6 +15,11 @@ use crate::models::{
 };
 use crate::web::state::SharedState;
 
+/// A real Argon2id hash of a fixed string, spent when the username does
+/// not exist: the unknown-name path pays the same verification a wrong
+/// password pays, so the 401 cannot be timed apart (Audit.md F10).
+const TIMING_DUMMY_HASH: &str = "$argon2id$v=19$m=65536,t=3,p=1$8Pa3X/ngnnZKHQP/5RfLdQ$GgZVc0IitKqwalDn80Etujcs662LX4gO7J53AUjVrM4";
+
 /// Build the session cookie set on successful login (password or passkey)
 /// and registration.
 pub(super) fn session_cookie(token: &str, max_age: i64, secure: bool) -> String {
@@ -118,6 +123,11 @@ pub async fn login(
 
     let Some(found) = state.db.find_user_by_username(username.clone()).await? else {
         state.login_failed(&username, &source);
+        // An unknown name pays the same Argon2 verification a wrong
+        // password pays, so this 401 cannot be timed apart from a real
+        // one (Audit.md F10). The rate limiter bounds how often anyone
+        // can spend it.
+        let _ = verify_password(&req.password, TIMING_DUMMY_HASH);
         return Err(AppError::Unauthorized);
     };
 

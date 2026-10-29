@@ -494,7 +494,16 @@ impl Db {
             let mut trail: Vec<Breadcrumb> = Vec::new();
             let mut current = Some(id);
             let mut top_owner: Option<i64> = None;
+            let mut hops = 0;
             while let Some(cid) = current {
+                // The depth cap turns a corrupt parent cycle into a clean
+                // 404 - the same guard under_trash and covering_share
+                // carry (Audit.md F6); a trail deeper than 64 is
+                // unreachable anyway.
+                hops += 1;
+                if hops > 64 {
+                    return Err(AppError::NotFound);
+                }
                 let (name, parent, owner, enc_key): (String, Option<i64>, i64, Option<Vec<u8>>) =
                     conn.query_row(
                         "SELECT name, parent_id, owner_id, enc_key FROM files WHERE id = ?1",

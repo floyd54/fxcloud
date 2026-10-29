@@ -9,7 +9,7 @@ Method: manual review of every authentication, authorization, cryptographic
 and file-handling code path in this repository, plus an automated
 dependency scan (`cargo audit`, RustSec advisory database: **0
 vulnerabilities across 211 crate dependencies**). The integration suite
-(539 checks) and the unit tests (41) were green at the time of review.
+(550 checks) and the unit tests (43) were green at the time of review.
 
 This document is a living record. Findings carry an id, a severity and a
 status; the status line moves as fixes land. Severity uses the usual
@@ -44,11 +44,11 @@ side-channel attacks against WebCrypto/Argon2 implementations.
 | F3 | password change and admin reset keep existing sessions alive | Medium | fixed in v0.0.31 |
 | F4 | sessions are long-lived (30 days) with no rotation or management UI | Medium | fixed in v0.0.33 |
 | F5 | a share UPDATE-grantee can replace an existing file/folder key record | Low-Med | fixed in v0.0.30 |
-| F6 | `covering_share` walks parents without a depth cap | Low | open |
+| F6 | `covering_share` walks parents without a depth cap | Low | fixed in v0.0.34 |
 | F7 | the installer does not verify a checksum of the downloaded binary | Low | fixed (installer + CI) |
-| F8 | without `FXCLOUD_ORIGIN` the WebAuthn origin follows the Host header | Low | open |
+| F8 | without `FXCLOUD_ORIGIN` the WebAuthn origin follows the Host header | Low | fixed in v0.0.34 |
 | F9 | no connection/request rate limits beyond the body cap | Info | accepted |
-| F10 | login timing differs for unknown usernames (fast 401) | Info | open |
+| F10 | login timing differs for unknown usernames (fast 401) | Info | fixed in v0.0.34 |
 | F11 | registration answers "username already taken" (enumeration) | Info | accepted |
 | F12 | SQLite `synchronous = NORMAL`: power loss may cost recent writes | Info | accepted |
 | F13 | login password crosses one redirect via sessionStorage | Info | accepted |
@@ -291,7 +291,7 @@ record where none exists (the first encrypted write below a folder, the
 documented purpose of this door) stays available to UPDATE grantees.
 The suite pins this the way it pins the content-side rule.
 
-### F6 - `covering_share` walks parents without a depth cap (Low)
+### F6 - `covering_share` walks parents without a depth cap (Low) - fixed in v0.0.34
 
 `db/share.rs::covering_share` climbs `parent_id` until it finds a
 share. `under_trash` (the sibling walk in `db/file.rs`) caps the same
@@ -304,6 +304,20 @@ parent cycle, and then the affected DB thread would spin forever
 instead of failing. Robustness, not an exploit path.
 
 *Recommendation.* Same 64-hop cap, returning "no share".
+
+*Fixed (v0.0.34).* `covering_share` now counts its hops and answers
+`Ok(None)` - "no share", the currency its callers already understand -
+after 64, and `breadcrumbs` in `db/file.rs` got the same cap on its
+upward walk (returning the `under_trash` answer, a clean 404): the two
+walks of this shape are now capped alike, and a trail deeper than 64
+was unreachable anyway, since every entry lookup caps through
+`under_trash` first. The suite reproduces the finding's impact the
+honest way - two folder rows rewritten into a parent cycle by sqlite,
+then a grantee's listing and breadcrumb requests against the entries
+below it, each `timeout`-guarded so a regression reads as a failed pin
+instead of a stuck suite - and a contrast pin keeps the shared root
+above the cycle readable, proving the cap costs nothing in a healthy
+tree.
 
 ### F7 - The installer verifies the download only by ELF magic and `--version` (Low) - fixed (no binary change: installer + CI only)
 
@@ -338,7 +352,7 @@ verification and its optional-file fallback, plus a functional round
 trip of the shared format: an intact file matches, a tampered one does
 not.
 
-### F8 - Without `FXCLOUD_ORIGIN` the WebAuthn origin follows the Host header (Low)
+### F8 - Without `FXCLOUD_ORIGIN` the WebAuthn origin follows the Host header (Low) - fixed in v0.0.34
 
 `webauthn.rs::origin_and_rp` derives scheme and authority from
 `X-Forwarded-Proto`/`FXCLOUD_SECURE_COOKIE` and `Host` when
@@ -359,6 +373,19 @@ dev-mode; the deployment requirement just deserves more emphasis.
 is not loopback and `FXCLOUD_ORIGIN` is unset; README "Security" note
 that a public deployment needs both HTTPS and the knob.
 
+*Fixed (v0.0.34).* Startup now carries the warning the finding asks
+for: when the bind address is beyond loopback (`127.0.0.1`,
+`localhost` and `::1` excepted) and `FXCLOUD_ORIGIN` is unset, a WARN
+names the bind address and the consequence - the passkey origin
+follows the `Host` header and breaks silently behind a rewriting
+proxy. The loopback dev server stays quiet (the INFO line for the
+derived origin remains for it), and a configured origin silences the
+warning at any bind. The README's reverse-proxy section now says the
+same in one sentence. Three suite pins: the warning's presence, a
+sidecar server started on `0.0.0.0` without the knob whose journal
+must carry it, and the negative - the suite's own loopback server must
+not warn without need.
+
 ### F9 - No connection or request rate limits beyond the body cap (Info, accepted)
 
 `DefaultBodyLimit` caps every body at `max_upload_bytes`; there is no
@@ -367,7 +394,7 @@ deployment (one household, a reverse proxy in front that can rate
 limit) this is an accepted trade-off; the proxy is the documented
 throttle. Revisit if fxcloud is ever exposed directly at scale.
 
-### F10 - Login timing differs for unknown usernames (Info)
+### F10 - Login timing differs for unknown usernames (Info) - fixed in v0.0.34
 
 `POST /api/login` returns 401 immediately for an unknown username,
 while a known one costs a full Argon2id verification (~180 ms). The
@@ -381,6 +408,29 @@ a minor signal.
 *Recommendation.* One dummy `verify_password` against a fixed hash on
 the unknown-user path (or accept and document - F11 already exposes
 the same signal by design).
+
+*Fixed (v0.0.34).* The unknown-user branch now spends exactly what the
+wrong-password branch spends: `TIMING_DUMMY_HASH` in
+`web/routes/auth.rs` is a real Argon2id hash of a fixed string - drawn
+through `hash_password` itself, so its parameters can never drift from
+production's - and the branch runs one `verify_password` against it
+before answering 401. The attempt's own password is the input, so the
+work profile matches a genuine verification bit for bit. F1's source
+budget is what bounds the spend: an unknown name now costs an attacker
+as much hashing as a wrong password, and the per-address budget counts
+both. One consequence landed in the suite itself: the source-budget
+behavioural pin ("30 failures a minute answer 429") became flaky by
+physics, not by code - every counted failure pays Argon2, and on the
+suite's two cores the debug build hashes exactly as fast as the
+60-second window lapses. Its semantics moved to two unit tests in
+`web/state.rs` (the budget trips on its own source key, a success
+forgives the account but never the source, the lapsed window opens the
+door again; the account backoff locks across sources and a success
+clears it - 43 unit tests now), and the suite keeps the wiring plus
+the 401's uniformity: an unknown name and a wrong password answer the
+byte-identical body. Still open by design, and documented here: the
+passkey challenge door keeps skipping its one DB read for unknown
+names - sub-millisecond, and already behind the same account backoff.
 
 ### F11 - Registration answers "username already taken" (Info, accepted)
 
@@ -558,4 +608,4 @@ future changes know which properties to preserve.
    v0.0.33.
 6. ~~F7 (release checksums)~~ - done (CI + installer, no server change;
    in effect with the next tagged release).
-7. F6, F8, F10 - small hardening items.
+7. ~~F6, F8, F10 - small hardening items.~~ - done in v0.0.34.
