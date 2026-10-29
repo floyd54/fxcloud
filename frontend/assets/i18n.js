@@ -255,7 +255,8 @@
     "settings.themeSaved": "Farbschema gespeichert.",
     "settings.passShort":
       "Das neue Passwort muss mindestens 8 Zeichen lang sein.",
-    "settings.passChanged": "Passwort ge\u00e4ndert.",
+    "settings.passChanged":
+      "Passwort ge\u00e4ndert. Andere Sitzungen dieses Kontos wurden abgemeldet.",
 
     // passkeys
     "passkey.added": "hinzugef\u00fcgt {date}",
@@ -691,7 +692,8 @@
     "settings.themeSaved": "Theme saved.",
     "settings.passShort":
       "New password must be at least 8 characters.",
-    "settings.passChanged": "Password changed.",
+    "settings.passChanged":
+      "Password changed. Other sessions of this account were signed out.",
 
     // passkeys
     "passkey.added": "added {date}",
@@ -1115,7 +1117,7 @@
     "settings.themeSaved": "Dung qanlu'.",
     "settings.passShort":
       "mu'mu' chu' 8 pong puS.",
-    "settings.passChanged": "mu'mu' choHlu'.",
+    "settings.passChanged": "mu'mu' choHlu'. latlh mu' lu'SaHbe'.",
 
     // passkeys
     "passkey.added": "{date} chu'",

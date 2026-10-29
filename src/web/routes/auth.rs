@@ -4,7 +4,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
-use crate::auth::{hash_password, verify_password, AuthUser, SESSION_COOKIE};
+use crate::auth::{
+    hash_password, token_from_cookie_header, verify_password, AuthUser, SESSION_COOKIE,
+};
 use crate::error::AppError;
 use crate::models::{
     ChangePasswordRequest, LoginRequest, RegisterRequest, UpdateMeRequest, User, UserOption,
@@ -186,11 +188,16 @@ pub async fn update_me(
 /// PUT /api/me/password – change the signed-in user's password.
 ///
 /// The current password is verified first (401 when it does not match) and
-/// the new one gets the same length floor as registration. The session that
-/// made the change stays open, so the menu can keep being used afterwards.
+/// the new one gets the same length floor as registration. Every *other*
+/// session of the account is dropped with the change (F3): a password
+/// change is the incident response for a stolen credential, so the
+/// sessions the old password minted cannot outlive it. The caller's own
+/// session stays open - it authenticated this very request - so the menu
+/// keeps being usable afterwards.
 pub async fn change_password(
     State(state): State<SharedState>,
     user: AuthUser,
+    headers: HeaderMap,
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let found = state
@@ -207,7 +214,14 @@ pub async fn change_password(
         ));
     }
     let hash = hash_password(&req.new_password)?;
-    state.db.set_password(user.id(), hash).await?;
+    // The session that made the change is kept alive by naming it; every
+    // other session of this account goes with the old hash. The token is
+    // read straight from the request's cookie header - `AuthUser` resolved
+    // it already, but carries only the user, not the string it came from.
+    let keep = token_from_cookie_header(
+        headers.get(header::COOKIE).and_then(|v| v.to_str().ok()),
+    );
+    state.db.set_password(user.id(), hash, keep).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

@@ -28,6 +28,7 @@ BIN=${FXCLOUD_TEST_BIN:-$REPO/target/debug/fxcloud}
 JA=$ROOT/alice.jar
 JB=$ROOT/bob.jar
 JD=$ROOT/dave.jar   # the user-settings section changes this account's password
+JD2=$ROOT/dave2.jar # a second sign-in of the same account (session checks)
 
 mkdir -p "$ROOT"
 echo "binary: $BIN"
@@ -608,6 +609,12 @@ req POST /api/register "$JD" '{"username":"dave","password":"correct-horse"}' >/
 sqlite3 "$DATA/fxcloud.db" "UPDATE users SET is_active=1 WHERE username='dave';" >/dev/null
 RC=$(reqcode POST /api/login "$JD" '{"username":"dave","password":"correct-horse"}')
 [ "$RC" = "200" ] && ok "dave signs in before the change" || bad "dave cannot log in (rc=$RC)"
+# A second sign-in of the same account, so the change below has two live
+# sessions to tell apart: the one holding the form, and the one a thief
+# holding a stolen cookie would be riding.
+RC=$(reqcode POST /api/login "$JD2" '{"username":"dave","password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "dave signs in a second time (a second live session)" \
+  || bad "second sign-in failed (rc=$RC)"
 
 RC=$(reqcode PUT /api/me/password "$JD" '{"current_password":"wrong-password","new_password":"another-horse"}')
 [ "$RC" = "401" ] && ok "a wrong current password is refused (401)" || bad "expected 401, got $RC"
@@ -615,6 +622,17 @@ RC=$(reqcode PUT /api/me/password "$JD" '{"current_password":"correct-horse","ne
 [ "$RC" = "400" ] && ok "a short new password is refused (400)" || bad "expected 400, got $RC"
 RC=$(reqcode PUT /api/me/password "$JD" '{"current_password":"correct-horse","new_password":"another-horse"}')
 [ "$RC" = "200" ] && ok "the password changes (200)" || bad "expected 200, got $RC"
+# F3: the change takes the account's other sessions with it - a password
+# change is the incident response for a stolen credential, and the
+# thief's cookie cannot be allowed to outlive the old hash for the rest
+# of the TTL. The caller's own session stays: it authenticated this very
+# request, and the menu that made the change keeps working.
+RC=$(reqcode GET /api/me "$JD")
+[ "$RC" = "200" ] && ok "the session that made the change stays open" \
+  || bad "own session died with the change (rc=$RC)"
+RC=$(reqcode GET /api/me "$JD2")
+[ "$RC" = "401" ] && ok "the account's other session is cut off by the change" \
+  || bad "other session survived the change (rc=$RC)"
 
 RC=$(reqcode POST /api/login "$JD" '{"username":"dave","password":"correct-horse"}')
 [ "$RC" = "401" ] && ok "the old password no longer signs in" || bad "old password still works (rc=$RC)"
@@ -696,9 +714,25 @@ LIST=$(req GET /api/admin/users "$JA")
 [ "$(afield "$LIST" dave is_admin)" = "1" ] && ok "the promoted account is now an admin" || bad "dave not admin"
 
 note "user administration: password reset hands back a temporary password"
+# F3: a reset is called for precisely when an account may be compromised
+# - a lost or stolen password - so it takes every session of the target
+# with it. Sign in once more first, so there are two standing sessions
+# for the reset to prove it dropped.
+RC=$(reqcode POST /api/login "$JD2" '{"username":"dave","password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "dave signs in a second time before the reset" \
+  || bad "pre-reset sign-in failed (rc=$RC)"
 RESET=$(req POST "/api/admin/users/$DAVE/password" "$JA")
 TMP=$(jget "$RESET" temporary_password)
 [ "${#TMP}" = "16" ] && ok "the reset returns a 16-character temporary password" || bad "temp password length ${#TMP}, expected 16"
+RC=$(reqcode GET /api/me "$JD")
+[ "$RC" = "401" ] && ok "the reset drops the target's standing session" \
+  || bad "standing session survived the reset (rc=$RC)"
+RC=$(reqcode GET /api/me "$JD2")
+[ "$RC" = "401" ] && ok "and every other session of that account" \
+  || bad "second session survived the reset (rc=$RC)"
+RC=$(reqcode GET /api/me "$JA")
+[ "$RC" = "200" ] && ok "the administrator's own session is untouched" \
+  || bad "admin session died with the reset (rc=$RC)"
 RC=$(reqcode POST /api/login "$JD" '{"username":"dave","password":"'"$TMP"'"}')
 [ "$RC" = "200" ] && ok "the temporary password signs in" || bad "temp password refused (rc=$RC)"
 RC=$(reqcode POST /api/login "$JD" '{"username":"dave","password":"correct-horse"}')

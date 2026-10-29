@@ -9,7 +9,7 @@ Method: manual review of every authentication, authorization, cryptographic
 and file-handling code path in this repository, plus an automated
 dependency scan (`cargo audit`, RustSec advisory database: **0
 vulnerabilities across 211 crate dependencies**). The integration suite
-(500 checks) and the unit tests (41) were green at the time of review.
+(507 checks) and the unit tests (41) were green at the time of review.
 
 This document is a living record. Findings carry an id, a severity and a
 status; the status line moves as fixes land. Severity uses the usual
@@ -41,7 +41,7 @@ side-channel attacks against WebCrypto/Argon2 implementations.
 |----|------|----------|--------|
 | F1 | no rate limiting / lockout on the authentication endpoints | Medium | open |
 | F2 | no security headers on the UI (CSP, clickjacking, HSTS, nosniff) | Medium | fixed in v0.0.29 |
-| F3 | password change and admin reset keep existing sessions alive | Medium | open |
+| F3 | password change and admin reset keep existing sessions alive | Medium | fixed in v0.0.31 |
 | F4 | sessions are long-lived (30 days) with no rotation or management UI | Medium | open |
 | F5 | a share UPDATE-grantee can replace an existing file/folder key record | Low-Med | fixed in v0.0.30 |
 | F6 | `covering_share` walks parents without a depth cap | Low | open |
@@ -128,7 +128,24 @@ when `secure_cookie` is on. The `sandbox` header on preview responses
 stays as is. Neither HTML page contains an inline script, so
 `script-src 'self'` holds without exceptions.
 
-### F3 - Password change and admin reset keep existing sessions alive (Medium)
+### F3 - Password change and admin reset keep existing sessions alive (Medium) - fixed in v0.0.31
+
+*Fixed.* `Db::set_password` now takes the caller's own session token as
+`keep_session` and deletes every *other* session of that account in the
+same statement batch as the hash update, so a password change ends the
+sessions the old password minted. `change_password` passes the token it
+reads from its own request's cookie header (`AuthUser` resolves it but
+carries only the user, not the string); the admin reset passes `None`,
+dropping every session of the target - a reset is called for precisely
+when an account may be compromised. The caller's own session staying
+open is the one deliberate carry-over: it authenticated this very
+request, so the menu that made the change keeps working, and the UI now
+says so ("Other sessions of this account were signed out"). Seven suite
+pins cover the second sign-in being cut off by a self-service change
+while the caller's survives, the reset dropping both standing sessions
+of the target, and the administrator's own session surviving it.
+
+The original report follows, kept for the record.
 
 `PUT /api/me/password` (`routes/auth.rs::change_password`) and the
 admin reset (`routes/admin.rs::reset_password`) both call
@@ -448,8 +465,8 @@ future changes know which properties to preserve.
 
 1. ~~F2 (security headers)~~ - done in v0.0.29.
 2. ~~F5 (key-record replace rule)~~ - done in v0.0.30.
-3. F3 (invalidate sessions on password change / admin reset) - one
-   statement per path.
+3. ~~F3 (invalidate sessions on password change / admin reset)~~ - done
+   in v0.0.31.
 4. F1 (rate limiting) - the in-memory bucket pattern is already in the
    codebase; suite pins required.
 5. F4 (session TTL default, rotation, management UI) - the incident

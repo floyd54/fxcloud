@@ -123,9 +123,11 @@ pub async fn update_user(
 /// POST /api/admin/users/:id/password -- reset one account's password.
 ///
 /// Generates a random temporary password, stores its hash, and returns the
-/// plaintext exactly once so the administrator can pass it on. The account's
-/// other sessions are left alone on purpose: the reset is meant for a user who
-/// lost their password, not to kick out whoever is signed in.
+/// plaintext exactly once so the administrator can pass it on. Every
+/// session of the target account is dropped with the change (F3): a reset
+/// is called for precisely when an account may be compromised - a lost or
+/// stolen password - and leaving the sessions the old password minted
+/// alive would keep the incident running for the rest of the TTL.
 ///
 /// The generated value is 16 alphanumeric characters (about 95 bits of
 /// entropy from `OsRng`), which is far beyond what the 8-character minimum of
@@ -144,7 +146,7 @@ pub async fn reset_password(
 
     let temporary = generate_temporary_password();
     let hash = hash_password(&temporary)?;
-    state.db.set_password(user_id, hash).await?;
+    state.db.set_password(user_id, hash, None).await?;
 
     Ok(Json(json!({
         "username": target.username,

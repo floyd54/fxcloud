@@ -117,15 +117,37 @@ impl Db {
         .await
     }
 
-    /// Replace the password hash after the user menu verified the current
-    /// password. Sessions stay valid on purpose: the caller is already signed
-    /// in, and every other tab of this account keeps working after the change.
-    pub async fn set_password(&self, id: i64, password_hash: String) -> Result<(), AppError> {
+    /// Replace the password hash after the caller proved they know the old
+    /// one (self-service) or an administrator reset a reported account, and
+    /// cut every other session of that account with it (F3, Audit.md).
+    ///
+    /// A password change is the incident response for a stolen credential,
+    /// so the sessions the old password minted cannot outlive it: an
+    /// attacker holding a cookie would otherwise keep the account for the
+    /// rest of the session TTL no matter how fast the victim reacted. The
+    /// caller's own session is passed through as `keep_session` and stays
+    /// open - it authenticated this very request - so the menu that made
+    /// the change keeps working. The admin reset passes `None`: a reset
+    /// exists precisely because an account may be compromised, and every
+    /// session on it has to go.
+    pub async fn set_password(
+        &self,
+        id: i64,
+        password_hash: String,
+        keep_session: Option<String>,
+    ) -> Result<(), AppError> {
         self.run(move |conn| {
             conn.execute(
                 "UPDATE users SET password_hash = ?2 WHERE id = ?1",
                 params![id, password_hash],
             )?;
+            match keep_session {
+                Some(token) => conn.execute(
+                    "DELETE FROM sessions WHERE user_id = ?1 AND id != ?2",
+                    params![id, token],
+                )?,
+                None => conn.execute("DELETE FROM sessions WHERE user_id = ?1", params![id])?,
+            };
             Ok(())
         })
         .await
