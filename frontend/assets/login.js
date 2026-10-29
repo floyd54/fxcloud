@@ -28,6 +28,7 @@
       return t("err." + body.code, {
         used: body.used != null ? String(body.used) : "",
         quota: body.quota != null ? String(body.quota) : "",
+        seconds: body.retry_after != null ? String(body.retry_after) : "",
       });
     }
     return body && body.error ? body.error : null;

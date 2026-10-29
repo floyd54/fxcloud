@@ -2569,6 +2569,112 @@ grep -qi '^strict-transport-security' "$ROOT/hd.txt" \
   && bad "plain-HTTP mode must not send HSTS" \
   || ok "plain-HTTP mode stays HSTS-free"
 
+# ---- authentication rate limiting (F1) ----
+# The HSTS detour above restarted the server, so every counter here starts
+# from zero: the section is self-contained no matter what ran before.
+note "sign-in throttling: account backoff, source budgets, challenge cap"
+
+FJ="$ROOT/frank.jar"
+RC=$(reqcode POST /api/register "$FJ" \
+  '{"username":"frank","password":"correct-horse"}')
+[ "$RC" = "202" ] && ok "frank registers pending activation" \
+  || bad "frank register gave rc=$RC (want 202)"
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET is_active=1 WHERE username='frank';"
+
+# Five plain 401s: the lock starts after the fifth failure, not before.
+FRANK401=1
+for i in 1 2 3 4 5; do
+  RC=$(reqcode POST /api/login "$FJ" \
+    '{"username":"frank","password":"wrong-password"}')
+  [ "$RC" = "401" ] || FRANK401=0
+done
+[ "$FRANK401" = "1" ] && ok "five wrong passwords are five plain 401s" \
+  || bad "a pre-lock attempt did not answer 401"
+
+# The sixth is refused with 429; Retry-After, body code and body seconds
+# all name the same window.
+RC=$(curl -sD "$ROOT/hf.txt" -o "$ROOT/fb.json" -w '%{http_code}' \
+  -X POST "$BASE/api/login" -H 'Content-Type: application/json' \
+  -d '{"username":"frank","password":"wrong-password"}')
+RETRY=$(grep -i '^retry-after:' "$ROOT/hf.txt" | tr -dc '0-9')
+[ "$RC" = "429" ] && [ -n "$RETRY" ] \
+  && grep -q '"code":"rate_limited"' "$ROOT/fb.json" \
+  && grep -q "\"retry_after\":$RETRY" "$ROOT/fb.json" \
+  && ok "the sixth wrong password is 429 + Retry-After $RETRY (header and body agree)" \
+  || bad "sixth wrong password gave rc=$RC retry='$RETRY' body=$(cat "$ROOT/fb.json")"
+
+# The refusal runs before verification: even the right password waits,
+# which is also what keeps the window from costing an Argon2 hash.
+RC=$(reqcode POST /api/login "$FJ" \
+  '{"username":"frank","password":"correct-horse"}')
+[ "$RC" = "429" ] && ok "the right password waits out the window too (gate before verify)" \
+  || bad "a locked account answered a correct password with rc=$RC"
+
+sleep $((RETRY + 1))
+RC=$(reqcode POST /api/login "$FJ" \
+  '{"username":"frank","password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "after the window the account signs in again" \
+  || bad "recovery after the window gave rc=$RC"
+RC=$(reqcode POST /api/login "$FJ" \
+  '{"username":"frank","password":"wrong-password"}')
+[ "$RC" = "401" ] && ok "a successful sign-in clears the counter" \
+  || bad "the counter survived a success (rc=$RC)"
+
+# An invented name locks exactly like a real one - the 429 cannot be used
+# to tell an account holder from a name someone made up - and the passkey
+# door honours the same backoff.
+for i in 1 2 3 4 5; do
+  reqcode POST /api/login "$FJ" \
+    '{"username":"ghost-user","password":"wrong-password"}' >/dev/null
+done
+RC=$(reqcode POST /api/login "$FJ" \
+  '{"username":"ghost-user","password":"wrong-password"}')
+[ "$RC" = "429" ] && ok "an unknown name locks identically (no enumeration via 429)" \
+  || bad "an unknown name did not lock (rc=$RC)"
+RC=$(reqcode POST /api/passkeys/login/start "$FJ" '{"username":"ghost-user"}')
+[ "$RC" = "429" ] && ok "the passkey door honours the same account backoff" \
+  || bad "passkeys/login/start ignored the account lock (rc=$RC)"
+RC=$(reqcode POST /api/passkeys/login/start "$FJ" '{"username":"frank"}')
+[ "$RC" = "200" ] && ok "an unlocked name still gets its challenge" \
+  || bad "an unlocked name was refused a challenge (rc=$RC)"
+
+# The register door spends its budget before the hash: a flood of fresh
+# names cannot borrow the CPU a single registration is allowed.
+i=0; RC=""
+while [ "$i" -lt 16 ]; do
+  i=$((i + 1))
+  RC=$(reqcode POST /api/register "$FJ" \
+    "{\"username\":\"reg-spam-$i\",\"password\":\"correct-horse\"}")
+  [ "$RC" = "429" ] && break
+done
+[ "$RC" = "429" ] && ok "the register budget trips with 429 (after $i attempts)" \
+  || bad "the register budget never tripped (rc=$RC after $i attempts)"
+
+# The WebAuthn challenge map is capped: once full, a new challenge is
+# refused instead of the map growing with the flood.
+i=0; RC=""
+while [ "$i" -lt 300 ]; do
+  i=$((i + 1))
+  RC=$(reqcode POST /api/passkeys/login/start "$FJ" '{"username":"cer-spam"}')
+  [ "$RC" = "429" ] && break
+done
+[ "$RC" = "429" ] && ok "the challenge map caps with 429 (after $i starts)" \
+  || bad "the challenge map never capped (rc=$RC after $i starts)"
+
+# Last pin of the server section: the source budget bounds the aggregate
+# one address can trigger. Fresh names never trip an account backoff, so
+# this trips on the address - and nothing after this pin expects a 401
+# from /api/login, because the window outlives the section.
+i=0; RC=""
+while [ "$i" -lt 40 ]; do
+  i=$((i + 1))
+  RC=$(reqcode POST /api/login "$FJ" \
+    "{\"username\":\"flood-$i\",\"password\":\"wrong-password\"}")
+  [ "$RC" = "429" ] && break
+done
+[ "$RC" = "429" ] && ok "the source login-failure budget trips with 429 (after $i attempts)" \
+  || bad "the source budget never tripped (rc=$RC after $i attempts)"
+
 # ---- install.sh, Dockerfile, --version: the shipped routines ----
 note "one-line install/update and the container build"
 # --version must answer and exit, not start a server (timeout would fire).

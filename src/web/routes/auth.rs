@@ -1,8 +1,9 @@
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
+use std::net::SocketAddr;
 
 use crate::auth::{
     hash_password, token_from_cookie_header, verify_password, AuthUser, SESSION_COOKIE,
@@ -37,6 +38,7 @@ fn clear_cookie() -> String {
 /// account signs in directly.
 pub async fn register(
     State(state): State<SharedState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Response, AppError> {
     let username = req.username.trim().to_lowercase();
@@ -50,6 +52,9 @@ pub async fn register(
             "password must be at least 8 characters".into(),
         ));
     }
+    // Spend the source budget before the hash: the hash is what the
+    // budget exists for, and a taken name runs it all the same (F1).
+    state.register_take(&addr.ip().to_string())?;
 
     let display_name = req
         .display_name
@@ -90,18 +95,28 @@ pub async fn register(
 /// learns that the account is merely waiting to be activated.
 pub async fn login(
     State(state): State<SharedState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, AppError> {
     let username = req.username.trim().to_lowercase();
-    let found = state
-        .db
-        .find_user_by_username(username)
-        .await?
-        .ok_or(AppError::Unauthorized)?;
+    let source = addr.ip().to_string();
+    // Account backoff and the source's failed-attempt budget answer
+    // before any work: a locked name never reaches the database or Argon2,
+    // so waiting out a window also costs the server nothing (F1).
+    state.login_gate(&username, &source)?;
+
+    let Some(found) = state.db.find_user_by_username(username.clone()).await? else {
+        state.login_failed(&username, &source);
+        return Err(AppError::Unauthorized);
+    };
 
     if !verify_password(&req.password, &found.password_hash) {
+        state.login_failed(&username, &source);
         return Err(AppError::Unauthorized);
     }
+    // The password was correct: the holder just proved they are the
+    // holder, so the wrong ones before them are forgiven (F1).
+    state.login_succeeded(&username);
 
     if !found.user.is_active {
         return Err(AppError::InactiveAccount);

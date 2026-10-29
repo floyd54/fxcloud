@@ -1,4 +1,4 @@
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -33,6 +33,19 @@ pub enum AppError {
 
     #[error("account is not activated yet – ask an administrator to activate it")]
     InactiveAccount,
+
+    /// An authentication endpoint is refusing attempts for now (F1): the
+    /// account is in failed-attempt backoff, a per-source budget is spent,
+    /// or too many WebAuthn challenges are in flight.
+    ///
+    /// 429 carries `Retry-After` in whole seconds; the same number rides in
+    /// the body as `retry_after`, the way quota numbers do, so the UI can
+    /// count along in the user's language instead of parsing the header.
+    #[error("{reason}")]
+    RateLimited {
+        retry_after_secs: u64,
+        reason: String,
+    },
 
     /// The account's storage quota would be exceeded by `additional` bytes.
     ///
@@ -70,6 +83,7 @@ impl AppError {
             AppError::Unauthorized => "unauthorized",
             AppError::Forbidden | AppError::ForbiddenDetail(_) => "forbidden",
             AppError::InactiveAccount => "inactive_account",
+            AppError::RateLimited { .. } => "rate_limited",
             AppError::BadRequest(_) => "bad_request",
             AppError::Conflict(_) => "conflict",
             AppError::QuotaExceeded { .. } => "quota_exceeded",
@@ -86,6 +100,7 @@ impl AppError {
             AppError::Forbidden | AppError::ForbiddenDetail(_) | AppError::InactiveAccount => {
                 StatusCode::FORBIDDEN
             }
+            AppError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::QuotaExceeded { .. } => StatusCode::INSUFFICIENT_STORAGE,
@@ -123,13 +138,31 @@ impl IntoResponse for AppError {
             }
             _ => self.to_string(),
         };
+        // The backoff window rides along too (F1): the `Retry-After`
+        // header is the protocol's, the body field is the UI's, both in
+        // whole seconds so the two can never disagree.
+        let retry_after = match &self {
+            AppError::RateLimited {
+                retry_after_secs, ..
+            } => Some(*retry_after_secs),
+            _ => None,
+        };
         // `code` is stable API - the frontend translates it via err.<code>.
         let mut body = json!({ "error": message, "code": code });
         if let Some((used, quota)) = quota_numbers {
             body["used"] = json!(used);
             body["quota"] = json!(quota);
         }
-        (status, Json(body)).into_response()
+        if let Some(secs) = retry_after {
+            body["retry_after"] = json!(secs);
+        }
+        let mut response = (status, Json(body)).into_response();
+        if let Some(secs) = retry_after {
+            let value = HeaderValue::from_str(&secs.to_string())
+                .unwrap_or_else(|_| HeaderValue::from_static("1"));
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        response
     }
 }
 

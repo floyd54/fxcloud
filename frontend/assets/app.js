@@ -93,6 +93,7 @@
       var msg = t("err." + body.code, {
         used: body.used != null ? fmtBytes(body.used) : "",
         quota: body.quota != null ? fmtBytes(body.quota) : "",
+        seconds: body.retry_after != null ? String(body.retry_after) : "",
       });
       return withReason(msg, body.code, body.error);
     }

@@ -61,7 +61,7 @@ pub async fn register_start(
     // misconfigured deployment fails here instead of at finish.
     let (_origin, rp_id) = webauthn::origin_and_rp(&headers, &state.config)?;
     let existing = state.db.passkey_credential_ids(user.id()).await?;
-    let challenge = state.new_ceremony(CeremonyKind::Register, Some(user.id()));
+    let challenge = state.new_ceremony(CeremonyKind::Register, Some(user.id()))?;
 
     let exclude = existing
         .iter()
@@ -159,6 +159,11 @@ pub async fn login_start(
     // any challenge exists. `origin` itself is only consumed at finish.
     let (_origin, rp_id) = webauthn::origin_and_rp(&headers, &state.config)?;
     let username = req.username.trim().to_lowercase();
+    // The password door's account backoff applies here too (F1), keyed by
+    // the name itself so unknown and real names refuse identically. The
+    // endpoint spends no source budget: a challenge costs a lookup, and
+    // the map itself is capped in `new_ceremony`.
+    state.account_gate(&username)?;
     let found = state.db.find_user_by_username(username).await?;
     let ids = match &found {
         Some(f) => state.db.passkey_credential_ids(f.user.id).await?,
@@ -175,7 +180,7 @@ pub async fn login_start(
             .collect()
     };
 
-    let challenge = state.new_ceremony(CeremonyKind::Login, found.as_ref().map(|f| f.user.id));
+    let challenge = state.new_ceremony(CeremonyKind::Login, found.as_ref().map(|f| f.user.id))?;
     Ok(Json(json!({
         "challenge": challenge,
         "rpId": rp_id,

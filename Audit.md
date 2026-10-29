@@ -9,7 +9,7 @@ Method: manual review of every authentication, authorization, cryptographic
 and file-handling code path in this repository, plus an automated
 dependency scan (`cargo audit`, RustSec advisory database: **0
 vulnerabilities across 211 crate dependencies**). The integration suite
-(507 checks) and the unit tests (41) were green at the time of review.
+(519 checks) and the unit tests (41) were green at the time of review.
 
 This document is a living record. Findings carry an id, a severity and a
 status; the status line moves as fixes land. Severity uses the usual
@@ -39,7 +39,7 @@ side-channel attacks against WebCrypto/Argon2 implementations.
 
 | id | area | severity | status |
 |----|------|----------|--------|
-| F1 | no rate limiting / lockout on the authentication endpoints | Medium | open |
+| F1 | no rate limiting / lockout on the authentication endpoints | Medium | fixed in v0.0.32 |
 | F2 | no security headers on the UI (CSP, clickjacking, HSTS, nosniff) | Medium | fixed in v0.0.29 |
 | F3 | password change and admin reset keep existing sessions alive | Medium | fixed in v0.0.31 |
 | F4 | sessions are long-lived (30 days) with no rotation or management UI | Medium | open |
@@ -56,7 +56,38 @@ side-channel attacks against WebCrypto/Argon2 implementations.
 
 ## Findings in detail
 
-### F1 - No rate limiting or lockout on the authentication endpoints (Medium)
+### F1 - No rate limiting or lockout on the authentication endpoints (Medium) - fixed in v0.0.32
+
+*Fixed.* Every authentication door now spends from in-memory counters
+(`AppState::auth`, pruned on every use the way the ceremonies map
+prunes). A per-account failure count with exponential backoff refuses
+the sixth consecutive wrong password with 429 and `Retry-After` (five
+failures buy a 10-second window, each further one doubles it up to a
+300-second cap), and the refusal answers *before* the database or
+Argon2 see the request - the right password waits out the window too,
+so a locked name costs the server nothing to refuse. The counter is
+keyed by the name itself, existing or not, and unknown names lock
+identically, so the 429 cannot be used to distinguish an account holder
+from an invented name; a successful sign-in clears it. Two
+source-address budgets bound what one socket peer can trigger: 30 failed
+sign-ins per minute and 10 registrations per ten minutes, each refused
+with 429 + `Retry-After`, the register budget *before* its Argon2 hash
+runs (a taken name pays for it all the same). The key is the socket
+peer only - `X-Forwarded-For` is deliberately never trusted, because a
+bare install would be one spoofed header away from a limiter that both
+misses the attacker and can be aimed at another user; behind a reverse
+proxy the budgets therefore describe the proxy's address, where they
+are set generously on purpose and the per-account backoff stays the
+precise instrument. `AppState::ceremonies` is capped at 256 pending
+challenges (429 beyond it) with 5 seconds in `Retry-After`, which
+closes the uncapped-growth half of the report. The UI translates
+`rate_limited` with the `retry_after` seconds that ride in the body
+beside the header. Twelve suite pins cover the sixth-attempt 429 with
+header/body agreement, the right password waiting too, recovery and
+counter clearing after the window, the unknown-name and passkey-door
+uniformity, and all three budgets tripping to 429.
+
+The original report follows, kept for the record.
 
 `POST /api/login`, `POST /api/register` and the two public passkey
 endpoints (`/api/passkeys/login/start`, `/finish`) accept unlimited
@@ -467,8 +498,7 @@ future changes know which properties to preserve.
 2. ~~F5 (key-record replace rule)~~ - done in v0.0.30.
 3. ~~F3 (invalidate sessions on password change / admin reset)~~ - done
    in v0.0.31.
-4. F1 (rate limiting) - the in-memory bucket pattern is already in the
-   codebase; suite pins required.
+4. ~~F1 (rate limiting)~~ - done in v0.0.32.
 5. F4 (session TTL default, rotation, management UI) - the incident
    button the product lacks today.
 6. F7 (release checksums) - CI + installer, no server change.

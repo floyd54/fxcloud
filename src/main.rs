@@ -9,6 +9,7 @@ mod web;
 mod webauthn;
 mod webdav;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -131,6 +132,13 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("binding to {addr}"))?;
     tracing::info!("listening on http://{addr}");
 
-    axum::serve(listener, app).await.context("server error")?;
+    // ConnectInfo feeds the authentication limiter the socket peer (F1):
+    // without it the address extractor would fail on every gated request.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .context("server error")?;
     Ok(())
 }
