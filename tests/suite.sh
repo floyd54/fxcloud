@@ -2536,7 +2536,8 @@ curl -sD "$ROOT/hd.txt" -o /dev/null "$BASE/api/me"
 grep -qi '^x-content-type-options: nosniff' "$ROOT/hd.txt" \
   && ok "the API answers carry the headers too" \
   || bad "API responses lack the security headers"
-grep -q 'entry(header::CONTENT_SECURITY_POLICY).or_insert' "$REPO/src/web/mod.rs" \
+# or_insert, not insert: a route's own CSP (the preview sandbox) wins.
+grep -q 'or_insert(CSP.clone())' "$REPO/src/web/mod.rs" \
   && ok "the header layer never overwrites a route's own CSP (preview sandbox)" \
   || bad "the security-header layer force-overwrites route headers"
 grep -q 'STRICT_TRANSPORT_SECURITY' "$REPO/src/web/mod.rs" \
@@ -2568,6 +2569,135 @@ curl -sD "$ROOT/hd.txt" -o /dev/null "$BASE/login"
 grep -qi '^strict-transport-security' "$ROOT/hd.txt" \
   && bad "plain-HTTP mode must not send HSTS" \
   || ok "plain-HTTP mode stays HSTS-free"
+
+# ---- session management: listing, ending, sliding renewal (Audit.md F4) ----
+# Sits before the F1 section on purpose: every request here carries the
+# right password, so nothing spends a failure budget, and the section's
+# only state is the fresh sessions it creates itself. The server was
+# restarted by the HSTS detour above, so the in-memory budget maps are
+# empty and the DB rows below are the whole story.
+note "sessions: settings listing, per-device end, sign out everywhere else, sliding renewal"
+
+JA4="$ROOT/alice-sessions.jar"
+JB4="$ROOT/bob-sessions.jar"
+ALICE="user_id=(SELECT id FROM users WHERE username='alice') \
+AND expires_at > strftime('%Y-%m-%dT%H:%M:%S','now')"
+
+# A fresh sign-in arrives with a named device; the listing must carry it
+# as its own session with the device line, and exactly one row marked
+# as the session that asked.
+RC=$(curl -s -o /dev/null -w '%{http_code}' -c "$JA4" \
+  -H 'Content-Type: application/json' \
+  -H 'User-Agent: FxSuite/4.0 (laptop)' \
+  -d '{"username":"alice","password":"correct-horse"}' "$BASE/api/login")
+[ "$RC" = "200" ] && ok "a fresh sign-in with a named device succeeds" \
+  || bad "fresh sign-in gave rc=$RC"
+
+RC=$(reqsave GET /api/me/sessions "$JA4" "$ROOT/sessions4.json")
+N=$(grep -o '"sid"' "$ROOT/sessions4.json" | wc -l)
+CUR=$(grep -o '"current":true' "$ROOT/sessions4.json" | wc -l)
+[ "$RC" = "200" ] && [ "$N" -ge 2 ] && [ "$CUR" = "1" ] \
+  && grep -q 'FxSuite/4.0 (laptop)' "$ROOT/sessions4.json" \
+  && grep -q '"created_at"' "$ROOT/sessions4.json" \
+  && grep -q '"last_seen_at"' "$ROOT/sessions4.json" \
+  && grep -q '"expires_at"' "$ROOT/sessions4.json" \
+  && ok "the listing shows both sessions, exactly one current, with device and dates" \
+  || bad "listing: rc=$RC n=$N current=$CUR body=$(head -c 200 "$ROOT/sessions4.json")"
+
+# The primary key IS the secret token; an endpoint that listed tokens
+# would defeat the HttpOnly cookie. The visible handle is the sid.
+grep -q '"token"' "$ROOT/sessions4.json" \
+  && bad "the session listing leaked a token field" \
+  || ok "the listing carries handles, never the session token"
+
+# The default window is seven days, measured on the session that has not
+# been renewed yet - renewal rewrites expires_at, see the pins below.
+TTL=$(sqlite3 "$DATA/fxcloud.db" \
+  "SELECT CAST(ROUND((julianday(expires_at)-julianday(created_at))*86400) AS INTEGER) FROM sessions WHERE user_agent='FxSuite/4.0 (laptop)'")
+[ "$TTL" = "604800" ] && ok "a fresh session lives 604800 seconds (7 days) by default" \
+  || bad "default session window is $TTL seconds, not 604800"
+
+# End another device by its handle: the row dies for real - its cookie
+# is refused on the very next call - while the session that pressed the
+# button keeps working. The victim is the sign-in that sits in the
+# suite's original alice jar, addressed through that jar's own cookie.
+TOK=$(awk '$6=="fxcloud_session"{print $7}' "$JA")
+OTHER=$(sqlite3 "$DATA/fxcloud.db" "SELECT sid FROM sessions WHERE id='$TOK'")
+RC=$(reqcode DELETE "/api/me/sessions/$OTHER" "$JA4")
+ACODE=$(reqcode GET /api/me "$JA")
+MCODE=$(reqcode GET /api/me "$JA4")
+[ "$RC" = "204" ] && [ "$ACODE" = "401" ] && [ "$MCODE" = "200" ] \
+  && ok "ending one session kills its cookie and leaves the current one alive" \
+  || bad "end-one: rc=$RC ended=$ACODE current=$MCODE"
+
+# Another account's handle gets the same 404 a stranger's id gets
+# everywhere - never a 403, which would confirm the session exists.
+reqsave POST /api/login "$JB4" "$ROOT/blogin4.json" \
+  '{"username":"bob","password":"correct-horse"}' >/dev/null
+CURSID=$(sqlite3 "$DATA/fxcloud.db" \
+  "SELECT sid FROM sessions WHERE user_agent='FxSuite/4.0 (laptop)'")
+RC=$(reqcode DELETE "/api/me/sessions/$CURSID" "$JB4")
+[ "$RC" = "404" ] && ok "another account's sid answers 404, not 403" \
+  || bad "foreign sid delete gave rc=$RC"
+
+# Sign out everywhere else: one more session joins, the button ends
+# every row but the one that pressed it.
+RC=$(reqcode POST /api/login "$JA4" \
+  '{"username":"alice","password":"correct-horse"}')
+[ "$RC" = "200" ] && ok "a third sign-in prepares the incident button" \
+  || bad "third sign-in gave rc=$RC"
+RC=$(reqsave DELETE /api/me/sessions "$JA4" "$ROOT/sdel4.json")
+ENDED=$(jget "$(cat "$ROOT/sdel4.json")" "ended")
+REST=$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM sessions WHERE $ALICE")
+MCODE=$(reqcode GET /api/me "$JA4")
+[ "$RC" = "200" ] && [ -n "$ENDED" ] && [ "$ENDED" -ge 1 ] && [ "$REST" = "1" ] \
+  && [ "$MCODE" = "200" ] \
+  && ok "sign out everywhere else ends $ENDED session(s) and keeps the current one" \
+  || bad "end-others: rc=$RC ended='$ENDED' rest=$REST me=$MCODE"
+
+# Sliding renewal: backdate the survivor's last use two days, then one
+# authenticated call must move it - and rewrite the window to exactly
+# seven days from the touch, not from creation.
+sqlite3 "$DATA/fxcloud.db" \
+  "UPDATE sessions SET last_seen_at='2026-10-27 09:00:00' WHERE $ALICE"
+RC=$(reqcode GET /api/me "$JA4")
+MOVED=$(sqlite3 "$DATA/fxcloud.db" \
+  "SELECT (julianday(last_seen_at) > julianday('now','-2 hours')) FROM sessions WHERE $ALICE")
+WINDOW=$(sqlite3 "$DATA/fxcloud.db" \
+  "SELECT CAST(ROUND((julianday(expires_at)-julianday(last_seen_at))*86400) AS INTEGER) FROM sessions WHERE $ALICE")
+[ "$RC" = "200" ] && [ "$MOVED" = "1" ] && [ "$WINDOW" = "604800" ] \
+  && ok "one authenticated call slides a stale session and renews its 7-day window" \
+  || bad "renewal: rc=$RC moved=$MOVED window=$WINDOW"
+
+# Renewal is at most one write per window: a session used within it is
+# not touched again, so the hot path never rewrites the row.
+E1=$(sqlite3 "$DATA/fxcloud.db" "SELECT expires_at FROM sessions WHERE $ALICE")
+req GET /api/me "$JA4" >/dev/null
+E2=$(sqlite3 "$DATA/fxcloud.db" "SELECT expires_at FROM sessions WHERE $ALICE")
+[ "$E1" = "$E2" ] \
+  && ok "a session used within its window is not rewritten (one write per window)" \
+  || bad "a fresh session's expires_at moved: $E1 -> $E2"
+
+# The UI half of the feature: section in the dialog, wired in app.js,
+# strings present in all three languages, migration registered.
+grep -q 'id="session-list"' "$REPO/frontend/index.html" \
+  && grep -q 'id="session-others-btn"' "$REPO/frontend/index.html" \
+  && ok "the settings dialog carries the sessions section" \
+  || bad "no sessions section in the settings dialog"
+grep -q 'loadSessions' "$REPO/frontend/assets/app.js" \
+  && grep -q 'revokeOtherSessions' "$REPO/frontend/assets/app.js" \
+  && ok "the settings dialog loads, renders and revokes sessions" \
+  || bad "the session UI is not wired in app.js"
+NI18N=$(grep -c '"settings.sessions":' "$REPO/frontend/assets/i18n.js")
+[ "$NI18N" = "3" ] && ok "the sessions strings exist in all three languages" \
+  || bad "settings.sessions appears $NI18N times, want 3"
+grep -q '"settings.sessionEndConfirm"' "$REPO/frontend/assets/i18n.js" \
+  && grep -q '"settings.sessionRevokeOthersConfirm"' "$REPO/frontend/assets/i18n.js" \
+  && ok "both end-session actions ask for confirmation first" \
+  || bad "a session confirmation string is missing"
+grep -q '013_sessions_meta' "$REPO/src/db/mod.rs" \
+  && ok "migration 013 (sid, user_agent, last_seen_at) is registered" \
+  || bad "013_sessions_meta is not registered"
 
 # ---- authentication rate limiting (F1) ----
 # The HSTS detour above restarted the server, so every counter here starts

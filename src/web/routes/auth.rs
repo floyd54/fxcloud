@@ -1,13 +1,14 @@
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::net::SocketAddr;
 
 use crate::auth::{
     hash_password, token_from_cookie_header, verify_password, AuthUser, SESSION_COOKIE,
 };
+use crate::db::session::cap_user_agent;
 use crate::error::AppError;
 use crate::models::{
     ChangePasswordRequest, LoginRequest, RegisterRequest, UpdateMeRequest, User, UserOption,
@@ -39,6 +40,7 @@ fn clear_cookie() -> String {
 pub async fn register(
     State(state): State<SharedState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Response, AppError> {
     let username = req.username.trim().to_lowercase();
@@ -75,7 +77,15 @@ pub async fn register(
 
     let token = state
         .db
-        .create_session(user.id, state.config.session_ttl)
+        .create_session(
+            user.id,
+            state.config.session_ttl,
+            cap_user_agent(
+                headers
+                    .get(header::USER_AGENT)
+                    .and_then(|v| v.to_str().ok()),
+            ),
+        )
         .await?;
     let body = Json(json!({ "user": user }));
     Ok((
@@ -96,6 +106,7 @@ pub async fn register(
 pub async fn login(
     State(state): State<SharedState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, AppError> {
     let username = req.username.trim().to_lowercase();
@@ -124,7 +135,15 @@ pub async fn login(
 
     let token = state
         .db
-        .create_session(found.user.id, state.config.session_ttl)
+        .create_session(
+            found.user.id,
+            state.config.session_ttl,
+            cap_user_agent(
+                headers
+                    .get(header::USER_AGENT)
+                    .and_then(|v| v.to_str().ok()),
+            ),
+        )
         .await?;
     let body = Json(json!({ "user": found.user }));
     Ok((
@@ -233,11 +252,80 @@ pub async fn change_password(
     // other session of this account goes with the old hash. The token is
     // read straight from the request's cookie header - `AuthUser` resolved
     // it already, but carries only the user, not the string it came from.
-    let keep = token_from_cookie_header(
-        headers.get(header::COOKIE).and_then(|v| v.to_str().ok()),
-    );
+    let keep = token_from_cookie_header(headers.get(header::COOKIE).and_then(|v| v.to_str().ok()));
     state.db.set_password(user.id(), hash, keep).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// GET /api/me/sessions - the caller's live sessions (Audit.md F4).
+///
+/// The answer carries the public handle and the three timestamps, never
+/// the token: a listing a script could read would defeat the HttpOnly
+/// cookie it is meant to protect. `current` names the session making the
+/// call, so the UI can mark "this device".
+pub async fn list_sessions(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    user: AuthUser,
+) -> Result<Json<Value>, AppError> {
+    let token = token_from_cookie_header(headers.get(header::COOKIE).and_then(|v| v.to_str().ok()));
+    // The flag compares handles, never secrets: resolve the caller's own
+    // cookie to its sid first, then match that against each row's sid.
+    let current_sid = match token {
+        Some(t) => state.db.session_sid(t).await?,
+        None => None,
+    };
+    let sessions = state.db.list_sessions(user.id()).await?;
+    let list: Vec<Value> = sessions
+        .into_iter()
+        .map(|s| {
+            json!({
+                "sid": s.sid,
+                "created_at": s.created_at,
+                "last_seen_at": s.last_seen_at,
+                "expires_at": s.expires_at,
+                "user_agent": s.user_agent,
+                "current": current_sid.as_deref() == Some(s.sid.as_str()),
+            })
+        })
+        .collect();
+    Ok(Json(json!(list)))
+}
+
+/// DELETE /api/me/sessions - end every session except the caller's own
+/// (Audit.md F4): the incident button when another device may hold a
+/// stolen cookie. The count tells the UI what actually died; the
+/// session that pressed the button keeps working.
+pub async fn revoke_other_sessions(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    user: AuthUser,
+) -> Result<Json<Value>, AppError> {
+    let token = token_from_cookie_header(headers.get(header::COOKIE).and_then(|v| v.to_str().ok()))
+        .ok_or(AppError::Unauthorized)?;
+    let sid = state
+        .db
+        .session_sid(token)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    let ended = state.db.delete_other_sessions(user.id(), sid).await?;
+    Ok(Json(json!({ "ended": ended })))
+}
+
+/// DELETE /api/me/sessions/{sid} - end one session by its public
+/// handle. A handle that is not one of the caller's own matches nothing
+/// and answers 404, so the endpoint cannot probe for other accounts'
+/// sessions, and the sid itself carries no power of its own.
+pub async fn revoke_session(
+    State(state): State<SharedState>,
+    Path(sid): Path<String>,
+    user: AuthUser,
+) -> Result<Response, AppError> {
+    if state.db.delete_session_by_sid(user.id(), sid).await? {
+        Ok(StatusCode::NO_CONTENT.into_response())
+    } else {
+        Err(AppError::NotFound)
+    }
 }
 
 /// GET /api/users – every account but the caller's own, so the share dialog

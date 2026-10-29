@@ -176,6 +176,20 @@
       </section>
 
       <section class="settings-section">
+        <h4 data-i18n="settings.sessions">Sessions</h4>
+        <p class="settings-hint" data-i18n="settings.sessionsHint">
+          Every sign-in is its own session, shown with the device it was
+          made on. End the ones you do not recognise - that device is
+          signed out at once.
+        </p>
+        <div id="session-list" class="session-list"></div>
+        <button class="btn secondary" id="session-others-btn" type="button"
+                data-i18n="settings.sessionsRevokeOthers">
+          Sign out everywhere else
+        </button>
+      </section>
+
+      <section class="settings-section">
         <h4 data-i18n="settings.passkeys">Passkeys</h4>
         <p class="settings-hint" data-i18n="settings.passkeysHint">
           A passkey signs you in with a PIN or biometrics instead of a

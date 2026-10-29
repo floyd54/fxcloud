@@ -248,6 +248,22 @@
       "Der private Teil bleibt auf deinem Ger\u00e4t; der Server speichert nur den " +
       "\u00f6ffentlichen Schl\u00fcssel, sodass ein verlorenes Ger\u00e4t hier entfernt werden kann.",
     "settings.addPasskey": "Passkey hinzuf\u00fcgen",
+    "settings.sessions": "Sitzungen",
+    "settings.sessionsHint":
+      "Jede Anmeldung ist eine eigene Sitzung, mit dem Ger\u00e4t, auf dem " +
+      "sie entstanden ist. Beende diejenigen, die du nicht erkennst - " +
+      "dieses Ger\u00e4t ist dann sofort abgemeldet.",
+    "settings.sessionCurrent": "{device} (dieses Ger\u00e4t)",
+    "settings.sessionUnknown": "unbekanntes Ger\u00e4t",
+    "settings.sessionCreated": "angemeldet am {date}",
+    "settings.sessionLastUsed": "zuletzt genutzt {date}",
+    "settings.sessionExpires": "g\u00fcltig bis {date}",
+    "settings.sessionEndConfirm":
+      "Diese Sitzung beenden? {device} ist dann sofort abgemeldet.",
+    "settings.sessionRevokeOthersConfirm":
+      "\u00dcberall anders abmelden? Jedes andere Ger\u00e4t muss sich neu anmelden.",
+    "settings.sessionEnded": "Sitzungen abgemeldet: {n}.",
+    "settings.sessionsRevokeOthers": "\u00fcberall anders abmelden",
     "settings.lang": "Sprache",
     "settings.langHint": "Wird sofort \u00fcbernommen und in diesem Browser gemerkt.",
     "settings.nameEmpty": "Der Anzeigename darf nicht leer sein.",
@@ -685,6 +701,22 @@
       "password. The private half stays on your device; the server only " +
       "stores the public key, so a lost device can be removed here.",
     "settings.addPasskey": "Add passkey",
+    "settings.sessions": "Sessions",
+    "settings.sessionsHint":
+      "Every sign-in is its own session, shown with the device it was " +
+      "made on. End the ones you do not recognise - that device is " +
+      "signed out at once.",
+    "settings.sessionCurrent": "{device} (this device)",
+    "settings.sessionUnknown": "unknown device",
+    "settings.sessionCreated": "signed in {date}",
+    "settings.sessionLastUsed": "last used {date}",
+    "settings.sessionExpires": "expires {date}",
+    "settings.sessionEndConfirm":
+      "End this session? {device} is signed out at once.",
+    "settings.sessionRevokeOthersConfirm":
+      "Sign out everywhere else? Every other device has to sign in again.",
+    "settings.sessionEnded": "Sessions signed out: {n}.",
+    "settings.sessionsRevokeOthers": "Sign out everywhere else",
     "settings.lang": "Language",
     "settings.langHint":
       "Applies immediately and is remembered in this browser.",
@@ -1111,6 +1143,19 @@
       "quj mu'mu' PIN biometric yIlo' - mu'mu' yIlo'be'. " +
       "qan nIteb device chIm; qanwI' quj yIqan - device qawchugh yIyu'.",
     "settings.addPasskey": "quj mu'mu' chu'",
+    "settings.sessions": "nom pu'",
+    "settings.sessionsHint":
+      "nom wa'DI' chel nom wa'DI' yIqaw - devicevamvo' yIqon. " +
+      "'oHbe'bogh nom yIqaw - devicevam nomta' DaHjaj.",
+    "settings.sessionCurrent": "{device} (devicevam)",
+    "settings.sessionUnknown": "device unknown",
+    "settings.sessionCreated": "{date} nom",
+    "settings.sessionLastUsed": "{date} lo'",
+    "settings.sessionExpires": "{date} nomta'",
+    "settings.sessionEndConfirm": "nom 'oHbe'bogh yIqaw? {device} nomta' DaHjaj.",
+    "settings.sessionRevokeOthersConfirm": "nom pu' nomta'? device vIpu' nomta' yIqaw.",
+    "settings.sessionEnded": "nomta'lu': {n}.",
+    "settings.sessionsRevokeOthers": "nom pu' nomta'",
     "settings.lang": "Hol",
     "settings.langHint":
       "DaHjaj yIlo' - browser mon.",

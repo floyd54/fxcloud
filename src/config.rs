@@ -51,10 +51,14 @@ impl Config {
         let data_dir = std::env::var("FXCLOUD_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("./data"));
+        // Seven days, sliding: `sliding_renewal` moves the window
+        // forward while a session is in use, and the settings page lists
+        // and ends the others (Audit.md F4). The old default was 30
+        // days, which kept a leaked cookie alive for weeks.
         let session_ttl = std::env::var("FXCLOUD_SESSION_TTL")
             .ok()
             .and_then(|t| t.parse().ok())
-            .unwrap_or(60 * 60 * 24 * 30);
+            .unwrap_or(60 * 60 * 24 * 7);
         let secure_cookie = std::env::var("FXCLOUD_SECURE_COOKIE")
             .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);

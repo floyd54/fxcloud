@@ -2218,6 +2218,7 @@
     setSettingsStatus("");
     settingsModal.style.display = "flex";
     loadPasskeys();
+    loadSessions();
   }
 
   function closeSettings() {
@@ -2468,6 +2469,100 @@
       });
       setSettingsStatus(t("passkey.addedStatus"));
       await loadPasskeys();
+    } catch (e) {
+      setSettingsStatus(e.message, true);
+    }
+  }
+
+  // ---------- sessions (settings list, Audit.md F4) ----------
+  // Same shape as the passkey list: the row names the device, the sub-line
+  // carries the three dates. The server marks the row that belongs to this
+  // cookie; every other row can be ended right here.
+  async function loadSessions() {
+    try {
+      const res = await api("/api/me/sessions");
+      renderSessions(await res.json());
+    } catch (e) {
+      // 401 already bounced to /login inside api(); anything else belongs
+      // in the dialog's status line.
+      setSettingsStatus(e.message, true);
+    }
+  }
+
+  function sessionSubtitle(s) {
+    return [
+      t("settings.sessionCreated", {
+        date: new Date(s.created_at).toLocaleDateString(dateLocale()),
+      }),
+      t("settings.sessionLastUsed", {
+        date: new Date(s.last_seen_at).toLocaleDateString(dateLocale()),
+      }),
+      t("settings.sessionExpires", {
+        date: new Date(s.expires_at).toLocaleDateString(dateLocale()),
+      }),
+    ].join(" - ");
+  }
+
+  function renderSessions(rows) {
+    const list = document.getElementById("session-list");
+    list.textContent = "";
+    for (const s of rows) {
+      const row = document.createElement("div");
+      row.className = "session-row";
+
+      const meta = document.createElement("div");
+      meta.className = "session-meta";
+      const label = document.createElement("span");
+      label.className = "session-label";
+      const device = s.user_agent || t("settings.sessionUnknown");
+      label.textContent = s.current
+        ? t("settings.sessionCurrent", { device })
+        : device;
+      const sub = document.createElement("span");
+      sub.className = "session-sub";
+      sub.textContent = sessionSubtitle(s);
+      meta.appendChild(label);
+      meta.appendChild(sub);
+      row.appendChild(meta);
+
+      // The current session's sign-out lives in the user menu; a row that
+      // ends here would sign this very page out mid-click.
+      if (!s.current) {
+        const actions = document.createElement("div");
+        actions.className = "session-actions";
+        const end = document.createElement("button");
+        end.type = "button";
+        end.className = "danger";
+        end.textContent = t("act.remove");
+        end.addEventListener("click", () => revokeSession(s));
+        actions.appendChild(end);
+        row.appendChild(actions);
+      }
+      list.appendChild(row);
+    }
+  }
+
+  async function revokeSession(s) {
+    const device = s.user_agent || t("settings.sessionUnknown");
+    if (!confirm(t("settings.sessionEndConfirm", { device }))) return;
+    try {
+      await api("/api/me/sessions/" + encodeURIComponent(s.sid), {
+        method: "DELETE",
+      });
+      setSettingsStatus(t("settings.sessionEnded", { n: 1 }));
+      await loadSessions();
+    } catch (e) {
+      setSettingsStatus(e.message, true);
+    }
+  }
+
+  async function revokeOtherSessions() {
+    if (!confirm(t("settings.sessionRevokeOthersConfirm"))) return;
+    try {
+      const res = await api("/api/me/sessions", { method: "DELETE" });
+      const body = await res.json();
+      setSettingsStatus(t("settings.sessionEnded", { n: body.ended }));
+      await loadSessions();
     } catch (e) {
       setSettingsStatus(e.message, true);
     }
@@ -2731,6 +2826,9 @@
     );
   });
   document.getElementById("passkey-add-btn").addEventListener("click", addPasskey);
+  document
+    .getElementById("session-others-btn")
+    .addEventListener("click", revokeOtherSessions);
   // User administration (only rendered for admins).
   document.getElementById("user-admin-btn").addEventListener("click", openAdmin);
   document.getElementById("admin-close-btn").addEventListener("click", closeAdmin);
@@ -2889,6 +2987,7 @@
           : "";
     }
     if (settingsModal.style.display !== "none") loadPasskeys().catch(() => {});
+    if (settingsModal.style.display !== "none") loadSessions().catch(() => {});
     if (adminModal.style.display !== "none") loadAdminUsers().catch(() => {});
     if (shareModal.style.display !== "none" && shareEntries.length === 1) {
       loadShareList().catch(() => {});

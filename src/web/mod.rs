@@ -15,6 +15,7 @@ use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 
 use self::state::SharedState;
+use crate::auth::token_from_cookie_header;
 
 /// The app-wide Content-Security-Policy (Audit.md F2).
 ///
@@ -62,7 +63,11 @@ const CSP: HeaderValue = HeaderValue::from_static(concat!(
 /// `nosniff`. HSTS rides along when the deployment declares HTTPS via
 /// `FXCLOUD_SECURE_COOKIE` (the same knob that sets the cookie's Secure
 /// attribute), so plain-HTTP installs are not affected.
-async fn security_headers(State(state): State<SharedState>, request: Request, next: Next) -> Response {
+async fn security_headers(
+    State(state): State<SharedState>,
+    request: Request,
+    next: Next,
+) -> Response {
     let mut response = next.run(request).await;
     {
         let h = response.headers_mut();
@@ -74,13 +79,44 @@ async fn security_headers(State(state): State<SharedState>, request: Request, ne
             .or_insert(HeaderValue::from_static("SAMEORIGIN"));
         h.entry(header::REFERRER_POLICY)
             .or_insert(HeaderValue::from_static("same-origin"));
-        h.entry(header::CONTENT_SECURITY_POLICY).or_insert(CSP.clone());
+        h.entry(header::CONTENT_SECURITY_POLICY)
+            .or_insert(CSP.clone());
         if state.config.secure_cookie {
             h.entry(header::STRICT_TRANSPORT_SECURITY)
                 .or_insert(HeaderValue::from_static("max-age=15552000"));
         }
     }
     response
+}
+
+/// Slide a session's expiry forward while it is in use (Audit.md F4).
+///
+/// Every API request carrying a session cookie passes here; the write
+/// itself sits behind `session_touch`'s `WHERE`, so a session used
+/// within its renewal window costs one indexed statement that matches
+/// no row, and one that is due moves its window exactly once. A failed
+/// renewal is logged and otherwise ignored: a request should not fail
+/// because the expiry column could not move.
+async fn sliding_renewal(
+    State(state): State<SharedState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(token) = token_from_cookie_header(
+        request
+            .headers()
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok()),
+    ) {
+        if let Err(e) = state
+            .db
+            .session_touch(token, state.config.session_ttl)
+            .await
+        {
+            tracing::warn!(error = %e, "session renewal failed");
+        }
+    }
+    next.run(request).await
 }
 
 /// Build the complete application router.
@@ -98,6 +134,14 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/me", get(routes::auth::me))
         .route("/me", put(routes::auth::update_me))
         .route("/me/password", put(routes::auth::change_password))
+        .route(
+            "/me/sessions",
+            get(routes::auth::list_sessions).delete(routes::auth::revoke_other_sessions),
+        )
+        .route(
+            "/me/sessions/{sid}",
+            axum::routing::delete(routes::auth::revoke_session),
+        )
         // Account discovery for the share dialog
         .route("/users", get(routes::auth::list_users))
         // Files
@@ -187,7 +231,14 @@ pub fn build_router(state: SharedState) -> Router {
         .route(
             "/me/passkeys/{id}",
             axum::routing::delete(routes::passkeys::remove),
-        );
+        )
+        // Sliding session renewal rides only the API: WebDAV
+        // authenticates with Basic per request and the UI assets are not
+        // sessions' business.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            sliding_renewal,
+        ));
 
     Router::new()
         // UI pages & embedded assets

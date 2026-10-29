@@ -160,6 +160,15 @@ impl Db {
                 include_str!("../../migrations/012_webauthn_credentials.sql"),
                 None,
             ),
+            (
+                "013_sessions_meta",
+                include_str!("../../migrations/013_sessions_meta.sql"),
+                // Skip once `sessions.sid` exists.
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('sessions')
+                     WHERE name = 'sid'",
+                ),
+            ),
         ];
         let conn = self.pool.get()?;
         for (name, sql, guard) in MIGRATIONS {

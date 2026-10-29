@@ -9,7 +9,7 @@ Method: manual review of every authentication, authorization, cryptographic
 and file-handling code path in this repository, plus an automated
 dependency scan (`cargo audit`, RustSec advisory database: **0
 vulnerabilities across 211 crate dependencies**). The integration suite
-(519 checks) and the unit tests (41) were green at the time of review.
+(534 checks) and the unit tests (41) were green at the time of review.
 
 This document is a living record. Findings carry an id, a severity and a
 status; the status line moves as fixes land. Severity uses the usual
@@ -42,7 +42,7 @@ side-channel attacks against WebCrypto/Argon2 implementations.
 | F1 | no rate limiting / lockout on the authentication endpoints | Medium | fixed in v0.0.32 |
 | F2 | no security headers on the UI (CSP, clickjacking, HSTS, nosniff) | Medium | fixed in v0.0.29 |
 | F3 | password change and admin reset keep existing sessions alive | Medium | fixed in v0.0.31 |
-| F4 | sessions are long-lived (30 days) with no rotation or management UI | Medium | open |
+| F4 | sessions are long-lived (30 days) with no rotation or management UI | Medium | fixed in v0.0.33 |
 | F5 | a share UPDATE-grantee can replace an existing file/folder key record | Low-Med | fixed in v0.0.30 |
 | F6 | `covering_share` walks parents without a depth cap | Low | open |
 | F7 | the installer does not verify a checksum of the downloaded binary | Low | open |
@@ -195,7 +195,7 @@ paths. For the self-service change the caller's own session can be kept
 (its token is already authenticated for this request); for the admin
 reset, dropping every session of the target is the expected behaviour.
 
-### F4 - Long-lived sessions: 30-day default, no rotation, no management (Medium)
+### F4 - Long-lived sessions: 30-day default, no rotation, no management (Medium) - fixed in v0.0.33
 
 Tokens are 32 bytes from `OsRng` (good), stored until their expiry
 (good), purged hourly (good) - but the default TTL is 30 days, a token
@@ -210,6 +210,43 @@ proxy log, a copied cookie jar) stays valid for weeks. There is no
 authenticated requests, plus a `GET /api/me/sessions` /
 `DELETE /api/me/sessions` pair and a settings entry listing the current
 sessions.
+
+*Fixed (v0.0.33).* The default window is now **7 days** (604800 s,
+still `FXCLOUD_SESSION_TTL`-overridable) and a session in use slides:
+every API request carrying a session cookie passes a renewal middleware
+whose write sits behind a `WHERE last_seen_at < cutoff` - a quarter of
+the lifetime, capped at a day - so a session within its window costs
+one indexed statement that matches no row, and one that is due moves
+exactly once per window. A failed renewal is logged and otherwise
+ignored; it never fails the request. Renewal deliberately does **not**
+rotate the token *value*: a second tab holding the old value would get
+a 401 mid-renewal and bounce its user to the login page, and the leak
+the rotation would address is answered by the other half of the fix -
+the victim can now see the unknown device and end it. (Every sign-in
+already mints a fresh token, and F3 still ends the sibling sessions on
+a password change.) The management side is a new settings section: the
+listing shows each live session with its device (User-Agent, captured
+at sign-in, capped at 200 characters), created / last-used / expiry
+dates, and marks the row belonging to the current cookie; every other
+row can be ended right there, and one button ends *every* other
+session - the incident case the finding describes. The API surface is
+`GET /api/me/sessions`, `DELETE /api/me/sessions` (ends all but the
+caller's own, answers `{ended: n}`) and `DELETE /api/me/sessions/{sid}`
+(204). A session's primary key IS the secret token, so the listing
+never exposes it: it shows `sid`, a 16-byte public handle written by
+migration 013, and every query using a sid is scoped to the caller's
+own `user_id` - a sid is a label, not a key, and another account's sid
+answers 404 like every stranger's id. Alt-DBs gain `sid` (random),
+`user_agent` ('' for old rows, which show no device line) and
+`last_seen_at` (= `created_at`) through the same migration. Fifteen
+suite pins cover the listing shape (multiple sessions, exactly one
+current, no token field), the 604800-second default measured with
+`julianday`, a per-device end that really kills the victim's cookie
+while the current session lives, the foreign-sid 404, the incident
+button (ends N, leaves exactly the caller), sliding renewal (a
+backdated `last_seen_at` moves on the next call and rewrites the
+window to exactly 7 days from the touch), the one-write-per-window
+property, and the UI / i18n / migration wiring.
 
 ### F5 - A share UPDATE-grantee can replace an existing key record (Low-Medium) - fixed in v0.0.30
 
@@ -499,7 +536,7 @@ future changes know which properties to preserve.
 3. ~~F3 (invalidate sessions on password change / admin reset)~~ - done
    in v0.0.31.
 4. ~~F1 (rate limiting)~~ - done in v0.0.32.
-5. F4 (session TTL default, rotation, management UI) - the incident
-   button the product lacks today.
+5. ~~F4 (session TTL default, rotation, management UI)~~ - done in
+   v0.0.33.
 6. F7 (release checksums) - CI + installer, no server change.
 7. F6, F8, F10 - small hardening items.

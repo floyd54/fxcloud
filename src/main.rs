@@ -31,7 +31,7 @@ environment variables:
   FXCLOUD_BIND             listen address (default 127.0.0.1)
   FXCLOUD_PORT             listen port (default 8080)
   FXCLOUD_DATA             data directory (default ./data)
-  FXCLOUD_SESSION_TTL      session lifetime in seconds (default 2592000)
+  FXCLOUD_SESSION_TTL      session lifetime in seconds (default 604800 = 7 days, sliding)
   FXCLOUD_SECURE_COOKIE    set Secure on cookies: 1/true/yes/on (behind HTTPS)
   FXCLOUD_MAX_UPLOAD_MB    max upload size in MiB (default 1024)
   FXCLOUD_TRASH_DAYS       days a trashed entry is kept (default 30)

@@ -24,8 +24,12 @@ with sharing, quotas and WebDAV. New to fxcloud? The
 - **User settings** - the name in the top bar opens a menu: account facts
   (username, member since, storage used), a display name you can change
   yourself, a light/dark theme and a password change that asks for the
-  current password first. Everything is stored per account on the server,
-  so it follows you to every device.
+  current password first. Below that sits the **session list**: every
+  sign-in appears as its own session with the device it was made on and
+  when it was last used; end the ones you do not recognise on the spot,
+  or end every other session at once with "sign out everywhere else".
+  Everything is stored per account on the server, so it follows you to
+  every device.
 - **File explorer** - folders with breadcrumbs and recursive sizes,
   create/upload (files *or* whole folder trees via drag & drop, empty
   subfolders included), rename, move/copy, delete, multi-select with
@@ -95,7 +99,7 @@ FXCLOUD_MAX_UPLOAD_MB=4096 curl -fsSL https://raw.githubusercontent.com/floyd54/
 | `FXCLOUD_BIND` / `FXCLOUD_PORT` | listen address and port (`0.0.0.0`, `8080`)         |
 | `FXCLOUD_ORIGIN`       | public URL for passkeys (unset)                            |
 | `FXCLOUD_SECURE_COOKIE`| `1` for Secure cookies, behind HTTPS (unset)               |
-| `FXCLOUD_MAX_UPLOAD_MB` / `FXCLOUD_TRASH_DAYS` / `FXCLOUD_SESSION_TTL` | upload limit, trash lifetime, session TTL (`1024`, `30`, `2592000`) |
+| `FXCLOUD_MAX_UPLOAD_MB` / `FXCLOUD_TRASH_DAYS` / `FXCLOUD_SESSION_TTL` | upload limit, trash lifetime, session TTL (`1024`, `30`, `604800`) |
 | `RUST_LOG`             | log filter (`fxcloud=info`)                                |
 
 Afterwards the knobs live in the unit file: edit
@@ -143,7 +147,7 @@ Everything is configured via environment variables:
 | `FXCLOUD_BIND`          | `127.0.0.1`     | Address to bind the HTTP server      |
 | `FXCLOUD_PORT`          | `8080`          | TCP port                             |
 | `FXCLOUD_DATA`          | `./data`        | Data directory (DB + file blobs)     |
-| `FXCLOUD_SESSION_TTL`   | `2592000`       | Session lifetime in seconds (30 days)|
+| `FXCLOUD_SESSION_TTL`   | `604800`        | Session lifetime in seconds (7 days, sliding renewal)|
 | `FXCLOUD_SECURE_COOKIE` | `false`         | Set `Secure` on cookies (enable behind HTTPS) |
 | `FXCLOUD_MAX_UPLOAD_MB` | `1024`          | Max request body for uploads, in MiB |
 | `FXCLOUD_TRASH_DAYS`    | `30`            | Days a trashed entry is kept before the purge removes it |
@@ -306,7 +310,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 519 checks against a throwaway instance
+./tests/suite.sh    # integration: 534 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

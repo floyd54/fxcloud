@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 use super::auth::session_cookie;
 use crate::auth::AuthUser;
+use crate::db::session::cap_user_agent;
 use crate::error::AppError;
 use crate::models::{
     PasskeyInfo, PasskeyLoginFinishRequest, PasskeyLoginStartRequest, PasskeyRegisterFinishRequest,
@@ -267,7 +268,15 @@ pub async fn login_finish(
     }
     let token = state
         .db
-        .create_session(user.id, state.config.session_ttl)
+        .create_session(
+            user.id,
+            state.config.session_ttl,
+            cap_user_agent(
+                headers
+                    .get(header::USER_AGENT)
+                    .and_then(|v| v.to_str().ok()),
+            ),
+        )
         .await?;
     let body = Json(json!({ "user": user }));
     Ok((

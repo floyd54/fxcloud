@@ -14,7 +14,7 @@ ceremony endpoints are public.
 | POST   | `/api/logout`           | -                                  | Sign out                    |
 | GET    | `/api/me`               | -                                  | Current user + `quota_bytes` / `used_bytes` / `theme` |
 | PUT    | `/api/me`               | `{display_name?}` and/or `{theme}` | Save the settings from the user menu; theme must be `light` or `dark`, display name non-empty (max 100 chars); returns the updated user (400 when the body changes nothing) |
-| PUT    | `/api/me/password`      | `{current_password, new_password}` | Change the signed-in user's password (401 when the current one is wrong, 400 when the new one is shorter than 8 characters); the session stays open |
+| PUT    | `/api/me/password`      | `{current_password, new_password}` | Change the signed-in user's password (401 when the current one is wrong, 400 when the new one is shorter than 8 characters); the calling session stays open, every other session of the account ends |
 | POST   | `/api/passkeys/register/start` | `{}`                   | Begin adding a device: WebAuthn creation options bound to this session, `excludeCredentials` from the account's existing passkeys; `400` when the request's `Origin` disagrees with the deployment origin |
 | POST   | `/api/passkeys/register/finish` | `{label?, credential}` | Verify the attestation and store the device -> `201` with the row (`label`: trimmed, 1-100 chars, default `Passkey`; `409` when the authenticator is already registered; `401` unknown, replayed or foreign ceremony) |
 | POST   | `/api/passkeys/login/start` | `{username}`              | **Public.** Sign-in challenge; byte-for-byte identical answer for unknown names and accounts without passkeys (one random dummy `allowCredentials` entry - no account oracle) |
@@ -22,6 +22,9 @@ ceremony endpoints are public.
 | GET    | `/api/me/passkeys`      | -                                  | The signed-in account's devices: `id`, `label`, `created_at`, `last_used_at`, `transports` |
 | PATCH  | `/api/me/passkeys/:id`  | `{label}`                          | Rename one device (`400` blank or longer than 100 chars, `404` unknown or foreign id) |
 | DELETE | `/api/me/passkeys/:id`  | -                                  | Remove one device (`404` unknown or foreign id); removing the last one is allowed - the password keeps working |
+| GET    | `/api/me/sessions`      | -                                  | The account's live sessions: `sid` (public handle, never the token), `created_at`, `last_seen_at`, `expires_at`, `user_agent`, `current` for the calling cookie |
+| DELETE | `/api/me/sessions`      | -                                  | End every session but the calling one -> `{ended: n}` (the incident button; the caller stays signed in) |
+| DELETE | `/api/me/sessions/:sid` | -                                  | End one of your own sessions by handle (`404` unknown or foreign sid - never a hint that it exists) |
 | GET    | `/api/users`            | -                                  | Accounts to share with (everyone but you: `username`, `display_name`, `is_active`) |
 | GET    | `/api/admin/users`      | -                                  | **Admin only (403 otherwise).** Every account for the administration table: `id`, `username`, `display_name`, `is_active`, `is_admin`, `quota_bytes`, `used_bytes`, `created_at` |
 | PUT    | `/api/admin/users/:id`  | `{is_active?}`, `{is_admin?}`, `{quota_bytes?}` | **Admin only.** Partial update of one account; only the fields present are written. Refuses self-deactivation (400), deactivating/demoting the last active admin (400) and a negative quota (400); returns the updated row |
@@ -125,6 +128,20 @@ the owner: a foreign or unknown id is `404`, never a hint that the id
 exists somewhere else. Removing the last passkey is allowed on purpose -
 the password keeps working, and cutting off a lost device must never be
 blocked by a policy question.
+
+Sessions last **7 days** by default (`FXCLOUD_SESSION_TTL`, seconds)
+and slide while in use: any API request carrying the cookie rewrites
+the expiry to now + TTL, at most once per renewal window (a quarter of
+the lifetime, capped at a day), so an active session never dies under
+its user and the hot path costs one indexed no-op statement. The
+listing shows `sid` because a session's primary key IS the secret
+token - an endpoint handing out tokens would defeat the HttpOnly
+cookie - and a sid is a label, not a key: every operation through it is
+scoped to the caller, so another account's sid is `404`. Renewal does
+not rotate the token value (a second tab would bounce to the login
+page mid-renewal); the countermeasure for a leaked cookie is the
+listing itself, which names the device it was created on. WebDAV is
+exempt - it authenticates with Basic per request and holds no session.
 
 Passkeys need a **secure context**: browsers expose
 `navigator.credentials` only over HTTPS or on `localhost`. A passkey
