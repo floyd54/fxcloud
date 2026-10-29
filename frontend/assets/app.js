@@ -2198,6 +2198,18 @@
     document.getElementById("theme-dark").classList.toggle("active", theme === "dark");
   }
 
+  // One settings pane at a time: the nav picks, the content column swaps.
+  // Keeps the dialog short enough for any screen however many sessions or
+  // passkeys the account holds.
+  function activateSettingsTab(name) {
+    document.querySelectorAll(".settings-nav-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.settingsTab === name);
+    });
+    document.querySelectorAll("[data-settings-panel]").forEach((pane) => {
+      pane.hidden = pane.dataset.settingsPanel !== name;
+    });
+  }
+
   function openSettings() {
     setUserMenu(false);
     if (!meData) return;
@@ -2216,6 +2228,7 @@
       meData.display_name || meData.username;
     markThemeChoice(meData.theme || "light");
     setSettingsStatus("");
+    activateSettingsTab("account");
     settingsModal.style.display = "flex";
     loadPasskeys();
     loadSessions();
@@ -2809,6 +2822,12 @@
   });
   document.getElementById("user-settings-btn").addEventListener("click", openSettings);
   document.getElementById("set-close-btn").addEventListener("click", closeSettings);
+  // The nav column picks the pane (event delegation: the nav is static
+  // markup, but delegation keeps it robust if points are ever added).
+  settingsModal.addEventListener("click", (e) => {
+    const navBtn = e.target.closest(".settings-nav-btn");
+    if (navBtn) activateSettingsTab(navBtn.dataset.settingsTab);
+  });
   settingsModal.addEventListener("click", (e) => {
     if (e.target === settingsModal) closeSettings();
   });

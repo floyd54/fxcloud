@@ -2699,6 +2699,28 @@ grep -q '013_sessions_meta' "$REPO/src/db/mod.rs" \
   && ok "migration 013 (sid, user_agent, last_seen_at) is registered" \
   || bad "013_sessions_meta is not registered"
 
+# ---- the settings dialog: a nav column, one pane at a time (v0.0.35) ----
+# Seven stacked sections outran the viewport in 0.0.33 - the dialog cut
+# off at the top and bottom. The layout answers with a nav on the left
+# and the active pane on the right: the dialog is capped at the screen,
+# its content column scrolls, and no account can make it outgrow the
+# window however many sessions or passkeys it holds.
+grep -q 'data-settings-tab' "$REPO/frontend/index.html" \
+  && grep -q 'data-settings-panel' "$REPO/frontend/index.html" \
+  && ok "the settings dialog is a nav plus panes, not one long column" \
+  || bad "the settings dialog has no tab structure"
+grep -q 'activateSettingsTab' "$REPO/frontend/assets/app.js" \
+  && grep -q 'activateSettingsTab("account")' "$REPO/frontend/assets/app.js" \
+  && ok "the nav switches panes and the dialog reopens on Account" \
+  || bad "the settings nav is not wired in app.js"
+grep -q 'max-height: min(' "$REPO/frontend/assets/style.css" \
+  && grep -q '.settings-content {' "$REPO/frontend/assets/style.css" \
+  && ok "the dialog is capped at the viewport and its content scrolls" \
+  || bad "the settings dialog has no height cap or scrolling pane"
+NS18N=$(grep -c '"settings.appearance":' "$REPO/frontend/assets/i18n.js")
+[ "$NS18N" = "3" ] && ok "the nav's Appearance label exists in all three languages" \
+  || bad "settings.appearance appears $NS18N times, want 3"
+
 # ---- hardening batch: walk caps, origin warning, timing parity (F6/F8/F10) ----
 # Placed before the F1 section like the session pins above: the sign-ins
 # here are cheap (two failed logins, far from every budget) and the tree

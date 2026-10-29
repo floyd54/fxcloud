@@ -21,15 +21,17 @@ with sharing, quotas and WebDAV. New to fxcloud? The
   (or localhost), and behind a reverse proxy that rewrites `Host` set
   `FXCLOUD_ORIGIN` to the URL users open the site under. Details:
   [API.md](API.md#passkeys).
-- **User settings** - the name in the top bar opens a menu: account facts
-  (username, member since, storage used), a display name you can change
-  yourself, a light/dark theme and a password change that asks for the
-  current password first. Below that sits the **session list**: every
-  sign-in appears as its own session with the device it was made on and
-  when it was last used; end the ones you do not recognise on the spot,
-  or end every other session at once with "sign out everywhere else".
-  Everything is stored per account on the server, so it follows you to
-  every device.
+- **User settings** - the name in the top bar opens a menu with a
+  left-hand navigation and one pane at a time, so the dialog always
+  fits the screen: **Account** (username, member since, storage used,
+  and a display name you can change yourself), **Appearance** (a
+  light/dark theme and a language that is remembered in this browser),
+  **Password** (a change that asks for the current password first),
+  **Sessions** (every sign-in is its own session with the device it was
+  made on and when it was last used; end the ones you do not recognise
+  on the spot, or end every other session at once with "sign out
+  everywhere else") and **Passkeys**. Everything is stored per account
+  on the server, so it follows you to every device.
 - **File explorer** - folders with breadcrumbs and recursive sizes,
   create/upload (files *or* whole folder trees via drag & drop, empty
   subfolders included), rename, move/copy, delete, multi-select with
@@ -316,7 +318,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 550 checks against a throwaway instance
+./tests/suite.sh    # integration: 554 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

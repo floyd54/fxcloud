@@ -231,6 +231,7 @@
     // settings dialog
     "settings.title": "Einstellungen",
     "settings.account": "Konto",
+    "settings.appearance": "Darstellung",
     "settings.username": "Benutzername",
     "settings.since": "Mitglied seit",
     "settings.storage": "Speicher",
@@ -684,6 +685,7 @@
     // settings dialog
     "settings.title": "Settings",
     "settings.account": "Account",
+    "settings.appearance": "Appearance",
     "settings.username": "Username",
     "settings.since": "Member since",
     "settings.storage": "Storage",
@@ -1127,6 +1129,7 @@
     // settings dialog
     "settings.title": "choH",
     "settings.account": "yuQ",
+    "settings.appearance": "Dung 'ej Hol",
     "settings.username": "lo'wI' pong",
     "settings.since": "nom wa'Hu'",
     "settings.storage": "qan",

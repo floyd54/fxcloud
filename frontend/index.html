@@ -129,78 +129,85 @@
     <div class="modal settings-modal">
       <h3 data-i18n="settings.title">Settings</h3>
 
-      <section class="settings-section">
-        <h4 data-i18n="settings.account">Account</h4>
-        <div class="settings-info">
-          <div><span class="label" data-i18n="settings.username">Username</span><span id="set-username"></span></div>
-          <div><span class="label" data-i18n="settings.since">Member since</span><span id="set-since"></span></div>
-          <div><span class="label" data-i18n="settings.storage">Storage</span><span id="set-storage"></span></div>
+      <div class="settings-layout">
+        <nav class="settings-nav">
+          <button type="button" class="settings-nav-btn active" data-settings-tab="account"
+                  data-i18n="settings.account">Account</button>
+          <button type="button" class="settings-nav-btn" data-settings-tab="appearance"
+                  data-i18n="settings.appearance">Appearance</button>
+          <button type="button" class="settings-nav-btn" data-settings-tab="password"
+                  data-i18n="settings.password">Password</button>
+          <button type="button" class="settings-nav-btn" data-settings-tab="sessions"
+                  data-i18n="settings.sessions">Sessions</button>
+          <button type="button" class="settings-nav-btn" data-settings-tab="passkeys"
+                  data-i18n="settings.passkeys">Passkeys</button>
+        </nav>
+
+        <div class="settings-content">
+          <section class="settings-panel" data-settings-panel="account">
+            <div class="settings-info">
+              <div><span class="label" data-i18n="settings.username">Username</span><span id="set-username"></span></div>
+              <div><span class="label" data-i18n="settings.since">Member since</span><span id="set-since"></span></div>
+              <div><span class="label" data-i18n="settings.storage">Storage</span><span id="set-storage"></span></div>
+            </div>
+            <h4 data-i18n="settings.displayName">Display name</h4>
+            <form id="set-name-form" class="settings-form">
+              <input type="text" id="set-name-input" maxlength="100" autocomplete="name" />
+              <button class="btn" type="submit" data-i18n="act.save">Save</button>
+            </form>
+          </section>
+
+          <section class="settings-panel" data-settings-panel="appearance">
+            <h4 data-i18n="settings.theme">Theme</h4>
+            <div class="theme-picker" id="theme-picker">
+              <button type="button" id="theme-light" data-i18n="settings.light">Light</button>
+              <button type="button" id="theme-dark" data-i18n="settings.dark">Dark</button>
+            </div>
+            <h4 data-i18n="settings.lang">Language</h4>
+            <div class="lang-switch settings-lang" id="settings-lang"></div>
+            <p class="settings-hint" data-i18n="settings.langHint">
+              Applies immediately and is remembered in this browser.
+            </p>
+          </section>
+
+          <section class="settings-panel" data-settings-panel="password">
+            <form id="set-pass-form" class="settings-form">
+              <input type="password" id="set-pass-current" placeholder="Current password"
+                     data-i18n-ph="settings.passCurrent"
+                     autocomplete="current-password" />
+              <input type="password" id="set-pass-new" placeholder="New password (min 8 characters)"
+                     data-i18n-ph="settings.passNew"
+                     autocomplete="new-password" />
+              <button class="btn" type="submit" data-i18n="settings.passChange">Change password</button>
+            </form>
+          </section>
+
+          <section class="settings-panel" data-settings-panel="sessions">
+            <p class="settings-hint" data-i18n="settings.sessionsHint">
+              Every sign-in is its own session, shown with the device it was
+              made on. End the ones you do not recognise - that device is
+              signed out at once.
+            </p>
+            <div id="session-list" class="session-list"></div>
+            <button class="btn secondary" id="session-others-btn" type="button"
+                    data-i18n="settings.sessionsRevokeOthers">
+              Sign out everywhere else
+            </button>
+          </section>
+
+          <section class="settings-panel" data-settings-panel="passkeys">
+            <p class="settings-hint" data-i18n="settings.passkeysHint">
+              A passkey signs you in with a PIN or biometrics instead of a
+              password. The private half stays on your device; the server only
+              stores the public key, so a lost device can be removed here.
+            </p>
+            <div id="passkey-list" class="passkey-list"></div>
+            <button class="btn secondary" id="passkey-add-btn" type="button" data-i18n="settings.addPasskey">Add passkey</button>
+          </section>
+
+          <p class="settings-status" id="set-status"></p>
         </div>
-      </section>
-
-      <section class="settings-section">
-        <h4 data-i18n="settings.displayName">Display name</h4>
-        <form id="set-name-form" class="settings-form">
-          <input type="text" id="set-name-input" maxlength="100" autocomplete="name" />
-          <button class="btn" type="submit" data-i18n="act.save">Save</button>
-        </form>
-      </section>
-
-      <section class="settings-section">
-        <h4 data-i18n="settings.theme">Theme</h4>
-        <div class="theme-picker" id="theme-picker">
-          <button type="button" id="theme-light" data-i18n="settings.light">Light</button>
-          <button type="button" id="theme-dark" data-i18n="settings.dark">Dark</button>
-        </div>
-      </section>
-
-      <section class="settings-section">
-        <h4 data-i18n="settings.lang">Language</h4>
-        <div class="lang-switch settings-lang" id="settings-lang"></div>
-        <p class="settings-hint" data-i18n="settings.langHint">
-          Applies immediately and is remembered in this browser.
-        </p>
-      </section>
-
-      <section class="settings-section">
-        <h4 data-i18n="settings.password">Password</h4>
-        <form id="set-pass-form" class="settings-form">
-          <input type="password" id="set-pass-current" placeholder="Current password"
-                 data-i18n-ph="settings.passCurrent"
-                 autocomplete="current-password" />
-          <input type="password" id="set-pass-new" placeholder="New password (min 8 characters)"
-                 data-i18n-ph="settings.passNew"
-                 autocomplete="new-password" />
-          <button class="btn" type="submit" data-i18n="settings.passChange">Change password</button>
-        </form>
-      </section>
-
-      <section class="settings-section">
-        <h4 data-i18n="settings.sessions">Sessions</h4>
-        <p class="settings-hint" data-i18n="settings.sessionsHint">
-          Every sign-in is its own session, shown with the device it was
-          made on. End the ones you do not recognise - that device is
-          signed out at once.
-        </p>
-        <div id="session-list" class="session-list"></div>
-        <button class="btn secondary" id="session-others-btn" type="button"
-                data-i18n="settings.sessionsRevokeOthers">
-          Sign out everywhere else
-        </button>
-      </section>
-
-      <section class="settings-section">
-        <h4 data-i18n="settings.passkeys">Passkeys</h4>
-        <p class="settings-hint" data-i18n="settings.passkeysHint">
-          A passkey signs you in with a PIN or biometrics instead of a
-          password. The private half stays on your device; the server only
-          stores the public key, so a lost device can be removed here.
-        </p>
-        <div id="passkey-list" class="passkey-list"></div>
-        <button class="btn secondary" id="passkey-add-btn" type="button" data-i18n="settings.addPasskey">Add passkey</button>
-      </section>
-
-      <p class="settings-status" id="set-status"></p>
+      </div>
 
       <div class="modal-footer">
         <button class="btn secondary" id="set-close-btn" type="button" data-i18n="act.close">Close</button>

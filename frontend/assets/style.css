@@ -833,15 +833,71 @@ textarea#enc-rcv-key:focus {
 }
 
 /* ---------- user settings (topbar menu) ---------- */
-.settings-modal { width: min(480px, calc(100vw - 32px)); }
-.settings-section { margin-bottom: 18px; }
-.settings-section h4 {
+/* The dialog never outgrows the viewport: its pane list is capped and the
+   content column scrolls, so a long session list can no longer push the
+   footer off-screen (the 0.0.33 complaint the nav layout answers). */
+.settings-modal {
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(86vh, 660px);
+  display: flex;
+  flex-direction: column;
+}
+.settings-layout {
+  display: flex;
+  gap: 18px;
+  flex: 1;
+  min-height: 0;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 168px;
+  flex: 0 0 auto;
+  border-right: 1px solid var(--border);
+  padding-right: 12px;
+}
+.settings-nav-btn {
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+}
+.settings-nav-btn:hover { background: var(--row-hover); }
+.settings-nav-btn.active {
+  background: var(--row-hover);
+  color: var(--accent);
+  font-weight: 600;
+}
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.settings-panel { margin-bottom: 18px; }
+.settings-panel h4 {
   margin: 0 0 8px;
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.4px;
   color: var(--muted);
+}
+@media (max-width: 560px) {
+  .settings-layout { flex-direction: column; gap: 12px; }
+  .settings-nav {
+    flex-direction: row;
+    width: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 0 0 8px;
+    overflow-x: auto;
+  }
 }
 .settings-info { display: flex; flex-direction: column; gap: 5px; font-size: 14px; }
 .settings-info .label {
