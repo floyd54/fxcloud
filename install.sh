@@ -22,7 +22,7 @@
 #   FXCLOUD_SECURE_COOKIE  1 to mark cookies Secure (use behind HTTPS)
 #   FXCLOUD_MAX_UPLOAD_MB  largest upload in MiB (default: 1024)
 #   FXCLOUD_TRASH_DAYS     days a trashed entry is kept (default: 30)
-#   FXCLOUD_SESSION_TTL    session lifetime in seconds (default: 2592000)
+#   FXCLOUD_SESSION_TTL    session lifetime in seconds (default: 604800 = 7 days, sliding)
 #   RUST_LOG               log filter (default: fxcloud=info)
 #
 # The knobs configure the unit on a fresh install only; afterwards edit
