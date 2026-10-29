@@ -2443,6 +2443,65 @@ grep -q 'FXCLOUD_ORIGIN' "$REPO/src/config.rs" \
   && ok "the deployment origin is configurable (FXCLOUD_ORIGIN)" \
   || bad "no FXCLOUD_ORIGIN knob in config.rs"
 
+# ---- security headers on every response (Audit.md F2) ----
+curl -sD "$ROOT/hd.txt" -o /dev/null "$BASE/login"
+grep -qi '^x-content-type-options: nosniff' "$ROOT/hd.txt" \
+  && ok "the UI carries nosniff" \
+  || bad "no X-Content-Type-Options on /login"
+grep -qi '^x-frame-options: SAMEORIGIN' "$ROOT/hd.txt" \
+  && ok "the UI refuses cross-origin framing (SAMEORIGIN, not DENY: previews self-embed)" \
+  || bad "no X-Frame-Options on /login"
+grep -qi '^referrer-policy: same-origin' "$ROOT/hd.txt" \
+  && ok "the UI leaks no referrer past its own origin" \
+  || bad "no Referrer-Policy on /login"
+CSP_LINE=$(grep -i '^content-security-policy:' "$ROOT/hd.txt")
+echo "$CSP_LINE" | grep -q "script-src 'self' 'wasm-unsafe-eval'" \
+  && echo "$CSP_LINE" | grep -q "frame-ancestors 'none'" \
+  && echo "$CSP_LINE" | grep -q "connect-src 'self'" \
+  && echo "$CSP_LINE" | grep -q "object-src 'none'" \
+  && echo "$CSP_LINE" | grep -q "base-uri 'self'" \
+  && ok "the app CSP pins scripts to its own assets and blocks embedding" \
+  || bad "app CSP missing or weakened: $CSP_LINE"
+grep -o 'WebAssembly\.instantiate' "$REPO/frontend/assets/hashwasm-argon2.js" >/dev/null \
+  && ok "the CSP's wasm exception has a reason (hashwasm compiles WASM)" \
+  || bad "hashwasm no longer compiles WASM - revisit the CSP exception"
+curl -sD "$ROOT/hd.txt" -o /dev/null "$BASE/api/me"
+grep -qi '^x-content-type-options: nosniff' "$ROOT/hd.txt" \
+  && ok "the API answers carry the headers too" \
+  || bad "API responses lack the security headers"
+grep -q 'entry(header::CONTENT_SECURITY_POLICY).or_insert' "$REPO/src/web/mod.rs" \
+  && ok "the header layer never overwrites a route's own CSP (preview sandbox)" \
+  || bad "the security-header layer force-overwrites route headers"
+grep -q 'STRICT_TRANSPORT_SECURITY' "$REPO/src/web/mod.rs" \
+  && ok "HSTS rides along when the deployment declares HTTPS" \
+  || bad "no HSTS in the header layer"
+# The knob that flips Secure cookies also has to flip HSTS; over plain HTTP
+# the suite restarts once with it set, then returns to the default server.
+kill "$(cat "$ROOT/server.pid")" 2>/dev/null
+wait 2>/dev/null
+FXCLOUD_DATA="$DATA" FXCLOUD_PORT=$PORT FXCLOUD_TRASH_DAYS=30 FXCLOUD_TRASH_SWEEP_SECS=2 \
+  FXCLOUD_SECURE_COOKIE=1 "$BIN" >>"$ROOT/server.log" 2>&1 &
+echo $! > "$ROOT/server.pid"
+for _ in $(seq 1 100); do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/me")" != "000" ] && break
+  sleep 0.2
+done
+curl -sD "$ROOT/hd.txt" -o /dev/null "$BASE/login"
+grep -qi '^strict-transport-security: max-age=' "$ROOT/hd.txt" \
+  && ok "FXCLOUD_SECURE_COOKIE=1 turns on HSTS" \
+  || bad "secure-cookie mode sends no HSTS"
+curl -sD "$ROOT/hd.txt" -o /dev/null -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"correct-horse"}' "$BASE/api/login"
+grep -qi '^set-cookie: fxcloud_session=.*secure' "$ROOT/hd.txt" \
+  && ok "secure-cookie mode marks the cookie Secure" \
+  || bad "secure-cookie mode sends no Secure attribute"
+restart_server || { bad "server did not return to plain mode"; exit 1; }
+curl -sD "$ROOT/hd.txt" -o /dev/null "$BASE/login"
+grep -qi '^strict-transport-security' "$ROOT/hd.txt" \
+  && bad "plain-HTTP mode must not send HSTS" \
+  || ok "plain-HTTP mode stays HSTS-free"
+
 # ---- install.sh, Dockerfile, --version: the shipped routines ----
 note "one-line install/update and the container build"
 # --version must answer and exit, not start a server (timeout would fire).

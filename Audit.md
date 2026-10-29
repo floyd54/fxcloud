@@ -9,7 +9,7 @@ Method: manual review of every authentication, authorization, cryptographic
 and file-handling code path in this repository, plus an automated
 dependency scan (`cargo audit`, RustSec advisory database: **0
 vulnerabilities across 211 crate dependencies**). The integration suite
-(485 checks) and the unit tests (41) were green at the time of review.
+(496 checks) and the unit tests (41) were green at the time of review.
 
 This document is a living record. Findings carry an id, a severity and a
 status; the status line moves as fixes land. Severity uses the usual
@@ -40,7 +40,7 @@ side-channel attacks against WebCrypto/Argon2 implementations.
 | id | area | severity | status |
 |----|------|----------|--------|
 | F1 | no rate limiting / lockout on the authentication endpoints | Medium | open |
-| F2 | no security headers on the UI (CSP, clickjacking, HSTS, nosniff) | Medium | open |
+| F2 | no security headers on the UI (CSP, clickjacking, HSTS, nosniff) | Medium | fixed in v0.0.29 |
 | F3 | password change and admin reset keep existing sessions alive | Medium | open |
 | F4 | sessions are long-lived (30 days) with no rotation or management UI | Medium | open |
 | F5 | a share UPDATE-grantee can replace an existing file/folder key record | Low-Med | open |
@@ -80,7 +80,23 @@ attempt counter per account with exponential backoff, and `Retry-After`
 on the 429. The suite can pin the behaviour the way it pins the
 origin-refusal warnings.
 
-### F2 - No security headers on the UI (Medium)
+### F2 - No security headers on the UI (Medium) - fixed in v0.0.29
+
+*Fixed.* A `security_headers` middleware in `src/web/mod.rs` now attaches
+`nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: same-origin`
+and a strict CSP to every response, only when the route has not set the
+header itself (the preview route keeps its stronger `sandbox` CSP, the
+download route keeps its own `nosniff`). `SAMEORIGIN` rather than `DENY`
+because the app embeds its own previews in an iframe. The CSP allows
+`'wasm-unsafe-eval'` in `script-src` because the client-side Argon2id
+compiles WebAssembly (`hashwasm-argon2.js`); `img-src`/`media-src`/
+`frame-src` carry `blob:` for the decrypt-and-blob preview flow and
+`https:` so Markdown previews may reference external images. HSTS
+(`max-age=15552000`) rides along when `FXCLOUD_SECURE_COOKIE` is set, so
+plain-HTTP installs are unaffected. Eleven suite pins cover the header
+set, the CSP directives, the never-overwrite rule and both HSTS modes.
+
+The original report follows, kept for the record.
 
 `src/web/ui.rs::serve_asset` sends only `Content-Type` and
 `Cache-Control`. The HTML pages carry no CSP, no clickjacking
@@ -409,8 +425,7 @@ future changes know which properties to preserve.
 
 ## Suggested order of work
 
-1. F2 (security headers) - one layer, immediately effective, and it
-   protects every future change.
+1. ~~F2 (security headers)~~ - done in v0.0.29.
 2. F5 (key-record replace rule) - small, closes a real abuse path in
    the share model.
 3. F3 (invalidate sessions on password change / admin reset) - one
