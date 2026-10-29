@@ -114,6 +114,10 @@ chmod +x fxcloud-<tag>-x86_64-unknown-linux-musl
 FXCLOUD_DATA=/srv/fxcloud ./fxcloud-<tag>-x86_64-unknown-linux-musl
 ```
 
+Every release page carries notes on what changed and why it matters;
+the texts are committed next to the code in [`notes/`](notes/) and
+attached automatically when the release is tagged.
+
 Other platforms (macOS, ARM64, Windows, ...) build from source with a plain
 `cargo build --release` - no extra tooling. Why only one prebuilt target?
 There is exactly one development machine behind this project; new tags get

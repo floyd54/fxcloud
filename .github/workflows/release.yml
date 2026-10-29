@@ -32,8 +32,20 @@ jobs:
           cp target/x86_64-unknown-linux-musl/release/fxcloud
           "fxcloud-${GITHUB_REF_NAME}-x86_64-unknown-linux-musl"
 
+      # The release text is written when the release is prepared and lives
+      # in the repository (notes/<tag>.md), so it is reviewable history and
+      # a tag without notes still publishes a readable page.
+      - name: Prepare release notes
+        run: |
+          if [ -f "notes/${GITHUB_REF_NAME}.md" ]; then
+            cp "notes/${GITHUB_REF_NAME}.md" release-notes.md
+          else
+            printf 'See the repository commit history for the changes in this release.\n' > release-notes.md
+          fi
+
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
           files: fxcloud-*-x86_64-unknown-linux-musl
           fail_on_unmatched_files: true
+          body_path: release-notes.md
