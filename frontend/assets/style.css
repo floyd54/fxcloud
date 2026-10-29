@@ -1000,6 +1000,23 @@ textarea#enc-rcv-key:focus {
   border-color: #fff;
   background: rgba(255, 255, 255, 0.22);
 }
+/* The menu opens inside the blue topbar DOM-wise, so it walks into the
+   same failure class the comment above .user-dropdown documents:
+   `.topbar button` is more specific than the unprefixed .lang-btn and
+   painted the language names white onto the menu's white panel - the
+   light theme got white-on-white, unreadable - while also forcing the
+   topbar's padding and sizing onto every row. Same remedy: the
+   .topbar prefix, with hover and active restated as the dropdown does
+   (an equally specific unprefixed hover would lose to this block). */
+.topbar .lang-btn {
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-size: inherit;
+  background: transparent;
+  color: var(--text);
+}
+.topbar .lang-btn:hover { background: rgba(127, 127, 127, 0.16); }
+.topbar .lang-btn.active { background: rgba(127, 127, 127, 0.22); }
 .settings-lang { display: flex; }
 .auth-lang { display: flex; justify-content: center; margin: 10px 0 2px; }
 

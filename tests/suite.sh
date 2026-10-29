@@ -1793,6 +1793,21 @@ grep -q 'aria-haspopup' "$I18N_JS" \
 grep -q 'Escape' "$I18N_JS" \
   && ok "the dropdown closes on Escape" \
   || bad "the dropdown cannot be closed with the keyboard"
+# The topbar host: the menu opens inside the blue topbar DOM-wise, so
+# the unprefixed .lang-btn lost to `.topbar button` (higher specificity)
+# and the language names were painted white onto the menu's white panel
+# - white-on-white in the light theme, invisible. The .topbar prefix is
+# the fix (the same remedy .user-dropdown got, same comment above it);
+# pin the block so it cannot be "simplified" back into the bug, and pin
+# the restated hover/active the prefix otherwise silently kills.
+TOPBAR_LANG=$(sed -n '/^\.topbar \.lang-btn {/,/^}/p' "$REPO/frontend/assets/style.css" | grep -c 'color: var(--text)')
+[ "$TOPBAR_LANG" = "1" ] \
+  && ok "the topbar language menu reads with the theme's text color" \
+  || bad "the topbar language menu is white-on-white again ($TOPBAR_LANG)"
+TOPBAR_LANG_HOV=$(grep -c '^\.topbar \.lang-btn:hover\|^\.topbar \.lang-btn\.active' "$REPO/frontend/assets/style.css")
+[ "$TOPBAR_LANG_HOV" = "2" ] \
+  && ok "the topbar language rows keep their hover and active states" \
+  || bad "topbar language row states appear $TOPBAR_LANG_HOV times, want 2"
 # A fake DOM: render the dropdown, count its parts, switch to Klingon,
 # and read the redrawn trigger - the structure a browser would get.
 if "$NODE" -e '
