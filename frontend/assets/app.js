@@ -541,6 +541,7 @@
           ]);
         }
         items.push([t("bulk.download"), () => downloadFile(entry.id, entry.name, entry)]);
+        items.push([t("versions.history"), () => openVersionsDialog(entry, perms)]);
       }
       if (isOwner) {
         items.push([t("bulk.share"), () => openShareDialog([entry])]);
@@ -591,6 +592,145 @@
   });
   window.addEventListener("resize", closeRowMenu);
   window.addEventListener("scroll", closeRowMenu, true);
+
+  // ---------- version history (concepts/versioning.md) ----------
+  // One dialog per file: rows of time and size, with download always on and
+  // restore/delete only for a viewer who holds UPDATE. Restoring exchanges
+  // the bytes server-side, so the row list and the file listing both reload.
+
+  let versionsEntry = null; // the file the dialog is open for
+  let versionsPerms = 0; // its permission mask, for re-renders after a change
+
+  function closeVersionsDialog() {
+    document.getElementById("versions-modal").style.display = "none";
+    versionsEntry = null;
+    versionsPerms = 0;
+  }
+
+  async function openVersionsDialog(entry, perms) {
+    versionsEntry = entry;
+    versionsPerms = perms;
+    document.getElementById("versions-title").textContent = t("versions.title1", {
+      name: entry.name,
+    });
+    document.getElementById("versions-modal").style.display = "flex";
+    await loadVersions();
+  }
+
+  async function loadVersions() {
+    const list = document.getElementById("versions-list");
+    if (!versionsEntry) return;
+    list.textContent = "";
+    try {
+      const res = await api(
+        "/api/files/versions?id=" + encodeURIComponent(versionsEntry.id)
+      );
+      const data = await res.json();
+      const versions = data.versions || [];
+      if (!versions.length) {
+        const empty = document.createElement("p");
+        empty.className = "passkey-empty";
+        empty.textContent = t("versions.empty");
+        list.appendChild(empty);
+        return;
+      }
+      for (const v of versions) list.appendChild(versionRow(v));
+    } catch (e) {
+      const err = document.createElement("p");
+      err.className = "passkey-empty";
+      err.textContent = e.message;
+      list.appendChild(err);
+    }
+  }
+
+  function versionRow(v) {
+    const row = document.createElement("div");
+    row.className = "version-row";
+    const meta = document.createElement("div");
+    meta.className = "version-meta";
+    const label = document.createElement("span");
+    label.className = "version-time";
+    label.textContent = formatDate(v.created_at);
+    const sub = document.createElement("span");
+    sub.className = "version-sub";
+    sub.textContent = fmtBytes(v.size);
+    meta.appendChild(label);
+    meta.appendChild(sub);
+    row.appendChild(meta);
+
+    const actions = document.createElement("div");
+    actions.className = "version-actions";
+    const dl = document.createElement("button");
+    dl.type = "button";
+    dl.textContent = t("bulk.download");
+    dl.addEventListener("click", () => downloadVersion(v.id));
+    actions.appendChild(dl);
+    if (versionsPerms & PERM_UPDATE) {
+      const restore = document.createElement("button");
+      restore.type = "button";
+      restore.textContent = t("bulk.restore");
+      restore.addEventListener("click", () => restoreVersion(v));
+      actions.appendChild(restore);
+      const drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "danger";
+      drop.textContent = t("bulk.delete");
+      drop.addEventListener("click", () => deleteVersion(v));
+      actions.appendChild(drop);
+    }
+    row.appendChild(actions);
+    return row;
+  }
+
+  // A download through navigation, not fetch: the answer is an attachment
+  // stream with its own range support, so the browser's download machinery
+  // takes it while this page stays exactly where it is.
+  function downloadVersion(vid) {
+    if (!versionsEntry) return;
+    window.location.href =
+      "/api/files/version/download?id=" +
+      encodeURIComponent(versionsEntry.id) +
+      "&vid=" +
+      encodeURIComponent(vid);
+  }
+
+  async function restoreVersion(v) {
+    if (!versionsEntry) return;
+    if (!confirm(t("versions.restoreConfirm"))) return;
+    try {
+      await api(
+        "/api/files/version/restore?id=" +
+          encodeURIComponent(versionsEntry.id) +
+          "&vid=" +
+          encodeURIComponent(v.id),
+        { method: "POST" }
+      );
+      // The exchange changed both sides: history is re-numbered and the
+      // entry row (size, modified) is new, so both views reload.
+      await loadVersions();
+      await loadFiles(currentParent);
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function deleteVersion(v) {
+    if (!versionsEntry) return;
+    if (!confirm(t("versions.deleteConfirm"))) return;
+    try {
+      await api(
+        "/api/files/version?id=" +
+          encodeURIComponent(versionsEntry.id) +
+          "&vid=" +
+          encodeURIComponent(v.id),
+        { method: "DELETE" }
+      );
+      await loadVersions();
+      await loadFiles(currentParent);
+    } catch (e) {
+      alert(e.message);
+    }
+  }
 
   // ---------- data loading ----------
   async function loadFiles(parent) {
@@ -2226,6 +2366,13 @@
         : "";
     document.getElementById("set-name-input").value =
       meData.display_name || meData.username;
+    // Retention bounds with their schema defaults when a row predates the
+    // columns (a missing value is a migration that has not run yet, and 20 /
+    // 180 are what the server would apply on the next insert anyway).
+    document.getElementById("set-keep-n").value =
+      meData.version_keep_n != null ? meData.version_keep_n : 20;
+    document.getElementById("set-keep-days").value =
+      meData.version_keep_days != null ? meData.version_keep_days : 180;
     markThemeChoice(meData.theme || "light");
     setSettingsStatus("");
     activateSettingsTab("account");
@@ -2281,6 +2428,29 @@
     } catch (e) {
       applyTheme(meData && meData.theme);
       markThemeChoice((meData && meData.theme) || "light");
+      setSettingsStatus(e.message, true);
+    }
+  }
+
+  // Version retention: the two bounds of one section save together, and 0
+  // turns the respective bound off (the server rejects negatives). The
+  // answer is the saved user row, so the stored values here never guess.
+  async function saveVersioning() {
+    const keepN = parseInt(document.getElementById("set-keep-n").value, 10);
+    const keepDays = parseInt(document.getElementById("set-keep-days").value, 10);
+    if (!Number.isFinite(keepN) || keepN < 0 || !Number.isFinite(keepDays) || keepDays < 0) {
+      setSettingsStatus(t("settings.versioningHint"), true);
+      return;
+    }
+    try {
+      const res = await api("/api/me", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version_keep_n: keepN, version_keep_days: keepDays }),
+      });
+      meData = await res.json();
+      setSettingsStatus(t("settings.versioningSaved"));
+    } catch (e) {
       setSettingsStatus(e.message, true);
     }
   }
@@ -2834,6 +3004,14 @@
   document.getElementById("set-name-form").addEventListener("submit", (e) => {
     e.preventDefault();
     saveDisplayName(document.getElementById("set-name-input").value);
+  });
+  document.getElementById("set-versioning-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    saveVersioning();
+  });
+  document.getElementById("versions-close-btn").addEventListener("click", closeVersionsDialog);
+  document.getElementById("versions-modal").addEventListener("click", (e) => {
+    if (e.target === document.getElementById("versions-modal")) closeVersionsDialog();
   });
   document.getElementById("theme-light").addEventListener("click", () => saveTheme("light"));
   document.getElementById("theme-dark").addEventListener("click", () => saveTheme("dark"));

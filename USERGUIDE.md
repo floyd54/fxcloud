@@ -110,6 +110,28 @@ The file explorer works like a desktop file manager, in the browser:
 ZIP downloads are assembled per request and capped at 1 GiB uncompressed;
 take fewer items if the error tells you to.
 
+### Version history
+
+Every content replacement - the editor's **Save**, a WebDAV `PUT` - keeps
+the replaced bytes as a restorable version, so a wrong save is never the
+end of a file. The row menu's **Version history** opens the file's
+history, newest first, with time and size per version:
+
+- **Download** fetches that version's exact bytes, ranges included (a
+  player can seek in a version like in the current file).
+- **Restore** exchanges: the chosen version becomes the file's content and
+  what was current becomes the newest version - a restore is itself
+  undoable.
+- **Delete** removes one version together with its bytes.
+
+A read-only share sees the history and can download versions; changing it
+needs write permission. Kept versions count against your quota, and the
+trash keeps a file's history until the file is purged. Two bounds in
+**Settings** ("Version history") keep the history in check: how many
+versions to keep per file, and an age in days - `0` disables either bound.
+A background sweep applies the age bound on the same cadence as the trash
+purge; the count bound is applied whenever a version is saved.
+
 ## 5. Sharing
 
 Share files or folders with other accounts of the same instance:

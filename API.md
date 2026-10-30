@@ -53,6 +53,10 @@ ceremony endpoints are public.
 | POST   | `/api/files/trash/restore` | `{id}`                           | Bring a trashed entry back (suffix on name clash) |
 | POST   | `/api/files/trash/purge` | `{id}`                            | Delete one trashed entry for good |
 | POST   | `/api/files/trash/empty` | -                                 | Delete the caller's whole trash now |
+| GET    | `/api/files/versions`  | `?id=<fileId>`                     | Version history of a file, newest first (READ; a share grantee sees it too) |
+| GET    | `/api/files/version/download` | `?id=<fileId>&vid=<versionId>` | Stream one kept version (206/416 ranges like `/download`; type from the version's `enc_version`) |
+| POST   | `/api/files/version/restore` | `?id=<fileId>&vid=<versionId>` | Exchange restore: the version becomes the content, the outgoing content becomes the newest version (UPDATE) |
+| DELETE | `/api/files/version`   | `?id=<fileId>&vid=<versionId>`     | Drop one version and its bytes (UPDATE) |
 | POST   | `/api/shares`           | `{file_id, username, permissions?, envelope?}` | Share with a user (`envelope` = opaque key envelope sealed to the grantee, ENCRYPTION.md 5.5; empty or > 8192 chars = 400) |
 | POST   | `/api/shares/batch`     | `{items: [{file_id, envelope?}], username, permissions?}` | Share a selection with one user (one envelope per item; the old `file_ids` body no longer deserializes) |
 | DELETE | `/api/shares/:id`       | -                                  | Revoke share (owner/grantee)|

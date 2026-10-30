@@ -111,6 +111,20 @@
     </div>
   </div>
 
+  <!-- Version history -->
+  <div class="modal-backdrop" id="versions-modal" style="display:none">
+    <div class="modal">
+      <!-- The title carries the file name (set by openVersionsDialog), so no
+           data-i18n mark: the language switch would repaint the generic
+           label over it. -->
+      <h3 id="versions-title"></h3>
+      <div id="versions-list" class="version-list"></div>
+      <div class="modal-footer">
+        <button class="btn secondary" id="versions-close-btn" type="button" data-i18n="act.close">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Move/Copy destination picker -->
   <div class="modal-backdrop" id="transfer-modal" style="display:none">
     <div class="modal pick-modal">
@@ -153,6 +167,17 @@
             <h4 data-i18n="settings.displayName">Display name</h4>
             <form id="set-name-form" class="settings-form">
               <input type="text" id="set-name-input" maxlength="100" autocomplete="name" />
+              <button class="btn" type="submit" data-i18n="act.save">Save</button>
+            </form>
+            <h4 data-i18n="settings.versioning">Version history</h4>
+            <p class="settings-hint" data-i18n="settings.versioningHint">
+              How many versions of each file are kept. 0 disables the respective bound.
+            </p>
+            <form id="set-versioning-form" class="settings-form">
+              <label class="label" for="set-keep-n" data-i18n="settings.keepN">Versions per file</label>
+              <input type="number" id="set-keep-n" min="0" step="1" inputmode="numeric" />
+              <label class="label" for="set-keep-days" data-i18n="settings.keepDays">Keep for days</label>
+              <input type="number" id="set-keep-days" min="0" step="1" inputmode="numeric" />
               <button class="btn" type="submit" data-i18n="act.save">Save</button>
             </form>
           </section>

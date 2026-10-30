@@ -456,11 +456,18 @@ async fn put_finish(
                     crate::files::resolve_mime(declared.as_deref(), sample)
                 };
                 let _write = state.files.begin_replace(old.id).await;
+                let pins_old = old.size > 0;
                 if let Err(e) = state
                     .db
-                    .update_file_meta(owner_id, old.id, size, mime, None)
+                    .update_file_meta(owner_id, old.id, size, mime, None, pins_old)
                     .await
                 {
+                    return Err(e.into_response());
+                }
+                // The outgoing bytes are pinned under their version name
+                // before the rename publishes the new ones - same history
+                // step the editor save takes (concepts/versioning.md).
+                if let Err(e) = state.files.pin_content_as_version(owner_id, old).await {
                     return Err(e.into_response());
                 }
                 if let Err(e) = state.files.commit_blob(old, temp).await {

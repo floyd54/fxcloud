@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use chrono::Utc;
+
 use crate::config::Config;
 use crate::db::Db;
 use crate::error::AppError;
@@ -187,7 +189,7 @@ impl FileService {
     /// layout). Public so the ZIP builder can stream blobs without loading
     /// whole files into memory first.
     pub fn blob_path(&self, blob: BlobRef) -> PathBuf {
-        self.blob_dir.join(Self::blob_rel_path(blob))
+        self.blob_dir.join(Self::blob_rel_path(&blob))
     }
 
     /// Pre-layout location of a blob, `<blob_dir>/<file-id>`. Still consulted
@@ -198,14 +200,33 @@ impl FileService {
     }
 
     /// Where a blob lives, relative to the blob dir.
-    fn blob_rel_path(blob: BlobRef) -> PathBuf {
-        let (h1, h2) = Self::id_levels(blob.file_id);
-        PathBuf::new()
-            .join(blob.owner_id.to_string())
-            .join(blob.created_at.format("%Y").to_string())
-            .join(h1)
-            .join(h2)
-            .join(blob.file_id.to_string())
+    fn blob_rel_path(blob: &BlobRef) -> PathBuf {
+        match blob {
+            BlobRef::Entry {
+                file_id,
+                owner_id,
+                created_at,
+            } => {
+                let (h1, h2) = Self::id_levels(*file_id);
+                PathBuf::new()
+                    .join(owner_id.to_string())
+                    .join(created_at.format("%Y").to_string())
+                    .join(h1)
+                    .join(h2)
+                    .join(file_id.to_string())
+            }
+            // One directory per file, one name per attempt: the key already
+            // is time + random bytes, so no level split is needed here and
+            // the path reads straight off the row (concepts/versioning.md
+            // section 3).
+            BlobRef::Version {
+                file_id,
+                version_key,
+            } => PathBuf::new()
+                .join("_versions")
+                .join(file_id.to_string())
+                .join(version_key),
+        }
     }
 
     /// Same split for blobs whose database row is gone: `_orphans/<h1>/<h2>`,
@@ -306,6 +327,96 @@ impl FileService {
             .map_err(|e| AppError::Internal(anyhow::anyhow!("committing blob {path:?}: {e}")))
     }
 
+    /// On-disk location of one kept version's bytes: `_versions/<file_id>/`
+    /// under the blob dir (see [`BlobRef::Version`]).
+    pub fn version_path(&self, file_id: i64, key: &str) -> PathBuf {
+        self.blob_path(BlobRef::Version {
+            file_id,
+            version_key: key.to_string(),
+        })
+    }
+
+    /// A fresh on-disk key for a version blob: microseconds + random bytes.
+    ///
+    /// The concept orders the link *before* its row (a crash then costs an
+    /// orphan file, never a row pointing at nothing), so the name has to be
+    /// unique by construction - time alone is too close together for two
+    /// saves under the same lock, and a lookup cannot exist yet.
+    pub fn fresh_version_key() -> String {
+        use rand::Rng;
+        let nonce: u64 = rand::thread_rng().gen();
+        format!("{}-{:016x}", Utc::now().timestamp_micros(), nonce)
+    }
+
+    /// Give an entry's outgoing content its version name: a hardlink, so the
+    /// same inode lives on under a second name and the rename that publishes
+    /// the new content cannot make the old bytes disappear. Metadata-only -
+    /// no copy, constant memory for any file size.
+    ///
+    /// Runs under the row's write lock, before the version row exists (see
+    /// [`FileService::fresh_version_key`]).
+    ///
+    /// `Ok(false)` means there was nothing to pin: the blob is not on disk
+    /// either (a row whose bytes are already gone), and a version row
+    /// pointing at a link that was never made must not be written - the save
+    /// continues without a history step.
+    pub async fn pin_version(&self, entry: &FileEntry, key: &str) -> Result<bool, AppError> {
+        let src = self.blob_path(BlobRef::from(entry));
+        let dst = self.version_path(entry.id, key);
+        if let Some(parent) = dst.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("creating version dir {parent:?}: {e}"))
+            })?;
+        }
+        match tokio::fs::hard_link(&src, &dst).await {
+            Ok(()) => Ok(true),
+            // Fall back to the flat layout, like every other read of an entry
+            // blob does (see the module docs).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match tokio::fs::hard_link(self.legacy_blob_path(entry.id), &dst).await {
+                    Ok(()) => Ok(true),
+                    Err(le) if le.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                    Err(e) => Err(AppError::Internal(anyhow::anyhow!(
+                        "pinning version of file {}: {e}",
+                        entry.id
+                    ))),
+                }
+            }
+            Err(e) => Err(AppError::Internal(anyhow::anyhow!(
+                "pinning version of file {}: {e}",
+                entry.id
+            ))),
+        }
+    }
+
+    /// The history step of a content replacement, in the concept's order
+    /// (concepts/versioning.md section 4): name the outgoing blob, then
+    /// write its row - retention runs inside the insert - then unlink what
+    /// retention dropped. Held under the caller's row write lock, with the
+    /// UPDATE grant already checked.
+    ///
+    /// `Ok(false)` means the entry had no outgoing bytes (an empty file's
+    /// first fill, for instance): nothing to pin, no row written.
+    pub async fn pin_content_as_version(
+        &self,
+        acting_user: i64,
+        entry: &FileEntry,
+    ) -> Result<bool, AppError> {
+        if entry.size <= 0 {
+            return Ok(false);
+        }
+        let key = Self::fresh_version_key();
+        if !self.pin_version(entry, &key).await? {
+            return Ok(false);
+        }
+        let pruned = self
+            .db
+            .insert_version(acting_user, entry.id, entry.size, entry.enc_version, key)
+            .await?;
+        self.delete_blobs(&pruned).await;
+        Ok(true)
+    }
+
     /// Copy a readable file's bytes to another entry's blob (WebDAV `COPY`
     /// and the API's copy route): the same permission check as every read,
     /// then a filesystem-level copy - 64 KiB on the kernel's side, never the
@@ -342,6 +453,67 @@ impl FileService {
                 "copying blob {src:?} -> {dst_path:?}: {e}"
             ))),
         }
+    }
+
+    /// Exchange a version in (concepts/versioning.md section 4): the chosen
+    /// version's bytes become the entry's content, the outgoing content
+    /// becomes a new version. Every step is a hardlink or a rename, so
+    /// neither direction copies a byte and the swap stays flat in memory for
+    /// any file size - the same trade the replace flow takes (section 4).
+    ///
+    /// Order: the UPDATE grant first, before any filesystem work (permissions
+    /// are not something to discover halfway through an exchange), then the
+    /// outgoing content is named - link, then row - then the chosen bytes are
+    /// renamed onto the entry, then the rows catch up. A crash at any point
+    /// leaves an orphan file or a briefly duplicated readable row, never an
+    /// unreadable entry. Retention runs with the outgoing row's insert.
+    pub async fn restore_version(
+        &self,
+        acting_user: i64,
+        file_id: i64,
+        vid: i64,
+    ) -> Result<(), AppError> {
+        self.db.require_update(acting_user, file_id).await?;
+        let _lock = self.begin_replace(file_id).await;
+        let entry = self
+            .db
+            .entry_for_read(acting_user, file_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        if entry.is_dir {
+            return Err(AppError::BadRequest("cannot restore a folder".into()));
+        }
+        let chosen = self.db.version_for_read(acting_user, file_id, vid).await?;
+
+        // 1 + 2: the outgoing content becomes the newest version. An entry
+        // with no outgoing bytes (still empty) restores without one - there
+        // was nothing to keep.
+        self.pin_content_as_version(acting_user, &entry).await?;
+        // 3: the chosen inode takes the entry's name - linked to a temp name
+        // first, so a failure here never leaves the entry half-renamed.
+        let src = self.version_path(file_id, &chosen.blob_key);
+        let temp = self.temp_path();
+        if let Err(e) = tokio::fs::hard_link(&src, &temp).await {
+            let _ = tokio::fs::remove_file(&temp).await;
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "linking version {vid} of file {file_id}: {e}"
+            )));
+        }
+        let entry_path = self.blob_path(BlobRef::from(&entry));
+        if let Err(e) = tokio::fs::rename(&temp, &entry_path).await {
+            let _ = tokio::fs::remove_file(&temp).await;
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "publishing restored version {vid}: {e}"
+            )));
+        }
+        // 4: the row follows its bytes (size, enc_version, modified_at; the
+        // chosen row is dropped - the entry holds its inode now), then the
+        // redundant version name goes. Only the name can disappear: unlink
+        // after the row, so a crash in between leaves an orphan file rather
+        // than a row pointing at nothing.
+        self.db.finish_restore(acting_user, file_id, vid).await?;
+        let _ = tokio::fs::remove_file(&src).await;
+        Ok(())
     }
 
     /// Remove temp files interrupted uploads left behind: a restart kills
@@ -391,10 +563,15 @@ impl FileService {
 
     /// Delete blobs for removed file entries (best-effort: also tries the flat
     /// layout a blob may not have been migrated out of yet).
+    ///
+    /// Version blobs have no flat layout and no second chance: they only ever
+    /// lived in `_versions/`, so they get their path and nothing else.
     pub async fn delete_blobs(&self, blobs: &[BlobRef]) {
         for blob in blobs {
-            let _ = tokio::fs::remove_file(self.blob_path(*blob)).await;
-            let _ = tokio::fs::remove_file(self.legacy_blob_path(blob.file_id)).await;
+            let _ = tokio::fs::remove_file(self.blob_path(blob.clone())).await;
+            if let BlobRef::Entry { file_id, .. } = blob {
+                let _ = tokio::fs::remove_file(self.legacy_blob_path(*file_id)).await;
+            }
         }
     }
 
@@ -475,7 +652,7 @@ impl FileService {
                 continue;
             };
             let (rel, orphans) = match origins.get(&id) {
-                Some(blob) => (Self::blob_rel_path(*blob), false),
+                Some(blob) => (Self::blob_rel_path(blob), false),
                 None => (Self::orphan_rel_path(id), true),
             };
             let dst = blob_dir.join(rel);

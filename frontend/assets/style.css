@@ -1034,10 +1034,12 @@ textarea#enc-rcv-key:focus {
   color: var(--muted);
 }
 .passkey-list,
-.session-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.session-list,
+.version-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
 .passkey-empty { margin: 0; font-size: 13px; color: var(--muted); }
 .passkey-row,
-.session-row {
+.session-row,
+.version-row {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1047,9 +1049,11 @@ textarea#enc-rcv-key:focus {
   background: var(--panel);
 }
 .passkey-meta,
-.session-meta { flex: 1; min-width: 0; }
+.session-meta,
+.version-meta { flex: 1; min-width: 0; }
 .passkey-label,
-.session-label {
+.session-label,
+.version-time {
   display: block;
   font-size: 13.5px;
   font-weight: 600;
@@ -1058,11 +1062,14 @@ textarea#enc-rcv-key:focus {
   white-space: nowrap;
 }
 .passkey-sub,
-.session-sub { display: block; font-size: 12px; color: var(--muted); }
+.session-sub,
+.version-sub { display: block; font-size: 12px; color: var(--muted); }
 .passkey-actions,
-.session-actions { display: flex; gap: 6px; }
+.session-actions,
+.version-actions { display: flex; gap: 6px; }
 .passkey-actions button,
-.session-actions button {
+.session-actions button,
+.version-actions button {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text);
@@ -1072,9 +1079,11 @@ textarea#enc-rcv-key:focus {
   cursor: pointer;
 }
 .passkey-actions button:hover,
-.session-actions button:hover { background: var(--row-hover); }
+.session-actions button:hover,
+.version-actions button:hover { background: var(--row-hover); }
 .passkey-actions button.danger,
-.session-actions button.danger { color: var(--danger); border-color: var(--danger); }
+.session-actions button.danger,
+.version-actions button.danger { color: var(--danger); border-color: var(--danger); }
 
 /* ---------- user administration ---------- */
 .admin-modal { width: min(760px, 94vw); }

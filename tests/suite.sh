@@ -1221,6 +1221,196 @@ BF=$(idof "$(req GET "/api/files?parent=$TS" "$JB")" shared.txt)
 # pattern the toolbar/menu wiring uses) must have a definition. A missing one
 # throws a ReferenceError in the browser and the button silently does nothing,
 # which no API check would ever see.
+# ---- version history (concepts/versioning.md) -----------------------------
+# Every content replacement keeps the replaced bytes as a restorable previous
+# version. The pins below walk the whole surface: listing, per-version
+# download (ranges included), exchange restore (undoable), permissions,
+# retention by count and by age, quota, and the trash keeping - then
+# removing - the history along with its blobs.
+note "version history: two saves keep the first bytes"
+
+VDRESP=$(req POST /api/files/folder "$JA" '{"name":"ver"}')
+VD=$(jget "$VDRESP" entry.id)
+printf 'AAAAAAAAAA' > "$ROOT/src/v1.txt"
+printf 'BBBBBBBBBB' > "$ROOT/src/v2.txt"
+printf 'CCCCCCCCCCC' > "$ROOT/src/v3.txt"   # 11 bytes: the sizes must differ
+VR=$(up "$JA" "$VD" v1.txt); VFILE=$(jget "$VR" entry.id)
+[ -n "$VFILE" ] && ok "version test file created" || bad "version test file missing"
+
+# Without a session the history is as closed as the file itself.
+RC=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/files/versions?id=$VFILE")
+[ "$RC" = "401" ] && ok "versions list without session -> 401" || bad "expected 401, got $RC"
+
+VL=$(req GET "/api/files/versions?id=$VFILE" "$JA")
+NV=$(printf '%s' "$VL" | perl -MJSON::PP -0777 -e 'my $d=decode_json(do{local $/;<STDIN>}); print scalar @{$d->{versions}}')
+[ "$NV" = "0" ] && ok "an untouched file has no history" || bad "unexpected history: $VL"
+
+# First save: the uploaded bytes become version 1.
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" -H 'Content-Type: text/plain' \
+  --data-binary "@$ROOT/src/v2.txt" "$BASE/api/files/content?id=$VFILE")
+[ "$RC" = "200" ] && ok "editor save -> 200" || bad "save v2 failed: $RC"
+VL=$(req GET "/api/files/versions?id=$VFILE" "$JA")
+NV=$(printf '%s' "$VL" | perl -MJSON::PP -0777 -e 'my $d=decode_json(do{local $/;<STDIN>}); print scalar @{$d->{versions}}')
+[ "$NV" = "1" ] && ok "one save keeps one version" || bad "expected 1 version, got $NV: $VL"
+V1ID=$(jget "$VL" versions.0.id)
+V1SZ=$(jget "$VL" versions.0.size)
+[ "$V1SZ" = "10" ] && ok "the kept version carries the outgoing size" || bad "version size=$V1SZ, expected 10"
+
+note "version history: download one version, byte-exact and range-aware"
+VBODY=$(curl -s -b "$JA" "$BASE/api/files/version/download?id=$VFILE&vid=$V1ID")
+[ "$VBODY" = "AAAAAAAAAA" ] && ok "version download serves the old bytes" || bad "version body: [$VBODY]"
+RC=$(curl -s -o "$ROOT/vr.out" -w '%{http_code}' -r 0-3 -b "$JA" \
+  "$BASE/api/files/version/download?id=$VFILE&vid=$V1ID")
+[ "$RC" = "206" ] && [ "$(cat "$ROOT/vr.out")" = "AAAA" ] \
+  && ok "version download honours a byte range (206)" || bad "range on version: $RC [$(cat "$ROOT/vr.out")]"
+CT=$(curl -s -o /dev/null -w '%{content_type}' -b "$JA" \
+  "$BASE/api/files/version/download?id=$VFILE&vid=$V1ID")
+echo "$CT" | grep -q "text/plain" && ok "version download keeps the mime type" || bad "content-type: $CT"
+# An id that is not this file's version is simply not found.
+RC=$(curl -s -o /dev/null -w '%{http_code}' -b "$JA" \
+  "$BASE/api/files/version/download?id=$VFILE&vid=999999")
+[ "$RC" = "404" ] && ok "foreign/unknown version id -> 404" || bad "expected 404, got $RC"
+
+note "version history: restore exchanges the bytes, and is undoable"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" -H 'Content-Type: text/plain' \
+  --data-binary "@$ROOT/src/v3.txt" "$BASE/api/files/content?id=$VFILE")
+[ "$RC" = "200" ] && ok "second save -> 200" || bad "save v3 failed: $RC"
+VL=$(req GET "/api/files/versions?id=$VFILE" "$JA")
+NV=$(printf '%s' "$VL" | perl -MJSON::PP -0777 -e 'my $d=decode_json(do{local $/;<STDIN>}); print scalar @{$d->{versions}}')
+[ "$NV" = "2" ] && ok "two saves keep two versions" || bad "expected 2 versions, got $NV: $VL"
+PRE=$(curl -s -b "$JA" "$BASE/api/files/preview?id=$VFILE")
+[ "$PRE" = "CCCCCCCCCCC" ] && ok "entry serves the newest bytes" || bad "entry content: [$PRE]"
+
+# Restore the oldest version: the entry becomes AAAAA..., the outgoing
+# CCCCCCCCCCC... pins as the newest version, and the restored row leaves the list.
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "$JA" \
+  "$BASE/api/files/version/restore?id=$VFILE&vid=$V1ID")
+[ "$RC" = "200" ] && ok "restore -> 200" || bad "restore failed: $RC"
+PRE=$(curl -s -b "$JA" "$BASE/api/files/preview?id=$VFILE")
+[ "$PRE" = "AAAAAAAAAA" ] && ok "restore brings back the old bytes" || bad "restored content: [$PRE]"
+VL=$(req GET "/api/files/versions?id=$VFILE" "$JA")
+NSZ=$(jget "$VL" versions.0.size)
+NV=$(printf '%s' "$VL" | perl -MJSON::PP -0777 -e 'my $d=decode_json(do{local $/;<STDIN>}); print scalar @{$d->{versions}}')
+[ "$NV" = "2" ] && [ "$NSZ" = "11" ] \
+  && ok "the outgoing content became the newest version (11 bytes)" \
+  || bad "after restore: $NV versions, newest size $NSZ"
+OLDID=$(jget "$VL" versions.1.id)
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "$JA" \
+  "$BASE/api/files/version/restore?id=$VFILE&vid=$OLDID")
+[ "$RC" = "200" ] || bad "second restore failed: $RC"
+PRE=$(curl -s -b "$JA" "$BASE/api/files/preview?id=$VFILE")
+[ "$PRE" = "BBBBBBBBBB" ] && ok "restoring is itself undoable" || bad "undo content: [$PRE]"
+
+note "version history: a READ grantee lists and downloads, but cannot change"
+req POST /api/shares/batch "$JA" "{\"items\":[{\"file_id\":$VFILE}],\"username\":\"bob\",\"permissions\":1}" >/dev/null
+VL=$(req GET "/api/files/versions?id=$VFILE" "$JB")
+NV=$(printf '%s' "$VL" | perl -MJSON::PP -0777 -e 'my $d=decode_json(do{local $/;<STDIN>}); print scalar @{$d->{versions}}')
+[ -n "$NV" ] && [ "$NV" -ge 1 ] && ok "a READ grantee sees the history" || bad "bob's history: $VL"
+BVID=$(jget "$VL" versions.0.id)
+VBODY=$(curl -s -b "$JB" "$BASE/api/files/version/download?id=$VFILE&vid=$BVID")
+[ -n "$VBODY" ] && ok "a READ grantee downloads a version" || bad "bob's version download empty"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "$JB" \
+  "$BASE/api/files/version/restore?id=$VFILE&vid=$BVID")
+[ "$RC" = "403" ] && ok "READ grantee restore -> 403 (needs UPDATE)" || bad "expected 403, got $RC"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -b "$JB" \
+  "$BASE/api/files/version?id=$VFILE&vid=$BVID")
+[ "$RC" = "403" ] && ok "READ grantee version delete -> 403" || bad "expected 403, got $RC"
+
+note "version history: deleting a version deletes its bytes"
+VKEY=$(sqlite3 "$DATA/fxcloud.db" "SELECT blob_created_at FROM file_versions WHERE id=$BVID;")
+VPATH="$DATA/blobs/_versions/$VFILE/$VKEY"
+[ -f "$VPATH" ] && ok "version blob lives under _versions/<file_id>/<key>" || bad "blob missing at $VPATH"
+RC=$(reqcode DELETE "/api/files/version?id=$VFILE&vid=$BVID" "$JA")
+[ "$RC" = "200" ] && ok "version delete -> 200" || bad "version delete: $RC"
+VGONE=$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM file_versions WHERE id=$BVID;")
+[ "$VGONE" = "0" ] && ok "the version row is gone" || bad "row still present"
+[ ! -f "$VPATH" ] && ok "the version's bytes are gone from disk" || bad "blob still on disk: $VPATH"
+
+note "version history: the first fill of an empty file keeps no history"
+ZR=$(req POST /api/files/file "$JA" "{\"parent_id\":$VD,\"name\":\"zero.txt\"}")
+ZID=$(jget "$ZR" entry.id)
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" -H 'Content-Type: text/plain' \
+  --data-binary 'first fill' "$BASE/api/files/content?id=$ZID")
+[ "$RC" = "200" ] || bad "first fill failed: $RC"
+ZV=$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM file_versions WHERE file_id=$ZID;")
+[ "$ZV" = "0" ] && ok "filling an empty file keeps no empty history" || bad "got $ZV versions for a first fill"
+
+note "version history: the settings section stores and validates the bounds"
+RC=$(reqcode PUT /api/me "$JA" '{"version_keep_n":5,"version_keep_days":30}')
+[ "$RC" = "200" ] && ok "PUT /api/me with retention bounds -> 200" || bad "settings save: $RC"
+ME=$(req GET /api/me "$JA")
+[ "$(jget "$ME" version_keep_n)" = "5" ] && [ "$(jget "$ME" version_keep_days)" = "30" ] \
+  && ok "the bounds round-trip through /api/me" || bad "me: $ME"
+RC=$(reqcode PUT /api/me "$JA" '{"version_keep_n":-1}')
+[ "$RC" = "400" ] && ok "a negative bound -> 400" || bad "expected 400, got $RC"
+reqcode PUT /api/me "$JA" '{"version_keep_n":20,"version_keep_days":180}' >/dev/null
+
+note "version history: keep_n prunes on insert, blobs included"
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET version_keep_n=1 WHERE username='alice';"
+curl -s -o /dev/null -X PUT -b "$JA" -H 'Content-Type: text/plain' \
+  --data-binary "@$ROOT/src/v1.txt" "$BASE/api/files/content?id=$VFILE"
+curl -s -o /dev/null -X PUT -b "$JA" -H 'Content-Type: text/plain' \
+  --data-binary "@$ROOT/src/v2.txt" "$BASE/api/files/content?id=$VFILE"
+NV=$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM file_versions WHERE file_id=$VFILE;")
+NB=$(ls "$DATA/blobs/_versions/$VFILE" | wc -l)
+[ "$NV" = "1" ] && ok "keep_n=1 leaves exactly one version" || bad "expected 1 version row, got $NV"
+[ "$NB" = "1" ] && ok "pruned versions are unlinked from disk too" || bad "$NB blobs on disk, expected 1"
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET version_keep_n=20 WHERE username='alice';"
+
+note "version history: quota sums live rows and version history"
+ME=$(req GET /api/me "$JA")
+USED=$(jget "$ME" used_bytes)
+USED_DB=$(sqlite3 "$DATA/fxcloud.db" \
+  "SELECT COALESCE((SELECT SUM(size) FROM files WHERE owner_id=1 AND is_dir=0),0)
+        + COALESCE((SELECT SUM(v.size) FROM file_versions v JOIN files f ON f.id=v.file_id
+                     WHERE f.owner_id=1 AND f.is_dir=0),0);")
+[ -n "$USED" ] && [ "$USED" = "$USED_DB" ] \
+  && ok "used_bytes includes the version history (api=$USED db=$USED_DB)" \
+  || bad "usage mismatch (api=$USED db=$USED_DB)"
+
+note "version history: the age bound runs in the sweep loop"
+VROWS=$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM file_versions WHERE file_id=$VFILE;")
+[ "$VROWS" -ge 1 ] && ok "history present for the age test" || bad "no versions left to age"
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET version_keep_days=1 WHERE username='alice';"
+sqlite3 "$DATA/fxcloud.db" "UPDATE file_versions SET created_at='2000-01-01T00:00:00+00:00' WHERE file_id=$VFILE;"
+GONE=""
+for _ in $(seq 1 15); do
+  C=$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM file_versions WHERE file_id=$VFILE;")
+  [ "$C" = "0" ] && GONE=yes && break
+  sleep 1
+done
+[ -n "$GONE" ] && ok "expired versions are swept on the trash-sweep cadence" || bad "age sweep did not drop the backdated rows"
+NB=$(ls "$DATA/blobs/_versions/$VFILE" 2>/dev/null | wc -l)
+[ "$NB" = "0" ] && ok "the sweep unlinked the expired blobs" || bad "$NB blobs survived the sweep"
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET version_keep_days=180 WHERE username='alice';"
+
+note "version history: the trash keeps the history, the purge removes it"
+curl -s -o /dev/null -X PUT -b "$JA" -H 'Content-Type: text/plain' \
+  --data-binary "@$ROOT/src/v3.txt" "$BASE/api/files/content?id=$VFILE"
+VKEYS=$(sqlite3 "$DATA/fxcloud.db" "SELECT blob_created_at FROM file_versions WHERE file_id=$VFILE;")
+[ -n "$VKEYS" ] && ok "fresh history for the purge test" || bad "no versions to purge"
+[ "$(reqcode POST /api/files/delete "$JA" "{\"id\":$VFILE}")" = "200" ] || bad "delete-to-trash failed"
+VINT=$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM file_versions WHERE file_id=$VFILE;")
+[ "$VINT" -ge 1 ] && ok "the trash keeps the file's history" || bad "history lost on trash"
+for k in $VKEYS; do
+  [ -f "$DATA/blobs/_versions/$VFILE/$k" ] || bad "version blob vanished on trash: $k"
+done
+ok "version blobs survive the delete-to-trash"
+[ "$(reqcode POST /api/files/trash/purge "$JA" "{\"id\":$VFILE}")" = "200" ] || bad "purge failed"
+VPOST=$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM file_versions WHERE file_id=$VFILE;")
+[ "$VPOST" = "0" ] && ok "the purge removes the version rows" || bad "$VPOST rows survived the purge"
+LEFT=0
+for k in $VKEYS; do
+  [ -f "$DATA/blobs/_versions/$VFILE/$k" ] && LEFT=$((LEFT+1))
+done
+[ "$LEFT" = "0" ] && ok "the purge removes the version blobs" || bad "$LEFT version blobs survived the purge"
+
+note "version history: the i18n keys ship in all three dictionaries"
+NVH=$(grep -c '"versions.history":' "$REPO/frontend/assets/i18n.js")
+[ "$NVH" = "3" ] && ok "versions.history translated en/de/tlh" || bad "versions.history appears $NVH times, expected 3"
+NSET=$(grep -c '"settings.versioning":' "$REPO/frontend/assets/i18n.js")
+[ "$NSET" = "3" ] && ok "settings.versioning translated en/de/tlh" || bad "settings.versioning appears $NSET times, expected 3"
+
 # ---- client-side encryption (ENCRYPTION.md) -------------------------------
 # The server stores wrapped blobs it cannot open. What it must not do is leak
 # them, believe a client that says "this is encrypted" without looking, or let

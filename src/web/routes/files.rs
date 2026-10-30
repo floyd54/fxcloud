@@ -462,6 +462,120 @@ pub async fn download(
     Ok(resp.into_response())
 }
 
+/// Query of the version routes: one entry plus one row of its history.
+#[derive(Deserialize)]
+pub struct VersionQuery {
+    pub id: i64,
+    pub vid: i64,
+}
+
+/// GET /api/files/versions?id=<id> - the kept previous versions of one file,
+/// newest first (READ, the same gate as a download: a share's reader sees the
+/// history too, they hold the file key either way - concepts/versioning.md
+/// decision 2).
+pub async fn versions_list(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Query(q): Query<IdQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let versions = state.db.list_versions(user.id(), q.id).await?;
+    Ok(Json(json!({ "versions": versions })))
+}
+
+/// GET /api/files/version/download?id=&vid= - stream one kept version with
+/// the same byte-range answers as the entry download (one helper for both, so
+/// they cannot drift), and the encrypted/plaintext type rule of a save from
+/// *its* time: `enc_version` of the version row, not of today's entry.
+pub async fn version_download(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Query(q): Query<VersionQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let entry = state
+        .db
+        .entry_for_read(user.id(), q.id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if entry.is_dir {
+        return Err(AppError::BadRequest("cannot download a folder".into()));
+    }
+    let version = state.db.version_for_read(user.id(), q.id, q.vid).await?;
+    let path = state.files.version_path(q.id, &version.blob_key);
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|_| AppError::NotFound)?;
+    let len = file
+        .metadata()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("version metadata {path:?}: {e}")))?
+        .len();
+
+    let content_type = if version.enc_version > 0 {
+        "application/octet-stream".to_string()
+    } else {
+        entry
+            .mime
+            .clone()
+            .unwrap_or_else(|| "application/octet-stream".to_string())
+    };
+    let encoded_name = encode_rfc5987(&entry.name);
+    let disposition = format!("attachment; filename*=UTF-8''{encoded_name}");
+
+    let range = match headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
+        Some(value) => parse_byte_range(value, len as usize),
+        None => ByteRange::Full,
+    };
+    let ranged = ranged_body(file, len as usize, range).await?;
+
+    let mut builder = Response::builder()
+        .status(ranged.status)
+        .header(header::CONTENT_TYPE, &content_type)
+        .header(header::CONTENT_DISPOSITION, disposition)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::CONTENT_LENGTH, ranged.content_len.to_string());
+    if let Some(content_range) = ranged.content_range {
+        builder = builder.header(header::CONTENT_RANGE, content_range);
+    }
+    let resp = builder
+        .body(ranged.body)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("building version download: {e}")))?;
+    Ok(resp.into_response())
+}
+
+/// POST /api/files/version/restore?id=&vid= - exchange restore: the chosen
+/// version becomes the entry's content and the outgoing content becomes the
+/// newest version (UPDATE grant; the exchange itself is
+/// `FileService::restore_version`).
+pub async fn version_restore(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Query(q): Query<VersionQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    state.files.restore_version(user.id(), q.id, q.vid).await?;
+    // Fresh row for the response: size, enc_version and modified_at changed.
+    let entry = state
+        .db
+        .entry_for_read(user.id(), q.id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(json!({ "entry": entry })))
+}
+
+/// DELETE /api/files/version?id=&vid= - drop one version row and the bytes
+/// behind it (UPDATE; deleting a version deletes the bytes - delete means
+/// delete, concepts/versioning.md section 8).
+pub async fn version_delete(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Query(q): Query<VersionQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let blob = state.db.delete_version(user.id(), q.id, q.vid).await?;
+    state.files.delete_blobs(&[blob]).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// Content types the browser renders natively, keyed by file extension.
 ///
 /// This table decides the `Content-Type` of `/api/files/preview` and is
@@ -903,10 +1017,18 @@ async fn save_streamed(
     // no byte is copied twice.
     {
         let _write = state.files.begin_replace(entry.id).await;
+        let pins_old = entry.size > 0;
         state
             .db
-            .update_file_meta(user_id, entry.id, size, mime, transition)
+            .update_file_meta(user_id, entry.id, size, mime, transition, pins_old)
             .await?;
+        // History (concepts/versioning.md): the outgoing bytes get their
+        // version name while they are still the entry's content - link,
+        // then row - and the rename below then publishes the new content
+        // over a name nothing else points at yet. Nothing is copied either
+        // way; with the row already checked, this order also keeps the
+        // quota gate's arithmetic (growth = incoming size) exact.
+        state.files.pin_content_as_version(user_id, &entry).await?;
         state.files.commit_blob(&entry, &temp).await?;
     }
     // Fresh row for the response: size and modified_at just changed.

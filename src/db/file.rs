@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 use crate::error::AppError;
-use crate::models::{BlobRef, Breadcrumb, FileEntry};
+use crate::models::{BlobRef, Breadcrumb, FileEntry, FileVersion};
 use crate::sharing::PERM_ALL;
 
 use super::share::{covering_share, share_name_taken};
@@ -43,11 +43,20 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
 
 /// Build a [`BlobRef`] from `(id, owner_id, created_at)` row values.
 fn blob_ref(id: i64, owner_id: i64, created_at: &str) -> rusqlite::Result<BlobRef> {
-    Ok(BlobRef {
+    Ok(BlobRef::Entry {
         file_id: id,
         owner_id,
         created_at: parse_ts(created_at, 2)?,
     })
+}
+
+/// Build a version's [`BlobRef`] from `(file_id, blob_created_at)` row
+/// values: the version key is already the complete path component.
+fn version_blob_ref(file_id: i64, blob_key: &str) -> BlobRef {
+    BlobRef::Version {
+        file_id,
+        version_key: blob_key.to_string(),
+    }
 }
 
 /// Whether `additional` more bytes still fit into `owner_id`'s quota.
@@ -56,6 +65,10 @@ fn blob_ref(id: i64, owner_id: i64, created_at: &str) -> rusqlite::Result<BlobRe
 /// `update_file_meta` run this in the same statement block as their write, so
 /// content only ever appears when it fits. Bulk copies pre-check the whole
 /// subtree via [`Db::check_quota`] before they start.
+///
+/// Kept versions count (concepts/versioning.md decision 4): the sum is the
+/// user's own rows plus the history of those rows, so a save that pins the
+/// outgoing bytes cannot slip past the gate by keeping them.
 fn ensure_quota(conn: &Connection, owner_id: i64, additional: i64) -> Result<(), AppError> {
     if additional <= 0 {
         return Ok(());
@@ -63,6 +76,9 @@ fn ensure_quota(conn: &Connection, owner_id: i64, additional: i64) -> Result<(),
     let (quota, used): (i64, i64) = conn.query_row(
         "SELECT u.quota_bytes,
                 COALESCE((SELECT SUM(f.size) FROM files f
+                           WHERE f.owner_id = u.id AND f.is_dir = 0), 0)
+              + COALESCE((SELECT SUM(v.size) FROM file_versions v
+                          JOIN files f ON f.id = v.file_id
                            WHERE f.owner_id = u.id AND f.is_dir = 0), 0)
            FROM users u WHERE u.id = ?1",
         params![owner_id],
@@ -76,6 +92,58 @@ fn ensure_quota(conn: &Connection, owner_id: i64, additional: i64) -> Result<(),
 
 const ENTRY_COLS: &str = "id, owner_id, parent_id, name, is_dir, size, mime, created_at, \
                          modified_at, deleted_at, enc_version, enc_key";
+
+/// Enforce the count bound on one file's history: keep the newest `keep`
+/// versions, collect and delete the rest. `keep <= 0` disables the bound
+/// (concepts/versioning.md decision 1), so a user who turned it off never
+/// loses history here.
+fn prune_versions(conn: &Connection, file_id: i64, keep: i64) -> Result<Vec<BlobRef>, AppError> {
+    if keep <= 0 {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, file_id, blob_created_at FROM file_versions
+          WHERE file_id = ?1
+            AND id NOT IN (SELECT id FROM file_versions WHERE file_id = ?1
+                            ORDER BY created_at DESC, id DESC LIMIT ?2)",
+    )?;
+    let expired = stmt
+        .query_map(params![file_id, keep], |r| {
+            Ok(version_blob_ref(r.get(1)?, &r.get::<_, String>(2)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    conn.execute(
+        "DELETE FROM file_versions
+          WHERE file_id = ?1
+            AND id NOT IN (SELECT id FROM file_versions WHERE file_id = ?1
+                            ORDER BY created_at DESC, id DESC LIMIT ?2)",
+        params![file_id, keep],
+    )?;
+    Ok(expired)
+}
+
+/// One file's version rows, newest first - the shared read of the listing
+/// and the single-version lookup (permission checks happen in the callers).
+fn read_versions(conn: &Connection, file_id: i64) -> Result<Vec<FileVersion>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, size, enc_version, created_at, blob_created_at FROM file_versions
+          WHERE file_id = ?1
+          ORDER BY created_at DESC, id DESC",
+    )?;
+    let rows = stmt
+        .query_map(params![file_id], |r| {
+            let created_at: String = r.get(3)?;
+            Ok(FileVersion {
+                id: r.get(0)?,
+                size: r.get(1)?,
+                enc_version: r.get(2)?,
+                created_at: parse_ts(&created_at, 5)?,
+                blob_key: r.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
 
 /// Entries that are trash roots: marked themselves, with a live (or absent)
 /// parent. Children of a trashed folder are part of that folder's restore
@@ -739,6 +807,12 @@ impl Db {
     /// Update a file's size/mime/timestamp in place (used by WebDAV PUT overwrite).
     ///
     /// Foreign entries require UPDATE via the covering share.
+    ///
+    /// `pins_old` marks a replacement that keeps the outgoing bytes on disk
+    /// as a version: their size then *stays* in the total (the row loses it,
+    /// the history gains it), so the growth the quota has to accommodate is
+    /// the incoming size alone. Without a pin the delta is the usual
+    /// `size - old_size` — shrinking passes with a negative number.
     pub async fn update_file_meta(
         &self,
         user_id: i64,
@@ -749,11 +823,12 @@ impl Db {
         // encryption mode; `None` to leave both columns alone (the usual
         // case: content replaced, mode unchanged).
         enc: Option<(i64, Vec<u8>)>,
+        pins_old: bool,
     ) -> Result<(), AppError> {
         self.run(move |conn| {
             let tree_owner = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
-            // Overwriting replaces content in place: only the *growth* has to
-            // fit into the quota (shrinking passes with a negative delta).
+            // Overwriting replaces content in place: only the *growth* has
+            // to fit into the quota.
             let old_size: Option<i64> = conn
                 .query_row(
                     "SELECT size FROM files WHERE id = ?1 AND owner_id = ?2 AND is_dir = 0",
@@ -762,7 +837,8 @@ impl Db {
                 )
                 .optional()?;
             if let Some(old_size) = old_size {
-                ensure_quota(conn, tree_owner, size - old_size)?;
+                let delta = if pins_old { size } else { size - old_size };
+                ensure_quota(conn, tree_owner, delta)?;
             }
             let now = Utc::now().to_rfc3339();
             // Mode change and content change belong in one statement: a row
@@ -791,11 +867,16 @@ impl Db {
     }
 
     /// Bytes of content owned by `owner_id` — what counts against the quota
-    /// and what `GET /api/me` reports as `used_bytes`.
+    /// and what `GET /api/me` reports as `used_bytes`. Version history of
+    /// the owner's files counts alongside the live rows (decision 4).
     pub async fn owner_usage(&self, owner_id: i64) -> Result<i64, AppError> {
         self.run(move |conn| {
             let used: i64 = conn.query_row(
-                "SELECT COALESCE(SUM(size), 0) FROM files WHERE owner_id = ?1 AND is_dir = 0",
+                "SELECT COALESCE((SELECT SUM(size) FROM files
+                                  WHERE owner_id = ?1 AND is_dir = 0), 0)
+                       + COALESCE((SELECT SUM(v.size) FROM file_versions v
+                                   JOIN files f ON f.id = v.file_id
+                                    WHERE f.owner_id = ?1 AND f.is_dir = 0), 0)",
                 params![owner_id],
                 |r| r.get(0),
             )?;
@@ -811,6 +892,199 @@ impl Db {
     pub async fn check_quota(&self, owner_id: i64, additional: i64) -> Result<(), AppError> {
         self.run(move |conn| ensure_quota(conn, owner_id, additional))
             .await
+    }
+
+    /// Assert the UPDATE grant on a row without changing anything.
+    ///
+    /// The restore path needs this *before* its first filesystem operation:
+    /// the exchange starts with a hardlink, and a permission check that only
+    /// arrived later (in the metadata statement) would have run after bytes
+    /// were already named. Saving takes the same grant up front through
+    /// [`Db::update_file_meta`].
+    pub async fn require_update(&self, user_id: i64, file_id: i64) -> Result<(), AppError> {
+        self.run(move |conn| {
+            update_target(conn, user_id, file_id, crate::sharing::PERM_UPDATE)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Pin a replaced blob as a version row and enforce the acting user's
+    /// count bound (`version_keep_n`, 0 = keep everything) on that file.
+    /// Callers hold the UPDATE grant; the blob must already carry its
+    /// version name (link before row - a crash costs an orphan file, never
+    /// a row pointing at nothing).
+    ///
+    /// Returns the rows retention removed: their bytes have to go from disk
+    /// as well, which is the caller's unlink via `delete_blobs`.
+    pub async fn insert_version(
+        &self,
+        acting_user: i64,
+        file_id: i64,
+        size: i64,
+        enc_version: i64,
+        blob_key: String,
+    ) -> Result<Vec<BlobRef>, AppError> {
+        self.run(move |conn| {
+            // Fixed-width fraction (9 digits): the listing and retention
+            // order by this string, and RFC3339's default 0/3/6/9-digit
+            // widths do not compare chronologically within one second -
+            // `.987...` would sort above a later `.123...`.
+            let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, false);
+            conn.execute(
+                "INSERT INTO file_versions (file_id, size, enc_version, author_id,
+                                            blob_created_at, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![file_id, size, enc_version, acting_user, blob_key, now],
+            )?;
+            let keep: i64 = conn.query_row(
+                "SELECT version_keep_n FROM users WHERE id = ?1",
+                params![acting_user],
+                |r| r.get(0),
+            )?;
+            prune_versions(conn, file_id, keep)
+        })
+        .await
+    }
+
+    /// History of one file, newest first (READ, same gate as a download).
+    pub async fn list_versions(
+        &self,
+        user_id: i64,
+        file_id: i64,
+    ) -> Result<Vec<FileVersion>, AppError> {
+        if self.entry_for_read(user_id, file_id).await?.is_none() {
+            return Err(AppError::NotFound);
+        }
+        self.run(move |conn| read_versions(conn, file_id)).await
+    }
+
+    /// One version's metadata, READ-checked through the same gate as the
+    /// listing - the starting point of a version download or a restore.
+    pub async fn version_for_read(
+        &self,
+        user_id: i64,
+        file_id: i64,
+        vid: i64,
+    ) -> Result<FileVersion, AppError> {
+        if self.entry_for_read(user_id, file_id).await?.is_none() {
+            return Err(AppError::NotFound);
+        }
+        self.run(move |conn| {
+            let rows = read_versions(conn, file_id)?;
+            rows.into_iter()
+                .find(|v| v.id == vid)
+                .ok_or(AppError::NotFound)
+        })
+        .await
+    }
+
+    /// The database half of an exchange restore: point the entry's row at
+    /// the restored bytes (size, `enc_version`, `modified_at`) and drop the
+    /// version row they came from - the entry now holds that inode, so the
+    /// row must not. UPDATE grant, checked here even though the filesystem
+    /// half checked it first; the two run under the row's write lock.
+    ///
+    /// `enc_key` is deliberately untouched: the file key lives across all
+    /// versions of an entry (ENCRYPTION.md DECISION 5), a restore only
+    /// changes which bytes sit at the entry - and with them `enc_version`,
+    /// which describes those bytes.
+    pub async fn finish_restore(
+        &self,
+        acting_user: i64,
+        file_id: i64,
+        vid: i64,
+    ) -> Result<(), AppError> {
+        self.run(move |conn| {
+            update_target(conn, acting_user, file_id, crate::sharing::PERM_UPDATE)?;
+            let (size, enc_version): (i64, i64) = conn
+                .query_row(
+                    "SELECT size, enc_version FROM file_versions
+                      WHERE id = ?1 AND file_id = ?2",
+                    params![vid, file_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .ok_or(AppError::NotFound)?;
+            let now = Utc::now().to_rfc3339();
+            let changed = conn.execute(
+                "UPDATE files SET size = ?1, enc_version = ?2, modified_at = ?3
+                  WHERE id = ?4 AND is_dir = 0",
+                params![size, enc_version, now, file_id],
+            )?;
+            if changed == 0 {
+                return Err(AppError::NotFound);
+            }
+            conn.execute("DELETE FROM file_versions WHERE id = ?1", params![vid])?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Drop one version row (UPDATE grant) and return its blob to unlink.
+    /// Delete means delete: the bytes go with the row.
+    pub async fn delete_version(
+        &self,
+        acting_user: i64,
+        file_id: i64,
+        vid: i64,
+    ) -> Result<BlobRef, AppError> {
+        self.run(move |conn| {
+            update_target(conn, acting_user, file_id, crate::sharing::PERM_UPDATE)?;
+            let row: Option<(i64, String)> = conn
+                .query_row(
+                    "SELECT file_id, blob_created_at FROM file_versions
+                      WHERE id = ?1 AND file_id = ?2",
+                    params![vid, file_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let (row_file, key) = row.ok_or(AppError::NotFound)?;
+            conn.execute("DELETE FROM file_versions WHERE id = ?1", params![vid])?;
+            Ok(version_blob_ref(row_file, &key))
+        })
+        .await
+    }
+
+    /// The age half of retention (concepts/versioning.md section 5): drop
+    /// every version older than its author's `version_keep_days` (0 = off;
+    /// no author left, so the file's owner decides). Runs in the trash sweep
+    /// loop, on the same cadence. Returns the rows it removed.
+    pub async fn sweep_versions(&self) -> Result<Vec<BlobRef>, AppError> {
+        self.run(move |conn| {
+            // The cutoff differs per user, so SQLite formats it per row: an
+            // RFC3339-shaped UTC string, comparable with the stored
+            // `created_at` the same way every other timestamp here is.
+            let mut stmt = conn.prepare(
+                "SELECT v.id, v.file_id, v.blob_created_at FROM file_versions v
+                   JOIN files f ON f.id = v.file_id
+                   JOIN users u ON u.id = COALESCE(v.author_id, f.owner_id)
+                  WHERE u.version_keep_days > 0
+                    AND v.created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now',
+                                                '-' || u.version_keep_days || ' days')",
+            )?;
+            let expired = stmt
+                .query_map([], |r| {
+                    let id: i64 = r.get(0)?;
+                    let file_id: i64 = r.get(1)?;
+                    let key: String = r.get(2)?;
+                    Ok((id, version_blob_ref(file_id, &key)))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            if expired.is_empty() {
+                return Ok(Vec::new());
+            }
+            let mut pruned = Vec::with_capacity(expired.len());
+            for (id, blob) in expired {
+                let changed =
+                    conn.execute("DELETE FROM file_versions WHERE id = ?1", params![id])?;
+                if changed > 0 {
+                    pruned.push(blob);
+                }
+            }
+            Ok(pruned)
+        })
+        .await
     }
 
     /// Total bytes of the non-directory entries at and below `id`.
@@ -1260,7 +1534,7 @@ fn hard_delete(conn: &Connection, id: i64) -> Result<Vec<BlobRef>, AppError> {
          SELECT id, owner_id, created_at FROM files
           WHERE is_dir = 0 AND id IN (SELECT id FROM subtree)",
     )?;
-    let blobs = stmt
+    let mut blobs = stmt
         .query_map(params![id], |r| {
             let id: i64 = r.get(0)?;
             let owner_id: i64 = r.get(1)?;
@@ -1268,6 +1542,23 @@ fn hard_delete(conn: &Connection, id: i64) -> Result<Vec<BlobRef>, AppError> {
             blob_ref(id, owner_id, &created_at)
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    // Version rows follow the foreign-key cascade, the blobs they point at do
+    // not: capture them while the rows still exist, like the file blobs.
+    let mut vstmt = conn.prepare(
+        "WITH RECURSIVE subtree(id) AS (
+             SELECT id FROM files WHERE id = ?1
+             UNION ALL
+             SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+         )
+         SELECT file_id, blob_created_at FROM file_versions
+          WHERE file_id IN (SELECT id FROM subtree)",
+    )?;
+    let vblobs = vstmt
+        .query_map(params![id], |r| {
+            Ok(version_blob_ref(r.get(0)?, &r.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    blobs.extend(vblobs);
     conn.execute("DELETE FROM files WHERE id = ?1", params![id])?;
     Ok(blobs)
 }
@@ -1304,7 +1595,9 @@ fn validate_name(name: &str) -> Result<(), AppError> {
         return Err(AppError::BadRequest("name contains invalid characters".into()));
     }
     if trimmed.chars().any(|c| c.is_control()) {
-        return Err(AppError::BadRequest("name contains control characters".into()));
+        return Err(AppError::BadRequest(
+            "name contains control characters".into(),
+        ));
     }
     Ok(())
 }
@@ -1364,13 +1657,24 @@ mod tests {
         .expect("user id")
     }
 
-    fn add_file(conn: &Connection, owner: i64, name: &str, size: i64, is_dir: bool) {
+    fn add_file(conn: &Connection, owner: i64, name: &str, size: i64, is_dir: bool) -> i64 {
         conn.execute(
             "INSERT INTO files (owner_id, name, is_dir, size, created_at, modified_at)
              VALUES (?1, ?2, ?3, ?4, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
             params![owner, name, is_dir, size],
         )
         .expect("insert file");
+        conn.last_insert_rowid()
+    }
+
+    /// A user with quota `quota` and one file of `size` bytes: the starting
+    /// point of every version test (owner, file_id).
+    fn seed_file(s: &Scratch, name: &str, size: i64, quota: i64) -> (i64, i64) {
+        let conn = s.db.pool.get().unwrap();
+        let owner = user_with_quota(&conn, quota);
+        let file_id = add_file(&conn, owner, name, size, false);
+        drop(conn);
+        (owner, file_id)
     }
 
     #[test]
@@ -1519,5 +1823,149 @@ mod tests {
 
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["Docs", "Zeta", "alpha", "b.txt"]);
+    }
+
+    // ---- version history (concepts/versioning.md) ----
+
+    #[tokio::test]
+    async fn count_retention_keeps_the_newest_versions_and_returns_the_pruned() {
+        let s = scratch();
+        let (owner, file_id) = seed_file(&s, "doc.txt", 10, 1_000_000);
+        s.db.update_settings(owner, None, None, Some(2), None)
+            .await
+            .expect("set count bound");
+
+        let mut pruned = 0;
+        for n in 0..4i64 {
+            let out =
+                s.db.insert_version(owner, file_id, 5 + n, 0, format!("key{n}"))
+                    .await
+                    .expect("insert version");
+            pruned += out.len();
+        }
+        let rows =
+            s.db.list_versions(owner, file_id)
+                .await
+                .expect("list versions");
+        assert_eq!(rows.len(), 2, "the bound keeps the newest two");
+        assert_eq!(rows[0].size, 8, "newest first");
+        assert_eq!(rows[1].size, 7);
+        assert_eq!(pruned, 2, "every pruned row comes back as a blob to unlink");
+    }
+
+    #[tokio::test]
+    async fn count_retention_zero_keeps_the_whole_history() {
+        let s = scratch();
+        let (owner, file_id) = seed_file(&s, "doc.txt", 10, 1_000_000);
+        s.db.update_settings(owner, None, None, Some(0), None)
+            .await
+            .expect("disable the count bound");
+
+        for n in 0..3i64 {
+            let out =
+                s.db.insert_version(owner, file_id, n, 0, format!("key{n}"))
+                    .await
+                    .expect("insert version");
+            assert!(out.is_empty(), "nothing is pruned with the bound off");
+        }
+        let rows =
+            s.db.list_versions(owner, file_id)
+                .await
+                .expect("list versions");
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn age_sweep_drops_only_rows_past_the_author_bound() {
+        let s = scratch();
+        let (owner, file_id) = seed_file(&s, "old.txt", 10, 1_000_000);
+        let out =
+            s.db.insert_version(owner, file_id, 5, 0, "oldkey".into())
+                .await
+                .expect("insert version");
+        assert!(out.is_empty());
+
+        // Backdate the row beyond any plausible bound.
+        {
+            let conn = s.db.pool.get().unwrap();
+            conn.execute(
+                "UPDATE file_versions SET created_at = '2000-01-01T00:00:00+00:00'",
+                [],
+            )
+            .expect("backdate");
+        }
+
+        // Bound off: the sweep touches nothing.
+        s.db.update_settings(owner, None, None, None, Some(0))
+            .await
+            .expect("disable the age bound");
+        let refs = s.db.sweep_versions().await.expect("sweep");
+        assert!(refs.is_empty(), "0 days means no age bound");
+
+        // Bound on: a row from 2000 is older than a day, and comes back as
+        // the blob to unlink.
+        s.db.update_settings(owner, None, None, None, Some(1))
+            .await
+            .expect("set the age bound");
+        let refs = s.db.sweep_versions().await.expect("sweep");
+        assert_eq!(refs.len(), 1, "the expired row is returned");
+        assert_eq!(s.db.list_versions(owner, file_id).await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn quota_sums_live_rows_and_their_version_history() {
+        let s = scratch();
+        let (owner, file_id) = seed_file(&s, "big.txt", 60, 1000);
+        assert_eq!(s.db.owner_usage(owner).await.unwrap(), 60);
+
+        s.db.insert_version(owner, file_id, 40, 0, "history".into())
+            .await
+            .expect("insert version");
+        assert_eq!(
+            s.db.owner_usage(owner).await.unwrap(),
+            100,
+            "history counts toward used_bytes"
+        );
+
+        assert!(
+            s.db.check_quota(owner, 900).await.is_ok(),
+            "100 + 900 fits 1000"
+        );
+        assert!(
+            matches!(
+                s.db.check_quota(owner, 901).await,
+                Err(AppError::QuotaExceeded { .. })
+            ),
+            "the version bytes are part of the gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_restore_swaps_the_row_to_the_chosen_version() {
+        let s = scratch();
+        let (owner, file_id) = seed_file(&s, "doc.txt", 10, 1_000_000);
+        s.db.insert_version(owner, file_id, 7, 0, "v7".into())
+            .await
+            .expect("insert version");
+        let rows = s.db.list_versions(owner, file_id).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let vid = rows[0].id;
+
+        s.db.finish_restore(owner, file_id, vid)
+            .await
+            .expect("restore");
+        let entry =
+            s.db.entry_for_read(owner, file_id)
+                .await
+                .unwrap()
+                .expect("entry");
+        assert_eq!(entry.size, 7, "the row now describes the restored bytes");
+        assert!(s.db.list_versions(owner, file_id).await.unwrap().is_empty());
+
+        // A second restore of the same row cannot happen: it is gone.
+        assert!(matches!(
+            s.db.finish_restore(owner, file_id, vid).await,
+            Err(AppError::NotFound)
+        ));
     }
 }

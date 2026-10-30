@@ -33,6 +33,8 @@ fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         // Guarded by migration 010_user_admin, so an older database that
         // somehow skipped it fails loudly here rather than silently denying.
         is_admin: row.get("is_admin")?,
+        version_keep_n: row.get("version_keep_n")?,
+        version_keep_days: row.get("version_keep_days")?,
     })
 }
 
@@ -40,8 +42,8 @@ fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
 /// new column is added in a single edit. `password_hash` is deliberately
 /// absent: the sign-in path selects it separately and it never leaves the
 /// auth layer.
-const USER_COLUMNS: &str =
-    "id, username, display_name, is_active, created_at, quota_bytes, theme, is_admin";
+const USER_COLUMNS: &str = "id, username, display_name, is_active, created_at, quota_bytes, \
+                            theme, is_admin, version_keep_n, version_keep_days";
 
 impl Db {
     /// Look up a user by username, including their stored password hash.
@@ -77,22 +79,35 @@ impl Db {
         .await
     }
 
-    /// Save the user's own settings from the user menu: display name and UI
-    /// theme. Only fields the caller passes as `Some` are written, so the two
-    /// halves of the menu (name form, theme picker) can save independently.
-    /// The theme value is validated against the two known themes here rather
-    /// than trusted from the request body.
+    /// Save the user's own settings from the user menu: display name, UI
+    /// theme and the version-retention bounds. Only fields the caller passes
+    /// as `Some` are written, so each section of the dialog saves on its own
+    /// without resending the others. The theme value is validated against the
+    /// two known themes here rather than trusted from the request body, and
+    /// the retention bounds must be non-negative (0 disables a bound).
     pub async fn update_settings(
         &self,
         id: i64,
         display_name: Option<String>,
         theme: Option<String>,
+        version_keep_n: Option<i64>,
+        version_keep_days: Option<i64>,
     ) -> Result<User, AppError> {
         if let Some(theme) = &theme {
             if theme != "light" && theme != "dark" {
                 return Err(AppError::BadRequest(
                     "theme must be 'light' or 'dark'".into(),
                 ));
+            }
+        }
+        for (value, name) in [
+            (&version_keep_n, "version_keep_n"),
+            (&version_keep_days, "version_keep_days"),
+        ] {
+            if value.is_some_and(|v| v < 0) {
+                return Err(AppError::BadRequest(format!(
+                    "{name} must be 0 or greater (0 disables the bound)"
+                )));
             }
         }
         self.run(move |conn| {
@@ -106,6 +121,18 @@ impl Db {
                 conn.execute(
                     "UPDATE users SET theme = ?2 WHERE id = ?1",
                     params![id, theme],
+                )?;
+            }
+            if let Some(keep) = version_keep_n {
+                conn.execute(
+                    "UPDATE users SET version_keep_n = ?2 WHERE id = ?1",
+                    params![id, keep],
+                )?;
+            }
+            if let Some(days) = version_keep_days {
+                conn.execute(
+                    "UPDATE users SET version_keep_days = ?2 WHERE id = ?1",
+                    params![id, days],
                 )?;
             }
             let mut stmt =
@@ -165,7 +192,11 @@ impl Db {
             let mut stmt = conn.prepare(&format!(
                 "SELECT {USER_COLUMNS},
                         (SELECT COALESCE(SUM(size), 0) FROM files
-                          WHERE owner_id = users.id AND deleted_at IS NULL) AS used_bytes
+                          WHERE owner_id = users.id AND deleted_at IS NULL)
+                      + (SELECT COALESCE(SUM(v.size), 0) FROM file_versions v
+                         JOIN files f ON f.id = v.file_id
+                          WHERE f.owner_id = users.id AND f.deleted_at IS NULL)
+                                                               AS used_bytes
                    FROM users ORDER BY username",
             ))?;
             let rows = stmt
@@ -336,11 +367,13 @@ pub fn insert_user(
     })?;
 
     let id = conn.last_insert_rowid();
-    let (quota_bytes, theme): (i64, String) = conn.query_row(
-        "SELECT quota_bytes, theme FROM users WHERE id = ?1",
-        params![id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
+    let (quota_bytes, theme, version_keep_n, version_keep_days): (i64, String, i64, i64) = conn
+        .query_row(
+            "SELECT quota_bytes, theme, version_keep_n, version_keep_days
+              FROM users WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
     Ok(User {
         id,
         username: username.to_string(),
@@ -352,5 +385,7 @@ pub fn insert_user(
         quota_bytes,
         theme,
         is_admin,
+        version_keep_n,
+        version_keep_days,
     })
 }

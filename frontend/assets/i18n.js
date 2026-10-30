@@ -152,6 +152,15 @@
     "share.result": "{n} von {m} Eintr\u00e4gen mit {user} freigegeben.",
     "share.nothing": "Es wurde nichts freigegeben.",
 
+    // version history dialog
+    "versions.history": "Versionsverlauf",
+    "versions.title1": "Versionsverlauf von \"{name}\"",
+    "versions.empty": "Noch keine fr\u00fcheren Versionen.",
+    "versions.current": "Aktuell",
+    "versions.restoreConfirm":
+      "Diese Version wiederherstellen? Der aktuelle Inhalt wird die neueste Version.",
+    "versions.deleteConfirm": "Diese Version und ihre Bytes l\u00f6schen?",
+
     // move / copy dialog
     "transfer.moveTitle": "{what} verschieben nach\u2026",
     "transfer.copyTitle": "{what} kopieren nach\u2026",
@@ -274,6 +283,12 @@
       "Das neue Passwort muss mindestens 8 Zeichen lang sein.",
     "settings.passChanged":
       "Passwort ge\u00e4ndert. Andere Sitzungen dieses Kontos wurden abgemeldet.",
+    "settings.versioning": "Versionsverlauf",
+    "settings.versioningHint":
+      "Wie viele Versionen pro Datei behalten werden. 0 hebt die jeweilige Grenze auf.",
+    "settings.keepN": "Versionen pro Datei",
+    "settings.keepDays": "Aufbewahrung in Tagen",
+    "settings.versioningSaved": "Aufbewahrung gespeichert.",
 
     // passkeys
     "passkey.added": "hinzugef\u00fcgt {date}",
@@ -602,6 +617,15 @@
     "share.result": "{n} of {m} item(s) shared with {user}.",
     "share.nothing": "Nothing was shared.",
 
+    // version history dialog
+    "versions.history": "Version history",
+    "versions.title1": "Version history of \"{name}\"",
+    "versions.empty": "No previous versions yet.",
+    "versions.current": "Current",
+    "versions.restoreConfirm":
+      "Restore this version? The current content becomes the newest version.",
+    "versions.deleteConfirm": "Delete this version and its bytes?",
+
     // move / copy dialog
     "transfer.moveTitle": "Move {what} to\u2026",
     "transfer.copyTitle": "Copy {what} to\u2026",
@@ -729,6 +753,12 @@
       "New password must be at least 8 characters.",
     "settings.passChanged":
       "Password changed. Other sessions of this account were signed out.",
+    "settings.versioning": "Version history",
+    "settings.versioningHint":
+      "How many versions of each file are kept. 0 disables the respective bound.",
+    "settings.keepN": "Versions per file",
+    "settings.keepDays": "Keep for days",
+    "settings.versioningSaved": "Versioning settings saved.",
 
     // passkeys
     "passkey.added": "added {date}",
@@ -1052,6 +1082,14 @@
     "share.result": "{user}vaD {n}/{m} nat boqlu'.",
     "share.nothing": "ram boqbe'.",
 
+    // version history dialog
+    "versions.history": "QeS",
+    "versions.title1": "QeS \"{name}\"",
+    "versions.empty": "QeS ghajbe'.",
+    "versions.current": "DaH",
+    "versions.restoreConfirm": "tupvam qa'? DaH ngoD chIp.",
+    "versions.deleteConfirm": "tupvam qawmo'?",
+
     // move / copy dialog
     "transfer.moveTitle": "{what} ghoS\u2026",
     "transfer.copyTitle": "{what} qon\u2026",
@@ -1168,6 +1206,11 @@
     "settings.passShort":
       "mu'mu' chu' 8 pong puS.",
     "settings.passChanged": "mu'mu' choHlu'. latlh mu' lu'SaHbe'.",
+    "settings.versioning": "QeS",
+    "settings.versioningHint": "tup chIp. 0 bItu'.",
+    "settings.keepN": "tup chIp",
+    "settings.keepDays": "poH chIp",
+    "settings.versioningSaved": "QeS qan.",
 
     // passkeys
     "passkey.added": "{date} chu'",

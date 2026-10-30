@@ -169,6 +169,33 @@ impl Db {
                      WHERE name = 'sid'",
                 ),
             ),
+            // File version history: the table needs no guard
+            // (`CREATE ... IF NOT EXISTS`), the two retention columns each
+            // ship their own migration file and guard, as every added
+            // column has since 003.
+            (
+                "014_file_versions",
+                include_str!("../../migrations/014_file_versions.sql"),
+                None,
+            ),
+            (
+                "015_user_version_keep_n",
+                include_str!("../../migrations/015_user_version_keep_n.sql"),
+                // Skip once `users.version_keep_n` exists.
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('users')
+                     WHERE name = 'version_keep_n'",
+                ),
+            ),
+            (
+                "016_user_version_keep_days",
+                include_str!("../../migrations/016_user_version_keep_days.sql"),
+                // Skip once `users.version_keep_days` exists.
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('users')
+                     WHERE name = 'version_keep_days'",
+                ),
+            ),
         ];
         let conn = self.pool.get()?;
         for (name, sql, guard) in MIGRATIONS {

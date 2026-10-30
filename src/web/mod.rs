@@ -8,7 +8,7 @@ use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
-use axum::routing::{any, get, post, put};
+use axum::routing::{any, delete, get, post, put};
 use axum::Router;
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::compression::CompressionLayer;
@@ -176,6 +176,18 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/files/trash/restore", post(routes::files::trash_restore))
         .route("/files/trash/purge", post(routes::files::trash_purge))
         .route("/files/trash/empty", post(routes::files::trash_empty))
+        // Version history: list and stream one version (READ), exchange
+        // restore and drop one row (UPDATE).
+        .route("/files/versions", get(routes::files::versions_list))
+        .route(
+            "/files/version/download",
+            get(routes::files::version_download),
+        )
+        .route(
+            "/files/version/restore",
+            post(routes::files::version_restore),
+        )
+        .route("/files/version", delete(routes::files::version_delete))
         // Store a key record without touching bytes (folders on first
         // encrypted write, re-binding after a move, share-time migration).
         .route("/files/key", put(routes::files::put_key));

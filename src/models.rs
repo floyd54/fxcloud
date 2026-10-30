@@ -32,10 +32,27 @@ pub struct User {
     /// account on upgrades.
     #[serde(default)]
     pub is_admin: bool,
+    /// Version-history bounds per file (migrations `015`/`016`, section 5 of
+    /// `concepts/versioning.md`): keep at most `version_keep_n` versions
+    /// (0 = no count bound) and none older than `version_keep_days` (0 = no
+    /// age bound). Defaults 20 / 180; both are edited in the settings
+    /// dialog's versioning section.
+    #[serde(default = "default_version_keep_n")]
+    pub version_keep_n: i64,
+    #[serde(default = "default_version_keep_days")]
+    pub version_keep_days: i64,
 }
 
 fn default_theme() -> String {
     "light".to_string()
+}
+
+fn default_version_keep_n() -> i64 {
+    20
+}
+
+fn default_version_keep_days() -> i64 {
+    180
 }
 
 /// One row of `GET /api/users` — the accounts the share dialog offers as
@@ -189,25 +206,51 @@ pub struct PublicKeyInfo {
 
 /// Where a file's content blob lives on disk.
 ///
-/// The blob path is derived from these three values (see the `files` module
-/// docs for the layout), so a blob can be located without a database row —
-/// which is exactly what deletions need: the rows are gone by the time the
-/// content is removed, therefore they are captured before.
-#[derive(Debug, Clone, Copy)]
-pub struct BlobRef {
-    pub file_id: i64,
-    pub owner_id: i64,
-    pub created_at: DateTime<Utc>,
+/// The blob path is derived from these values (see the `files` module docs
+/// for the layout), so a blob can be located without a database row - which
+/// is exactly what deletions need: the rows are gone by the time the content
+/// is removed, therefore they are captured before.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BlobRef {
+    /// A file entry's content: `<owner>/<year>/<h1>/<h2>/<file_id>` under
+    /// the blob dir (the flat pre-layout only ever applies here, which is
+    /// why the legacy fallback is this variant's alone).
+    Entry {
+        file_id: i64,
+        owner_id: i64,
+        created_at: DateTime<Utc>,
+    },
+    /// A kept version's content: `_versions/<file_id>/<version_key>`, where
+    /// the key is the row's `blob_created_at` value - time plus random
+    /// bytes, unique per attempt so the link can exist before its row.
+    Version { file_id: i64, version_key: String },
 }
 
 impl From<&FileEntry> for BlobRef {
     fn from(entry: &FileEntry) -> Self {
-        Self {
+        Self::Entry {
             file_id: entry.id,
             owner_id: entry.owner_id,
             created_at: entry.created_at,
         }
     }
+}
+
+/// One row of `file_versions`: the metadata half of a kept previous version.
+///
+/// The bytes live in their own path space (see [`BlobRef::Version`]);
+/// `blob_key` is what locates them and never leaves the server, while
+/// `created_at` - when the content this version preserves was replaced - is
+/// what the listing shows and retention counts from.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileVersion {
+    pub id: i64,
+    pub size: i64,
+    pub enc_version: i64,
+    pub created_at: DateTime<Utc>,
+    /// The version blob's on-disk key (`BlobRef::Version`).
+    #[serde(skip)]
+    pub blob_key: String,
 }
 
 /// One step in a breadcrumb trail used by the file explorer UI.
@@ -264,14 +307,21 @@ pub struct LoginRequest {
 
 /// Settings saved from the user menu (`PUT /api/me`).
 ///
-/// Both fields are optional so each half of the menu - the name form and the
-/// theme picker - saves on its own without resending the other's value.
+/// The optional fields are saved independently - the name form, the theme
+/// picker and the version-retention section each send their own values
+/// without resending the others.
 #[derive(Debug, Default, Deserialize)]
 pub struct UpdateMeRequest {
     #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
     pub theme: Option<String>,
+    /// How many versions to keep per file (`version_keep_n`, 0 = unbound).
+    #[serde(default)]
+    pub version_keep_n: Option<i64>,
+    /// Age bound for versions in days (`version_keep_days`, 0 = unbound).
+    #[serde(default)]
+    pub version_keep_days: Option<i64>,
 }
 
 /// Password change from the user menu (`PUT /api/me/password`).

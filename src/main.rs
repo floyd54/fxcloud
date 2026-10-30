@@ -138,6 +138,16 @@ async fn main() -> anyhow::Result<()> {
                     Ok(blobs) => state.files.delete_blobs(&blobs).await,
                     Err(e) => tracing::warn!(error = %e, "trash purge failed"),
                 }
+                // The age bound of version retention rides the same cadence
+                // (concepts/versioning.md section 5): rows first, their
+                // version blobs second, like every other deletion.
+                match state.db.sweep_versions().await {
+                    Ok(blobs) if !blobs.is_empty() => {
+                        state.files.delete_blobs(&blobs).await;
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "version age sweep failed"),
+                }
             }
         });
     }

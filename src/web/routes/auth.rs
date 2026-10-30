@@ -196,18 +196,23 @@ pub async fn me(
     Ok(Json(me))
 }
 
-/// PUT /api/me – save the settings from the user menu (display name, theme).
+/// PUT /api/me – save the settings from the user menu (display name, theme,
+/// version-retention bounds).
 ///
-/// Only the fields present in the body are written, so the two halves of the
-/// menu save independently. The theme value is validated server-side against
-/// the two known themes; the display name is trimmed and cannot be empty -
-/// an empty label would leave the topbar saying nothing at all.
+/// Only the fields present in the body are written, so each section of the
+/// dialog saves independently. The theme value is validated server-side
+/// against the two known themes, the retention bounds against being
+/// non-negative; the display name is trimmed and cannot be empty - an empty
+/// label would leave the topbar saying nothing at all.
 pub async fn update_me(
     State(state): State<SharedState>,
     user: AuthUser,
     Json(req): Json<UpdateMeRequest>,
 ) -> Result<Json<User>, AppError> {
-    let no_fields = req.display_name.is_none() && req.theme.is_none();
+    let no_fields = req.display_name.is_none()
+        && req.theme.is_none()
+        && req.version_keep_n.is_none()
+        && req.version_keep_days.is_none();
     let display_name = req.display_name.map(|d| d.trim().to_string());
     if let Some(name) = &display_name {
         if name.is_empty() {
@@ -224,7 +229,13 @@ pub async fn update_me(
     }
     let updated = state
         .db
-        .update_settings(user.id(), display_name, req.theme)
+        .update_settings(
+            user.id(),
+            display_name,
+            req.theme,
+            req.version_keep_n,
+            req.version_keep_days,
+        )
         .await?;
     Ok(Json(updated))
 }

@@ -1,9 +1,10 @@
 # Concept: file versioning (decided)
 
-Status: decided 2026-10-30. Implementation order: **2 of 3** - after
-streaming S1 (same code paths), before group folders. Green means the
-open questions are answered (section 12); this document is the working
-spec until the feature ships.
+Status: decided 2026-10-30, implemented the same day (v0.1.2).
+Implementation order: **2 of 3** - after streaming S1 (same code paths),
+before group folders. Green means the open questions are answered
+(section 12); section 13 records where the shipped implementation
+refines this spec.
 
 ## 1. Goal and non-goals
 
@@ -161,3 +162,46 @@ retention sweep, settings section, one dialog, ~10 pins)
 | 5 | Copy | copies carry the current content only; move/rename carry history (same row) |
 | 6 | WebDAV | invisible (no RFC 5842) |
 | 7 | Order | after streaming S1, before groups |
+
+## 13. Implementation notes (what shipped differs, and why)
+
+Refinements recorded while building it (v0.1.2), so the spec above stays
+readable as the intent:
+
+- **Which paths version today.** The multipart upload is create-only
+  (`409` on a duplicate name), so no upload overwrites anything: the
+  replacement paths that keep history are the editor save and the WebDAV
+  `PUT`. Copy/move-onto-existing trash the old entry instead of replacing
+  it in place, and its history follows the row into the trash (decision
+  5), so there is nothing to pin there either. The pin hook lives in the
+  one shared replace step (`pin_content_as_version`), so a future
+  overwrite-capable upload joins by calling it.
+- **Version key.** `blob_created_at` is not a timestamp: it is the whole
+  path component, `<microseconds>-<16 hex random>` - unique by
+  construction, which the link-before-row crash rule needs (a lookup
+  cannot exist yet, and two saves under one lock are microseconds apart).
+  The path is `_versions/<file_id>/<key>` with no year levels.
+- **Quota gate order.** The metadata statement (UPDATE grant + quota)
+  runs *before* the pin. With a pin the quota delta is the incoming
+  `size` alone: the outgoing bytes stay in the total, moving from the
+  files sum to the versions sum.
+- **Zero-byte outgoing is never versioned.** The first fill of an empty
+  file keeps no empty history; `pin_content_as_version` returns without
+  a row.
+- **Restore touches `enc_version` too.** The exchange updates `size`,
+  `enc_version` and `modified_at` - the version's bytes are ciphertext
+  iff they were ciphertext when saved. `enc_key` stays untouched
+  (DECISION 5: one file key across all versions).
+- **Grant before bytes.** A restore asserts the UPDATE grant
+  (`require_update`) before its first hardlink, not only in the later
+  metadata statement: the exchange starts by naming bytes.
+- **Orphans.** Like `_orphans`, there is no automatic GC: a crash between
+  link and row leaves one orphan file under `_versions/`, harmless and
+  rare.
+- **Version download is ranged.** Beyond the spec's "stream one version"
+  it shares the download helper, so ranges (206/416) work on versions.
+- **UI current marker.** The dialog lists only kept versions; the
+  current content is the file itself in the listing behind it, so no
+  "current" row is rendered.
+- **Delete route** takes `?id=&vid=` (the spec's table forgot the
+  version id).
