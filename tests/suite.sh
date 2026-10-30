@@ -803,6 +803,138 @@ curl -s -D "$ROOT/ph.txt" -o /dev/null -b "$JA" "$BASE/api/files/download?id=$NI
 grep -qi '^content-disposition: attachment' "$ROOT/ph.txt" \
   && ok "download endpoint stays attachment" || bad "download disposition changed"
 
+# ---- streaming (S1): server pipes stay flat, ranges reach /download ----
+# The pins below hold the memory work in place: no whole-buffer helper may
+# come back (the source pins are the cheap early warning), the download
+# honours ranges exactly like the preview does, and the caps answer 413 by
+# counting bytes rather than by holding them.
+note "streaming source pins: no whole-buffer path is back"
+grep -q 'field\.bytes()' "$REPO/src/web/routes/files.rs" \
+  && bad "the upload buffers the file field again" \
+  || ok "source: no field.bytes() on the upload path"
+grep -q 'body: Bytes' "$REPO/src/web/routes/files.rs" \
+  && bad "the editor save takes a buffered body again" \
+  || ok "source: editor save consumes the request, not Bytes"
+grep -q 'to_bytes' "$REPO/src/webdav.rs" \
+  && bad "WebDAV buffers bodies with to_bytes again" \
+  || ok "source: WebDAV PUT streams instead of to_bytes"
+grep -rq 'read_blob' "$REPO/src" \
+  && bad "a whole-buffer read path is back" \
+  || ok "source: no read_blob left - open_blob streams"
+grep -q 'sweep_temps' "$REPO/src/main.rs" \
+  && ok "source: startup sweeps stale temp files" \
+  || bad "main.rs never calls sweep_temps"
+grep -q 'fn commit_blob' "$REPO/src/files/mod.rs" \
+  && ok "source: commits happen by rename (commit_blob)" \
+  || bad "files/mod.rs has no commit_blob"
+
+note "download honours byte ranges like the preview (206/416 + headers)"
+curl -s -D "$ROOT/dh.txt" -o /dev/null -b "$JA" "$BASE/api/files/download?id=$NID"
+grep -qi '^accept-ranges: bytes' "$ROOT/dh.txt" \
+  && ok "download advertises accept-ranges: bytes" \
+  || bad "download accept-ranges missing"
+grep -qi '^content-length: 32' "$ROOT/dh.txt" \
+  && ok "download carries the content-length from file metadata" \
+  || bad "download content-length: $(grep -i '^content-length' "$ROOT/dh.txt")"
+DLO=$(curl -s -D "$ROOT/dh.txt" -b "$JA" -H 'Range: bytes=7-11' "$BASE/api/files/download?id=$NID")
+grep -qi '^HTTP/[0-9.]* 206' "$ROOT/dh.txt" && grep -qi '^content-range: bytes 7-11/32' "$ROOT/dh.txt" \
+  && [ "$DLO" = "previ" ] \
+  && ok "download range bytes=7-11 -> 206 + exact slice" \
+  || bad "download range: $(head -1 "$ROOT/dh.txt") [$DLO]"
+DLO=$(curl -s -D "$ROOT/dh.txt" -b "$JA" -H 'Range: bytes=-10' "$BASE/api/files/download?id=$NID")
+grep -qi '^content-range: bytes 22-31/32' "$ROOT/dh.txt" && [ "$DLO" = "0123456789" ] \
+  && ok "download suffix range bytes=-10 -> last 10 bytes" \
+  || bad "download suffix range: [$DLO]"
+RC=$(curl -s -o /dev/null -D "$ROOT/dh.txt" -w '%{http_code}' -b "$JA" \
+  -H 'Range: bytes=9999-' "$BASE/api/files/download?id=$NID")
+[ "$RC" = "416" ] && grep -qi '^content-range: bytes \*/32' "$ROOT/dh.txt" \
+  && ok "download unsatisfiable range -> 416 + bytes */32" \
+  || bad "download 416: got $RC"
+
+note "a 16 MiB file streams in and answers a ranged read at its far end"
+head -c 16777216 /dev/urandom > "$ROOT/src/big.bin"
+BIGR=$(up "$JA" "$DOC" big.bin)
+BIGID=$(jget "$BIGR" entry.id)
+[ -n "$BIGID" ] && ok "16 MiB upload succeeded (id $BIGID)" \
+  || bad "16 MiB upload failed: $BIGR"
+OLIST=$(req GET "/api/files?parent=$DOC" "$JA")
+[ "$(field "$OLIST" big.bin size)" = "16777216" ] \
+  && ok "its stored size is exactly 16 MiB" \
+  || bad "big.bin size: '$(field "$OLIST" big.bin size)'"
+RC=$(curl -s -o "$ROOT/big.dl" -D "$ROOT/dh.txt" -w '%{http_code}' -b "$JA" \
+  -H 'Range: bytes=16711680-16777215' "$BASE/api/files/download?id=$BIGID")
+grep -qi '^HTTP/[0-9.]* 206' "$ROOT/dh.txt" \
+  && grep -qi '^content-range: bytes 16711680-16777215/16777216' "$ROOT/dh.txt" \
+  && [ "$RC" = "206" ] \
+  && ok "far-end range -> 206 + exact window on the 16 MiB file" \
+  || bad "far-end range: rc=$RC $(head -1 "$ROOT/dh.txt")"
+tail -c 65536 "$ROOT/src/big.bin" > "$ROOT/big.tail"
+cmp -s "$ROOT/big.tail" "$ROOT/big.dl" \
+  && ok "the last 64 KiB arrive byte-identical (streamed from disk)" \
+  || bad "ranged slice differs from the source file"
+[ -z "$(find "$DATA/tmp" -name '*.part' -print -quit 2>/dev/null)" ] \
+  && ok "no temp file survives a completed upload" \
+  || bad "leftover temp files: $(ls "$DATA/tmp")"
+
+note "a refused upload takes its temp file with it"
+# enc_version=1 without enc_key fails *past* the file field: the bytes were
+# already streamed into the temp file when the refusal lands, so only the
+# error path's cleanup keeps them from lingering until the next restart.
+printf 'streamed-but-refused' > "$ROOT/src/refused.bin"
+RC=$(curl -s -o "$ROOT/refused.json" -w '%{http_code}' -b "$JA" \
+  -F "parent=$DOC" -F "enc_version=1" -F "file=@$ROOT/src/refused.bin" \
+  "$BASE/api/files/upload")
+[ "$RC" = "400" ] && ok "encrypted upload without enc_key -> 400" \
+  || bad "expected 400 for missing enc_key, got $RC"
+[ -z "$(find "$DATA/tmp" -name '*.part' -print -quit 2>/dev/null)" ] \
+  && ok "the refused upload left no temp file behind" \
+  || bad "temp survived the failed upload: $(ls "$DATA/tmp")"
+
+# -- S1: 413 is counted, not buffered --
+# A sidecar with FXCLOUD_MAX_UPLOAD_MB=1 (own data dir, own loopback port):
+# a 2 MiB body is twice the cap, so the byte count refuses it long before
+# memory could matter. It is killed by its own PID - never by comm name,
+# the shared binary name would take the instance under test with it.
+note "the upload cap answers 413 while counting (sidecar, 1 MiB limit)"
+MINI="$ROOT/mini"
+mkdir -p "$MINI"
+FXCLOUD_DATA="$MINI" FXCLOUD_PORT=$((PORT + 41)) FXCLOUD_MAX_UPLOAD_MB=1 \
+  "$BIN" >>"$ROOT/mini.log" 2>&1 &
+MINIPID=$!
+MINIBASE=http://127.0.0.1:$((PORT + 41))
+MINIUP=0
+for i in $(seq 1 100); do
+  RC=$(curl -s -o /dev/null -w '%{http_code}' "$MINIBASE/api/me")
+  [ "$RC" != "000" ] && { MINIUP=1; break; }
+  sleep 0.2
+done
+[ "$MINIUP" = "1" ] && ok "sidecar instance came up (fresh data dir)" \
+  || bad "sidecar did not come up: $(tail -5 "$ROOT/mini.log")"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+  -d '{"username":"mini","password":"correct-horse"}' "$MINIBASE/api/register")
+# 200 when the fresh instance activates its first account outright, 202 when
+# it parks pending activation - the login below proves which happened.
+{ [ "$RC" = "200" ] || [ "$RC" = "202" ]; } \
+  && ok "sidecar register accepted" || bad "sidecar register: rc=$RC"
+sqlite3 "$MINI/fxcloud.db" "UPDATE users SET is_active=1 WHERE username='mini';"
+RC=$(curl -s -o /dev/null -c "$ROOT/mini.jar" -w '%{http_code}' \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"mini","password":"correct-horse"}' "$MINIBASE/api/login")
+[ "$RC" = "200" ] && ok "sidecar sign-in works" || bad "sidecar login: rc=$RC"
+head -c 2097152 /dev/zero > "$ROOT/mini-big.bin"
+RC=$(curl -s -o "$ROOT/mini413.json" -w '%{http_code}' -b "$ROOT/mini.jar" \
+  -F "file=@$ROOT/mini-big.bin" "$MINIBASE/api/files/upload")
+[ "$RC" = "413" ] && ok "a 2 MiB body against a 1 MiB cap -> 413" \
+  || bad "expected 413, got $RC: $(cat "$ROOT/mini413.json")"
+grep -q '"code":"payload_too_large"' "$ROOT/mini413.json" \
+  && ok "the 413 carries code payload_too_large" \
+  || bad "413 body: $(cat "$ROOT/mini413.json")"
+[ -d "$MINI/tmp" ] && [ -z "$(find "$MINI/tmp" -name '*.part' -print -quit 2>/dev/null)" ] \
+  && ok "the over-cap upload's temp file is gone" \
+  || bad "temp survived the 413: $(ls "$MINI/tmp" 2>&1)"
+kill "$MINIPID" 2>/dev/null || true
+wait "$MINIPID" 2>/dev/null || true
+
 # ---- content sniffing: the bytes decide the stored type ----
 # A browser says "application/octet-stream" for a file without an extension -
 # its type table is keyed on the name. The server reads the bytes instead

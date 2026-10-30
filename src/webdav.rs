@@ -4,7 +4,9 @@
 //! Mounted at `/dav/` and authenticated via HTTP Basic auth. The path after
 //! `/dav/` is relative to the authenticated user's home.
 
-use axum::body::{to_bytes, Body};
+use std::path::PathBuf;
+
+use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -275,8 +277,8 @@ async fn serve_file(
         return forbidden();
     }
 
-    match state.files.read_blob(owner_id, entry.id).await {
-        Ok((e, data)) => {
+    match state.files.open_blob(owner_id, entry.id).await {
+        Ok((e, file, len)) => {
             // Encrypted rows are exposed as opaque ciphertext: same branch the
             // JSON download takes, so a dumb client sees one consistent,
             // self-describing content type instead of a guessed one.
@@ -290,13 +292,15 @@ async fn serve_file(
             let etag = format!("\"{}-{}-{}\"", e.id, e.size, e.modified_at.timestamp());
             let builder = Response::builder()
                 .header(header::CONTENT_TYPE, content_type)
-                .header(header::CONTENT_LENGTH, data.len())
+                .header(header::CONTENT_LENGTH, len)
                 .header(header::ETAG, etag)
                 .header(header::LAST_MODIFIED, http_date(&e.modified_at));
             let result = if head_only {
                 builder.body(Body::empty())
             } else {
-                builder.body(Body::from(data))
+                // Streamed in 64 KiB chunks (S1): a mount client pulling a
+                // film over DAV costs kilobytes of server memory.
+                builder.body(crate::web::routes::files::file_stream(file))
             };
             result.unwrap_or_else(|_| internal())
         }
@@ -333,33 +337,84 @@ async fn put_file(
         Ok(p) => p,
         Err(r) => return r,
     };
-
-    let overwrite = overwrite_allowed(req.headers());
-    let body = match to_bytes(req.into_body(), MAX_PUT_BYTES).await {
-        Ok(b) => b,
-        Err(_) => {
-            return (StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large").into_response()
-        }
-    };
-    let size = body.len() as i64;
-    let declared = mime_guess::from_path(&name).first().map(|m| m.to_string());
-
     let existing = match state.db.resolve_path(owner_id, segments.to_vec()).await {
         Ok(e) => e,
         Err(e) => return e.into_response(),
     };
 
-    match existing {
-        Some(old) if old.is_dir => method_not_allowed(),
+    // The checks that need no bytes come first (S1): a 403 or 405 costs the
+    // client nothing but the request line, and the body is only read after
+    // they passed.
+    match &existing {
+        Some(old) if old.is_dir => return method_not_allowed(),
         Some(old) => {
-            // Overwrite in place (the blob path is derived from the id, so it
-            // is replaced).
-            if !overwrite {
+            if !overwrite_allowed(req.headers()) {
                 return precondition();
             }
             if !crate::sharing::grants(old.permissions, crate::sharing::PERM_UPDATE) {
                 return forbidden();
             }
+        }
+        None => {
+            // New file: the parent must grant CREATE (always true for own root).
+            if !crate::sharing::grants(parent.permissions, crate::sharing::PERM_CREATE) {
+                return forbidden();
+            }
+        }
+    }
+
+    // The body streams into a temp file; MAX_PUT_BYTES is a counted cap, not
+    // a buffer size (S1): a 4 GiB PUT costs kilobytes of memory.
+    let (temp, sample, size) = match crate::web::routes::files::stream_body_to_temp(
+        state,
+        req.into_body(),
+        MAX_PUT_BYTES as u64,
+    )
+    .await
+    {
+        Ok(t) => t,
+        // Keep the plain-text 413 DAV clients have always seen here.
+        Err(AppError::PayloadTooLarge(_)) => {
+            return (StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large").into_response()
+        }
+        Err(e) => return e.into_response(),
+    };
+
+    let outcome =
+        put_finish(state, owner_id, segments, &name, &parent, &existing, &temp, &sample, size)
+            .await;
+    match outcome {
+        // Committed: the temp file was renamed into the blob layout.
+        Ok(response) => response,
+        // Nothing was published; the temp file is garbage.
+        Err(response) => {
+            let _ = tokio::fs::remove_file(&temp).await;
+            response
+        }
+    }
+}
+
+/// The byte-dependent half of [`put_file`]: the FXE1 check, the type
+/// decision and the metadata + blob commit. `Ok` means committed (the temp
+/// file was renamed into the blob layout); `Err` means the caller still owns
+/// the temp file.
+async fn put_finish(
+    state: &SharedState,
+    owner_id: i64,
+    segments: &[String],
+    name: &str,
+    parent: &ParentTarget,
+    existing: &Option<FileEntry>,
+    temp: &PathBuf,
+    sample: &[u8],
+    size: i64,
+) -> Result<Response, Response> {
+    let declared = mime_guess::from_path(name).first().map(|m| m.to_string());
+
+    match existing {
+        Some(old) => {
+            // Overwrite in place (the blob path is derived from the id, so it
+            // is replaced).
             // A row the client encrypted carries a wrapped key the server
             // cannot read, so it only ever accepts a body it can *recognise*
             // as another FXE1 container - a desktop client's plaintext would
@@ -369,14 +424,16 @@ async fn put_file(
             // never blind). The row's `enc_key` is untouched, so the writer
             // must be whoever holds the file key - same contract the editor
             // save path takes (DECISION 5: no rotation on overwrite).
-            if old.enc_version > 0 && !body.starts_with(crate::files::FXE1_MAGIC) {
-                return (
-                    StatusCode::CONFLICT,
-                    "Encrypted file: this row only accepts an FXE1 container. A \
-                     desktop client cannot produce one - write through the web \
-                     client, or use the fxcloud sync agent.",
-                )
-                    .into_response();
+            if old.enc_version > 0 && !sample.starts_with(crate::files::FXE1_MAGIC) {
+                return Err(
+                    (
+                        StatusCode::CONFLICT,
+                        "Encrypted file: this row only accepts an FXE1 container. A \
+                         desktop client cannot produce one - write through the web \
+                         client, or use the fxcloud sync agent.",
+                    )
+                        .into_response(),
+                );
             }
             // No magic sniffing on plaintext rows: their content is arbitrary
             // user data, and four bytes of it are none of the server's
@@ -386,16 +443,17 @@ async fn put_file(
             // `FileService::begin_replace`).
             {
                 // A plaintext row gets its type from the bytes themselves
-                // (magic numbers, then the text heuristic), so a file pushed
-                // over DAV without an extension still opens as text in the
-                // web UI. An encrypted row keeps the name-based guess: the
-                // body is an FXE1 container, and sniffing ciphertext would
-                // store a type that describes neither the wrapper nor the
-                // plaintext the server has never seen.
+                // (magic numbers, then the text heuristic, both on the
+                // sniffed head of the body), so a file pushed over DAV
+                // without an extension still opens as text in the web UI. An
+                // encrypted row keeps the name-based guess: the body is an
+                // FXE1 container, and sniffing ciphertext would store a type
+                // that describes neither the wrapper nor the plaintext the
+                // server has never seen.
                 let mime = if old.enc_version > 0 {
                     declared
                 } else {
-                    crate::files::resolve_mime(declared.as_deref(), &body)
+                    crate::files::resolve_mime(declared.as_deref(), sample)
                 };
                 let _write = state.files.begin_replace(old.id).await;
                 if let Err(e) = state
@@ -403,45 +461,41 @@ async fn put_file(
                     .update_file_meta(owner_id, old.id, size, mime, None)
                     .await
                 {
-                    return e.into_response();
+                    return Err(e.into_response());
                 }
-                if let Err(e) = state.files.write_blob(&old, body.to_vec()).await {
-                    return e.into_response();
+                if let Err(e) = state.files.commit_blob(old, temp).await {
+                    return Err(e.into_response());
                 }
             }
-            StatusCode::NO_CONTENT.into_response()
+            Ok(StatusCode::NO_CONTENT.into_response())
         }
         None => {
-            // New file: the parent must grant CREATE (always true for own root).
-            if !crate::sharing::grants(parent.permissions, crate::sharing::PERM_CREATE) {
-                return forbidden();
-            }
             // A *create* is not an overwrite, so nothing can be destroyed and
             // nothing is sniffed for the encryption check: `enc_version` stays
             // 0, exactly as it would for any other file whose first four bytes
             // happen to spell "FXE1". DAV has no channel for a key record, so
             // it can only ever create plaintext rows - and a plaintext row's
             // type is the bytes' own business (see the overwrite branch).
-            let mime = crate::files::resolve_mime(declared.as_deref(), &body);
+            let mime = crate::files::resolve_mime(declared.as_deref(), sample);
             match state
                 .db
-                .create_file(owner_id, parent.id, name, size, mime, 0, None)
+                .create_file(owner_id, parent.id, name.to_string(), size, mime, 0, None)
                 .await
             {
                 Ok(entry) => {
-                    if let Err(e) = state.files.write_blob(&entry, body.to_vec()).await {
+                    if let Err(e) = state.files.commit_blob(&entry, temp).await {
                         // Failed upload rollback: the row never existed for the
                         // user, so drop it for good instead of trashing it.
                         let _ = state.db.hard_delete_entry(owner_id, entry.id).await;
-                        return e.into_response();
+                        return Err(e.into_response());
                     }
-                    (
+                    Ok((
                         StatusCode::CREATED,
                         [(header::LOCATION, build_href(segments, false))],
                     )
-                        .into_response()
+                        .into_response())
                 }
-                Err(e) => e.into_response(),
+                Err(e) => Err(e.into_response()),
             }
         }
     }
@@ -672,8 +726,9 @@ async fn copy_node(
                 None,
             )
             .await?;
-        let (_e, data) = state.files.read_blob(owner_id, src.id).await?;
-        state.files.write_blob(&new_file, data).await?;
+        // Filesystem-level copy (S1): the same permission check every read
+        // takes, then 64 KiB at a time - the file is never held in memory.
+        state.files.copy_blob(owner_id, src.id, &new_file).await?;
         Ok(new_file)
     }
 }

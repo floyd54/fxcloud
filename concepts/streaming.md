@@ -20,7 +20,7 @@ browser that no longer holds large encrypted files in the JS heap.
 | WebDAV PUT | `to_bytes(4 GiB)` + `.to_vec()` | up to ~8 GiB peak (double copy) |
 | Download / preview / DAV GET | `read_blob` -> `Vec<u8>` | RAM = file size; ranges slice from memory, only on preview |
 | Client (E2EE upload) | `file.arrayBuffer()` | JS heap = file size + ciphertext |
-| ZIP builder | **streams already** | the pattern to reuse (`blob_path` is public for it) |
+| ZIP builder | `Cursor<Vec<u8>>` output | RAM = archive size; the input side already reads in 64 KiB chunks (`blob_path` is public for it) |
 
 Range parsing (`parse_byte_range`, 206/416 semantics) already exists and
 is tested - it is just wired to a buffer instead of a file.
@@ -33,11 +33,15 @@ is tested - it is just wired to a buffer instead of a file.
   commit is a `rename` (atomic, no copies, constant memory).
 - Count while writing; a per-file count above `max_upload_bytes`
   aborts with **413** and removes the temp file. The existing
-  `DefaultBodyLimit` stays as the outer request guard.
-- MIME sniffing from a **prefix sample** (first 8 KiB): magic numbers
-  and the FXE1 check only need the head; the text heuristic reads the
-  sample instead of the whole buffer (documented behavior change: type
-  detection is decided on the head of the file).
+  `DefaultBodyLimit` stays as the outer request guard, sized
+  `max_upload + 64 KiB` so multipart framing never trips it - the
+  counted cap inside the chunk loop is what refuses the file itself.
+- MIME sniffing from a **prefix sample** (first 64 KiB:
+  `SNIFF_WINDOW`; ISO magic needs 32 KiB, the text heuristic
+  re-windows it to 8 KiB): magic numbers and the FXE1 check only need
+  the head; the text heuristic reads the sample instead of the whole
+  buffer (documented behavior change: type detection is decided on
+  the head of the file).
 - Error paths: temp removed, metadata row rolled back - the pairing
   rules of `begin_replace` are unchanged.
 - Startup sweep removes stale `*.part` files (the precedent is the
@@ -56,9 +60,10 @@ is tested - it is just wired to a buffer instead of a file.
 
 **Read paths stream:**
 
-- New `open_blob(user_id, file_id)` -> `(FileEntry, File, len)` next to
-  `read_blob`, with the same permission check, `is_dir` refusal, blob
-  path + legacy fallback (open instead of read).
+- New `open_blob(user_id, file_id)` -> `(FileEntry, File, len)`
+  **instead of** `read_blob` (which goes away), with the same
+  permission check, `is_dir` refusal, blob path + legacy fallback
+  (open instead of read).
 - `GET /api/files/download`: streaming body, `Content-Length` from file
   metadata, **`Accept-Ranges: bytes`** and full `Range` handling
   (206/416 + `Content-Range`) - decision 10: same behavior as preview.
@@ -68,7 +73,13 @@ is tested - it is just wired to a buffer instead of a file.
 - WebDAV `GET`: streaming body.
 - `copy_recursive`: filesystem-level copy where it currently reads and
   rewrites (verified during implementation).
-- ZIP: untouched (already streams).
+- ZIP: input side already streams; the **output cannot go through a
+  pipe** - `ZipWriter` (zip 9) requires `W: Write + Seek` for its
+  headers and central directory - so the archive is built into a temp
+  file on the blocking pool, reopened, unlinked immediately (the open
+  fd keeps the inode alive) and streamed out, `Content-Length` from
+  its metadata. One temporary file on disk, zero in RAM; the startup
+  sweep catches a crash mid-build.
 
 No API shape changes: same routes, same headers, same status codes -
 only the memory profile and the new range support on download.
@@ -106,7 +117,7 @@ CDN-oriented range caching. The `fxcloud sync` agent (ENCRYPTION phase
 ## 7. Test strategy
 
 Source pins: no `field.bytes()` on content, no `to_bytes`/`.to_vec()`
-in WebDAV, temp sweep present. Functional: `curl -r` -> 206 with correct
+or `read_blob` anywhere, temp sweep present. Functional: `curl -r` -> 206 with correct
 `Content-Range` on download **and** preview; 416 outside the file; an
 ~16 MiB upload + ranged download roundtrip (the suite runs its own
 instance); temp cleanup after a failed upload; existing ZIP and DAV
@@ -121,4 +132,4 @@ pins stay green; counts bump in README/ENCRYPTION/Audit.
 | 9 | Order | **streaming S1 first**, then versioning, then groups (no double work on the same code paths) |
 | 10 | Ranges | yes, on `/download` too - unified with preview |
 | - | Temp location | `data_dir/tmp`, swept at startup, commit by rename |
-| - | MIME sniffing | bounded prefix sample (first 8 KiB) on streamed uploads |
+| - | MIME sniffing | bounded prefix sample (first 64 KiB) on streamed uploads |

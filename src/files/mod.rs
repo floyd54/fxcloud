@@ -18,6 +18,15 @@ pub const FXE1_MAGIC: &[u8] = b"FXE1";
 /// How many leading bytes the text heuristic looks at.
 const TEXT_SNIFF_WINDOW: usize = 8192;
 
+/// How many leading bytes the write paths keep for [`resolve_mime`].
+///
+/// Magic numbers all sit in the head of a file (the farthest out is the ISO
+/// image signature at 32 KiB), and the text heuristic windows further down
+/// to [`TEXT_SNIFF_WINDOW`] on its own - so a streamed upload hands this
+/// prefix instead of its whole body, and sniffing a 4 GiB PUT decides on
+/// 64 KiB of it (S1, `concepts/streaming.md`).
+pub const SNIFF_WINDOW: usize = 64 * 1024;
+
 /// Pick the `mime` to store for a plaintext row: the *content* decides
 /// (magic numbers first, then a text heuristic - `declared` plays no role in
 /// either), and the client's declaration is only the fallback for binary the
@@ -104,6 +113,9 @@ fn looks_like_text(data: &[u8]) -> bool {
 pub struct FileService {
     db: Db,
     blob_dir: PathBuf,
+    /// Staging area for incoming bodies - the same filesystem as the blobs,
+    /// so committing one is a rename (see [`FileService::commit_blob`]).
+    temp_dir: PathBuf,
     /// One write lock per row that is being (or was recently) rewritten; see
     /// [`FileService::begin_replace`].
     replaces: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
@@ -134,6 +146,7 @@ impl FileService {
         Self {
             db,
             blob_dir: config.blob_dir(),
+            temp_dir: config.data_dir.join("tmp"),
             replaces: Mutex::new(HashMap::new()),
         }
     }
@@ -231,12 +244,26 @@ impl FileService {
         Ok(())
     }
 
-    /// Read a file's content for a user who owns it or holds a READ share.
-    pub async fn read_blob(
+    /// A fresh temp path for an incoming body (see [`FileService::commit_blob`]).
+    ///
+    /// The name carries the process id and random bytes, so a leftover can
+    /// always be attributed to one server run and swept at startup.
+    pub fn temp_path(&self) -> PathBuf {
+        use rand::Rng;
+        let nonce: u64 = rand::thread_rng().gen();
+        self.temp_dir
+            .join(format!("{}-{nonce:016x}.part", std::process::id()))
+    }
+
+    /// Open a file's content for a user who owns it or holds a READ share:
+    /// the permission check first, then the handle, plus the size as the
+    /// filesystem reports it - the authority for what a download actually
+    /// sends, and the number every range answer is computed from.
+    pub async fn open_blob(
         &self,
         user_id: i64,
         file_id: i64,
-    ) -> Result<(FileEntry, Vec<u8>), AppError> {
+    ) -> Result<(FileEntry, tokio::fs::File, u64), AppError> {
         let entry = self
             .db
             .entry_for_read(user_id, file_id)
@@ -246,15 +273,120 @@ impl FileService {
             return Err(AppError::BadRequest("cannot download a folder".into()));
         }
         let path = self.blob_path(BlobRef::from(&entry));
-        let data = match tokio::fs::read(&path).await {
-            Ok(data) => data,
+        let file = match tokio::fs::File::open(&path).await {
+            Ok(file) => file,
             // Fall back to the flat layout for blobs the startup migration
             // left behind (see the module docs).
-            Err(_) => tokio::fs::read(self.legacy_blob_path(file_id))
+            Err(_) => tokio::fs::File::open(self.legacy_blob_path(file_id))
                 .await
                 .map_err(|_| AppError::NotFound)?,
         };
-        Ok((entry, data))
+        let len = file
+            .metadata()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("blob metadata {path:?}: {e}")))?
+            .len();
+        Ok((entry, file, len))
+    }
+
+    /// Move a fully written temp file into place as a file entry's blob.
+    ///
+    /// Both live under the data directory, so the commit is a rename:
+    /// atomic, no second copy of the bytes, and constant memory however
+    /// large the file is. On error the caller discards the temp file.
+    pub async fn commit_blob(&self, entry: &FileEntry, temp: &Path) -> Result<(), AppError> {
+        let path = self.blob_path(BlobRef::from(entry));
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("creating blob dir {parent:?}: {e}"))
+            })?;
+        }
+        tokio::fs::rename(temp, &path)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("committing blob {path:?}: {e}")))
+    }
+
+    /// Copy a readable file's bytes to another entry's blob (WebDAV `COPY`
+    /// and the API's copy route): the same permission check as every read,
+    /// then a filesystem-level copy - 64 KiB on the kernel's side, never the
+    /// whole file in memory.
+    pub async fn copy_blob(
+        &self,
+        user_id: i64,
+        src_id: i64,
+        dst: &FileEntry,
+    ) -> Result<(), AppError> {
+        let src_entry = self
+            .db
+            .entry_for_read(user_id, src_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let src = self.blob_path(BlobRef::from(&src_entry));
+        let dst_path = self.blob_path(BlobRef::from(dst));
+        if let Some(parent) = dst_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("creating blob dir {parent:?}: {e}"))
+            })?;
+        }
+        match tokio::fs::copy(&src, &dst_path).await {
+            Ok(_) => Ok(()),
+            // Fall back to the flat layout for blobs the startup migration
+            // left behind (see the module docs).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tokio::fs::copy(self.legacy_blob_path(src_id), &dst_path)
+                    .await
+                    .map(|_| ())
+                    .map_err(|_| AppError::NotFound)
+            }
+            Err(e) => Err(AppError::Internal(anyhow::anyhow!(
+                "copying blob {src:?} -> {dst_path:?}: {e}"
+            ))),
+        }
+    }
+
+    /// Remove temp files interrupted uploads left behind: a restart kills
+    /// every in-flight request, so anything still sitting in the temp
+    /// directory is garbage with no owner. Called at startup next to the
+    /// flat-blob migration (`main.rs`).
+    pub async fn sweep_temps(&self) {
+        if let Err(e) = tokio::fs::create_dir_all(&self.temp_dir).await {
+            tracing::warn!(
+                error = %e,
+                dir = %self.temp_dir.display(),
+                "cannot create upload temp dir"
+            );
+            return;
+        }
+        let mut entries = match tokio::fs::read_dir(&self.temp_dir).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    dir = %self.temp_dir.display(),
+                    "cannot scan upload temp dir"
+                );
+                return;
+            }
+        };
+        let mut swept = 0usize;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            let is_temp = path.is_file() && path.extension().is_some_and(|ext| ext == "part");
+            if !is_temp {
+                continue;
+            }
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => swept += 1,
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    path = %path.display(),
+                    "cannot remove stale temp file"
+                ),
+            }
+        }
+        if swept > 0 {
+            tracing::info!(count = swept, "stale upload temp files removed");
+        }
     }
 
     /// Delete blobs for removed file entries (best-effort: also tries the flat

@@ -318,7 +318,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, KDF floor, filename and
                     # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 556 checks against a throwaway instance
+./tests/suite.sh    # integration: 580 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

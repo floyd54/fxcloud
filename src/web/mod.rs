@@ -123,8 +123,13 @@ async fn sliding_renewal(
 pub fn build_router(state: SharedState) -> Router {
     // Uploads arrive as multipart; lift axum's 2 MB default body limit so large
     // files don't get truncated mid-stream (which surfaces as a confusing
-    // multipart parse error). Configurable via FXCLOUD_MAX_UPLOAD_MB.
+    // multipart parse error). Configurable via FXCLOUD_MAX_UPLOAD_MB. The
+    // per-file limit is enforced by the write paths themselves while they
+    // count into the temp file (S1) - the layer only needs headroom for the
+    // multipart framing around a maximal file, and its own rejection stays a
+    // 413 either way.
     let max_upload = state.config.max_upload_bytes;
+    let max_body = max_upload.saturating_add(64 * 1024);
 
     let api = Router::new()
         // Auth
@@ -250,7 +255,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/dav/", any(crate::webdav::dispatch))
         .route("/dav/{*path}", any(crate::webdav::dispatch))
         .nest("/api", api)
-        .layer(DefaultBodyLimit::max(max_upload))
+        .layer(DefaultBodyLimit::max(max_body))
         .layer(CompressionLayer::new())
         // Baseline security headers on every response, outermost so nothing
         // downstream can drop them (Audit.md F2).

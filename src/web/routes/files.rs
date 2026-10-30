@@ -1,14 +1,17 @@
 use std::collections::HashSet;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 
-use axum::body::Bytes;
-use axum::extract::{Multipart, Query, State};
+use axum::body::{Body, Bytes};
+use axum::extract::{Multipart, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::auth::AuthUser;
 use crate::error::AppError;
@@ -188,14 +191,38 @@ pub async fn copy_entry(
 }
 
 /// POST /api/files/upload – multipart upload of one file into `parent`.
+///
+/// The file part streams into a temp file (S1): memory stays flat however
+/// large the upload is, the per-file limit is enforced while counting, and
+/// the bytes reach the blob layout through a single rename once the row
+/// exists.
 pub async fn upload(
     State(state): State<SharedState>,
     user: AuthUser,
+    multipart: Multipart,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut temp: Option<PathBuf> = None;
+    let outcome = upload_parts(&state, user.id(), multipart, &mut temp).await;
+    if outcome.is_err() {
+        // Whatever sits in the temp file never became a blob: drop it.
+        if let Some(path) = temp.take() {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+    outcome
+}
+
+/// The body of [`upload`]. The temp file is handed in so the caller can
+/// clean it up on every failing path with one rule, wherever the failure
+/// happens.
+async fn upload_parts(
+    state: &SharedState,
+    user_id: i64,
     mut multipart: Multipart,
+    temp: &mut Option<PathBuf>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let mut parent_id: Option<i64> = None;
     let mut filename: Option<String> = None;
-    let mut data: Option<Vec<u8>> = None;
     let mut mime: Option<String> = None;
     // Client-side encryption, sent as two plain multipart fields: a version
     // (0 = plaintext, 1 = FXE1) and the entry's key wrapped with the parent
@@ -203,8 +230,12 @@ pub async fn upload(
     // it cannot read either of them (ENCRYPTION.md 5.3/5.4).
     let mut enc_version: i64 = 0;
     let mut enc_key: Option<Vec<u8>> = None;
+    // The sniffable head of the file, kept by the streaming write below: the
+    // MIME decision (magic numbers, then the text heuristic) is made on it.
+    let mut sample: Vec<u8> = Vec::new();
+    let mut size: i64 = 0;
 
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::BadRequest(format!("invalid multipart: {e}")))?
@@ -248,21 +279,24 @@ pub async fn upload(
                 mime = field
                     .content_type()
                     .map(|s| s.to_string());
-                data = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map_err(|e| AppError::BadRequest(format!("bad file data: {e}")))?
-                        .to_vec(),
-                );
+                // A second file part would leave the first one's temp file
+                // without an owner; only the last one wins, as before.
+                if let Some(previous) = temp.take() {
+                    let _ = tokio::fs::remove_file(previous).await;
+                }
+                let (path, written, head) = stream_field_to_temp(state, &mut field).await?;
+                *temp = Some(path);
+                size = written;
+                sample = head;
             }
             _ => {}
         }
     }
 
     let filename = filename.ok_or_else(|| AppError::BadRequest("missing file".into()))?;
-    let data = data.ok_or_else(|| AppError::BadRequest("missing file data".into()))?;
-    let size = data.len() as i64;
+    let temp = temp
+        .as_ref()
+        .ok_or_else(|| AppError::BadRequest("missing file data".into()))?;
 
     // Encrypted content needs its wrapped key, and must not claim a
     // content type the server will later serve as if it were the truth: the
@@ -283,17 +317,19 @@ pub async fn upload(
         // sends `application/octet-stream` (or nothing) for a file without
         // an extension, which is exactly the case where the stored type has
         // to decide later whether the row opens in the editor. The bytes
-        // decide here - magic numbers first, then a text heuristic - and
-        // the client's word only survives as the fallback for binary the
-        // sniffer does not know (`resolve_mime`).
-        mime = crate::files::resolve_mime(mime.as_deref(), &data);
+        // decide here - magic numbers first, then a text heuristic - both
+        // on the sniffed head of the file (`sample`), and the client's word
+        // only survives as the fallback for binary the sniffer does not
+        // know (`resolve_mime`).
+        mime = crate::files::resolve_mime(mime.as_deref(), &sample);
     }
 
-    // Create metadata first to obtain a file id, then persist the blob.
+    // Create metadata first to obtain a file id, then move the temp file
+    // into the blob layout - the rename is what publishes the content.
     let entry = state
         .db
         .create_file(
-            user.id(),
+            user_id,
             parent_id,
             filename,
             size,
@@ -302,22 +338,91 @@ pub async fn upload(
             enc_key,
         )
         .await?;
-    if let Err(e) = state.files.write_blob(&entry, data).await {
+    if let Err(e) = state.files.commit_blob(&entry, temp).await {
         // Roll back the orphaned metadata row.
-        let _ = state.db.hard_delete_entry(user.id(), entry.id).await;
+        let _ = state.db.hard_delete_entry(user_id, entry.id).await;
         return Err(e);
     }
 
     Ok(Json(json!({ "entry": entry })))
 }
 
+/// Stream one multipart file field into a fresh temp file: the chunk loop is
+/// the whole memory story of an upload (a 4 GiB body costs 64 KiB), the byte
+/// count doubles as the per-file size limit, and the leading bytes are kept
+/// for the MIME sniff. Every failure removes the temp file before returning.
+async fn stream_field_to_temp(
+    state: &SharedState,
+    field: &mut axum::extract::multipart::Field<'_>,
+) -> Result<(PathBuf, i64, Vec<u8>), AppError> {
+    let path = state.files.temp_path();
+    let mut file = tokio::fs::File::create(&path)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("creating temp upload {path:?}: {e}")))?;
+    let mut sample = Vec::new();
+    let mut size: i64 = 0;
+    let pumped = async {
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|_| {
+                // The body-limit layer refuses a body between the counted
+                // cap and its framing headroom by erroring the stream - the
+                // frame that crossed the line is dropped, not delivered, so
+                // this error *is* the over-limit answer, not a parse
+                // failure. A broken upload lands here too; the old buffered
+                // path answered 413 for both, and every other write path in
+                // this file still does.
+                AppError::PayloadTooLarge(format!(
+                    "file exceeds the upload limit of {} or was interrupted mid-stream",
+                    human_size(state.config.max_upload_bytes as i64)
+                ))
+            })?
+        {
+            size += chunk.len() as i64;
+            if size > state.config.max_upload_bytes as i64 {
+                return Err(AppError::PayloadTooLarge(format!(
+                    "file exceeds the upload limit of {}",
+                    human_size(state.config.max_upload_bytes as i64)
+                )));
+            }
+            // Only the head is kept: `resolve_mime` decides on it.
+            let room = crate::files::SNIFF_WINDOW - sample.len();
+            if room > 0 {
+                let take = room.min(chunk.len());
+                sample.extend_from_slice(&chunk[..take]);
+            }
+            file.write_all(&chunk).await.map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("writing temp upload {path:?}: {e}"))
+            })?;
+        }
+        file.flush().await.map_err(|e| {
+            AppError::Internal(anyhow::anyhow!("flushing temp upload {path:?}: {e}"))
+        })?;
+        Ok::<(), AppError>(())
+    }
+    .await;
+    drop(file);
+    if let Err(e) = pumped {
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err(e);
+    }
+    Ok((path, size, sample))
+}
+
 /// GET /api/files/download?id=<id> – stream a file's content.
+///
+/// Byte ranges are honoured (206 / 416, `Accept-Ranges`) with the same
+/// arithmetic the preview uses, so a player or `curl -r` seeks without the
+/// whole file crossing the wire - and the body is read in 64 KiB chunks
+/// either way (S1, `concepts/streaming.md`).
 pub async fn download(
     State(state): State<SharedState>,
     user: AuthUser,
     Query(q): Query<IdQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let (entry, data) = state.files.read_blob(user.id(), q.id).await?;
+    let (entry, file, len) = state.files.open_blob(user.id(), q.id).await?;
 
     // Encrypted rows never advertise a content type: the bytes on disk are an
     // FXE1 container, so `image/png` here would be a lie the browser acts on
@@ -335,23 +440,26 @@ pub async fn download(
     let encoded_name = encode_rfc5987(&entry.name);
     let disposition = format!("attachment; filename*=UTF-8''{encoded_name}");
 
-    let headers = [
-        (header::CONTENT_TYPE, content_type.parse::<header::HeaderValue>().unwrap()),
-        (
-            header::CONTENT_DISPOSITION,
-            disposition.parse::<header::HeaderValue>().unwrap(),
-        ),
-        (
-            header::CONTENT_LENGTH,
-            data.len().to_string().parse::<header::HeaderValue>().unwrap(),
-        ),
-        (
-            header::X_CONTENT_TYPE_OPTIONS,
-            "nosniff".parse::<header::HeaderValue>().unwrap(),
-        ),
-    ];
+    let range = match headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
+        Some(value) => parse_byte_range(value, len as usize),
+        None => ByteRange::Full,
+    };
+    let ranged = ranged_body(file, len as usize, range).await?;
 
-    Ok((StatusCode::OK, headers, data).into_response())
+    let mut builder = Response::builder()
+        .status(ranged.status)
+        .header(header::CONTENT_TYPE, &content_type)
+        .header(header::CONTENT_DISPOSITION, disposition)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::CONTENT_LENGTH, ranged.content_len.to_string());
+    if let Some(content_range) = ranged.content_range {
+        builder = builder.header(header::CONTENT_RANGE, content_range);
+    }
+    let resp = builder
+        .body(ranged.body)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("building download response: {e}")))?;
+    Ok(resp.into_response())
 }
 
 /// Content types the browser renders natively, keyed by file extension.
@@ -460,6 +568,114 @@ fn parse_byte_range(value: &str, len: usize) -> ByteRange {
     }
 }
 
+/// An answered body with its range arithmetic resolved.
+struct RangedBody {
+    status: StatusCode,
+    body: Body,
+    content_range: Option<String>,
+    content_len: u64,
+}
+
+/// Turn a parsed range into a streamed answer: seek + take for a slice, the
+/// whole handle otherwise, `416` (with `bytes */len`) for a range outside the
+/// file. Download and preview both go through it, so the two cannot drift
+/// apart (S1, `concepts/streaming.md`).
+async fn ranged_body(
+    mut file: tokio::fs::File,
+    len: usize,
+    range: ByteRange,
+) -> Result<RangedBody, AppError> {
+    let (status, slice, content_range) = match range {
+        ByteRange::Unsatisfiable => (
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            None,
+            Some(format!("bytes */{len}")),
+        ),
+        ByteRange::Slice(start, end) => (
+            StatusCode::PARTIAL_CONTENT,
+            Some((start as u64, (end - start + 1) as u64)),
+            Some(format!("bytes {start}-{end}/{len}")),
+        ),
+        ByteRange::Full => (StatusCode::OK, None, None),
+    };
+    let (body, content_len) = match slice {
+        // A 416 carries no body; its length is zero by definition.
+        None if status == StatusCode::RANGE_NOT_SATISFIABLE => (Body::empty(), 0),
+        None => (file_stream(file), len as u64),
+        Some((offset, length)) => {
+            file.seek(std::io::SeekFrom::Start(offset))
+                .await
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("seeking blob: {e}")))?;
+            (file_stream(file.take(length)), length)
+        }
+    };
+    Ok(RangedBody {
+        status,
+        body,
+        content_range,
+        content_len,
+    })
+}
+
+/// A response body that reads in 64 KiB chunks instead of buffering: a
+/// 4 GiB download costs the same memory as a 4 KiB one, and a client that
+/// hangs up mid-transfer just has its reader dropped. Used by the JSON
+/// download, the preview and the WebDAV `GET`.
+pub(crate) fn file_stream<R>(reader: R) -> Body
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    Body::from_stream(FileChunks {
+        reader,
+        buf: vec![0u8; 64 * 1024],
+        done: false,
+    })
+}
+
+/// The reads behind [`file_stream`].
+///
+/// A hand-rolled `Stream` instead of `futures_util::stream::unfold`:
+/// hyper polls a body once more after its end (keep-alive bookkeeping), and
+/// unfold answers that re-poll with a panic since futures-util 0.3.34 -
+/// killing the connection right after its own last byte, which the client
+/// sees as a truncated download. This one remembers that it is finished and
+/// stays finished, so the extra poll costs a comparison.
+struct FileChunks<R> {
+    reader: R,
+    buf: Vec<u8>,
+    done: bool,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> futures_util::Stream for FileChunks<R> {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.done {
+            return std::task::Poll::Ready(None);
+        }
+        let filled = {
+            let mut read_buf = tokio::io::ReadBuf::new(&mut this.buf);
+            match std::pin::Pin::new(&mut this.reader).poll_read(cx, &mut read_buf) {
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+                std::task::Poll::Ready(Err(e)) => {
+                    this.done = true;
+                    return std::task::Poll::Ready(Some(Err(e)));
+                }
+                std::task::Poll::Ready(Ok(())) => read_buf.filled().len(),
+            }
+        };
+        if filled == 0 {
+            this.done = true;
+            return std::task::Poll::Ready(None);
+        }
+        std::task::Poll::Ready(Some(Ok(Bytes::copy_from_slice(&this.buf[..filled]))))
+    }
+}
+
 /// GET /api/files/preview?id=<id> – serve content the browser can render by
 /// itself, inline instead of as a download (the web UI's lightbox).
 ///
@@ -473,7 +689,7 @@ pub async fn preview(
     Query(q): Query<IdQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let (entry, data) = state.files.read_blob(user.id(), q.id).await?;
+    let (entry, file, len) = state.files.open_blob(user.id(), q.id).await?;
     // Encrypted rows are not previewable server-side: there is no plaintext
     // to serve, and answering `image/png` for ciphertext would hand the
     // browser bytes it cannot render. Inline preview of encrypted content is a
@@ -489,9 +705,8 @@ pub async fn preview(
             "this file type cannot be displayed in the browser - use Download".into(),
         )
     })?;
-    let len = data.len();
     let range = match headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
-        Some(value) => parse_byte_range(value, len),
+        Some(value) => parse_byte_range(value, len as usize),
         None => ByteRange::Full,
     };
 
@@ -499,34 +714,23 @@ pub async fn preview(
     let encoded_name = encode_rfc5987(&entry.name);
     let disposition = format!("inline; filename*=UTF-8''{encoded_name}");
 
-    let (status, body, content_range) = match range {
-        ByteRange::Unsatisfiable => (
-            StatusCode::RANGE_NOT_SATISFIABLE,
-            Vec::new(),
-            Some(format!("bytes */{len}")),
-        ),
-        ByteRange::Slice(start, end) => (
-            StatusCode::PARTIAL_CONTENT,
-            data[start..=end].to_vec(),
-            Some(format!("bytes {start}-{end}/{len}")),
-        ),
-        ByteRange::Full => (StatusCode::OK, data, None),
-    };
+    // Streamed like the download, with the same range arithmetic (S1).
+    let ranged = ranged_body(file, len as usize, range).await?;
 
     let mut builder = Response::builder()
-        .status(status)
+        .status(ranged.status)
         .header(header::CONTENT_TYPE, &content_type)
         .header(header::CONTENT_DISPOSITION, disposition)
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         // Empty sandbox: renders without scripts (see the doc comment).
-        .header("Content-Security-Policy", "sandbox");
-    if let Some(content_range) = content_range {
+        .header("Content-Security-Policy", "sandbox")
+        .header(header::CONTENT_LENGTH, ranged.content_len.to_string());
+    if let Some(content_range) = ranged.content_range {
         builder = builder.header(header::CONTENT_RANGE, content_range);
     }
-    builder = builder.header(header::CONTENT_LENGTH, body.len().to_string());
     let resp = builder
-        .body(axum::body::Body::from(body))
+        .body(ranged.body)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("building preview response: {e}")))?;
     Ok(resp.into_response())
 }
@@ -554,11 +758,14 @@ pub struct ContentQuery {
 /// Permission (PERM_UPDATE), tree-owner resolution and the quota gate all
 /// come from `update_file_meta`, the same path WebDAV PUT takes, so the
 /// editor and sync clients cannot diverge.
+///
+/// The body streams into a temp file (S1) and lands in the blob layout by a
+/// single rename - memory stays flat however large the save is.
 pub async fn save_content(
     State(state): State<SharedState>,
     user: AuthUser,
     Query(q): Query<ContentQuery>,
-    body: Bytes,
+    request: Request,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let entry = state
         .db
@@ -569,11 +776,41 @@ pub async fn save_content(
         return Err(AppError::BadRequest("cannot edit a folder".into()));
     }
 
+    // The body streams into a temp file (S1): the FXE1 magic is read off the
+    // head, the count doubles as the size limit, and nothing the checks below
+    // reject is ever kept in memory.
+    let (temp, sample, size) = stream_body_to_temp(
+        &state,
+        request.into_body(),
+        state.config.max_upload_bytes as u64,
+    )
+    .await?;
+
+    let outcome = save_streamed(&state, user.id(), &q, entry, temp.clone(), &sample, size).await;
+    if outcome.is_err() {
+        // The temp file only ever disappears by being renamed into place.
+        let _ = tokio::fs::remove_file(&temp).await;
+    }
+    outcome
+}
+
+/// The byte-dependent half of [`save_content`]: the enc/`key` matrix, the
+/// type decision, and the meta + blob commit under the row's write lock.
+/// `temp` is consumed by the rename that publishes the content.
+async fn save_streamed(
+    state: &SharedState,
+    user_id: i64,
+    q: &ContentQuery,
+    entry: FileEntry,
+    temp: PathBuf,
+    sample: &[u8],
+    size: i64,
+) -> Result<Json<serde_json::Value>, AppError> {
     let enc_version = q.enc.unwrap_or(entry.enc_version as u8);
     let transition = match (q.enc, &q.key) {
         (None, None) => {
             // Plain save: leave the mode alone.
-            if entry.enc_version > 0 && !body.starts_with(crate::files::FXE1_MAGIC) {
+            if entry.enc_version > 0 && !sample.starts_with(crate::files::FXE1_MAGIC) {
                 return Err(AppError::Conflict(
                     "this file is encrypted; saving plaintext would destroy it - \
                      encrypt the content first (client-side save arrives with the \
@@ -587,7 +824,7 @@ pub async fn save_content(
             return Err(AppError::BadRequest("key requires enc=1".into()));
         }
         (Some(1), Some(key)) => {
-            if !body.starts_with(crate::files::FXE1_MAGIC) {
+            if !sample.starts_with(crate::files::FXE1_MAGIC) {
                 return Err(AppError::Conflict(
                     "enc=1 declares encrypted content but the body is not an FXE1 \
                      container"
@@ -610,7 +847,7 @@ pub async fn save_content(
             let same_record = entry.enc_key.as_ref().is_some_and(|current| {
                 BASE64.decode(current.trim()).is_ok_and(|c| c == key)
             });
-            if entry.owner_id != user.id() && !same_record {
+            if entry.owner_id != user_id && !same_record {
                 return Err(AppError::ForbiddenDetail(
                     "only the row's owner may change its key record".into(),
                 ));
@@ -642,9 +879,10 @@ pub async fn save_content(
 
     // For an encrypted row keep `mime` NULL: the stored type must not describe
     // bytes the server has never seen in plaintext. For a plaintext save the
-    // bytes decide (`resolve_mime`): the editor's save is a write path like
-    // any other, and a file without an extension would otherwise lose the
-    // sniffed `text/plain` on its first save and drop out of the editor menu.
+    // bytes decide (`resolve_mime`), on the sniffed head of the body: the
+    // editor's save is a write path like any other, and a file without an
+    // extension would otherwise lose the sniffed `text/plain` on its first
+    // save and drop out of the editor menu.
     let mime = if enc_version > 0 {
         None
     } else {
@@ -653,29 +891,90 @@ pub async fn save_content(
                 .first()
                 .map(|m| m.to_string())
                 .as_deref(),
-            &body,
+            sample,
         )
     };
     // The blob path is id-derived, so replacing the content in place swaps
     // the blob underneath; meta first, because it holds the quota gate. Both
     // halves run under the row's write lock: two saves of this row landing at
     // once must not interleave, or the row ends up with one save's `enc_key`
-    // next to another save's bytes (see `FileService::begin_replace`).
+    // next to another save's bytes (see `FileService::begin_replace`). The
+    // commit itself is the temp file's rename, so the pair stays atomic and
+    // no byte is copied twice.
     {
         let _write = state.files.begin_replace(entry.id).await;
         state
             .db
-            .update_file_meta(user.id(), entry.id, body.len() as i64, mime, transition)
+            .update_file_meta(user_id, entry.id, size, mime, transition)
             .await?;
-        state.files.write_blob(&entry, body.to_vec()).await?;
+        state.files.commit_blob(&entry, &temp).await?;
     }
     // Fresh row for the response: size and modified_at just changed.
     let entry = state
         .db
-        .entry_for_read(user.id(), q.id)
+        .entry_for_read(user_id, q.id)
         .await?
         .ok_or(AppError::NotFound)?;
     Ok(Json(json!({ "entry": entry })))
+}
+
+/// Stream a request body into a fresh temp file, counting bytes: the limit
+/// is a number, not a buffer (S1). Returns the temp path, the sniffable head
+/// and the size. On any failure - over the limit, a broken stream, disk
+/// trouble - the temp file is removed before the error is returned.
+pub(crate) async fn stream_body_to_temp(
+    state: &SharedState,
+    body: axum::body::Body,
+    cap: u64,
+) -> Result<(PathBuf, Vec<u8>, i64), AppError> {
+    let path = state.files.temp_path();
+    let mut file = tokio::fs::File::create(&path)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("creating temp body {path:?}: {e}")))?;
+    let mut sample = Vec::new();
+    let mut size: i64 = 0;
+    let mut stream = body.into_data_stream();
+    let pumped = async {
+        while let Some(chunk) = stream.next().await {
+            // The body-limit layer refuses over-cap reads with a stream
+            // error; that answers as 413 here, the way the old buffered
+            // paths answered it.
+            let chunk = chunk.map_err(|_| {
+                AppError::PayloadTooLarge(format!(
+                    "body exceeds the limit of {} or was interrupted mid-stream",
+                    human_size(cap as i64)
+                ))
+            })?;
+            size += chunk.len() as i64;
+            if size as u64 > cap {
+                return Err(AppError::PayloadTooLarge(format!(
+                    "body exceeds the limit of {}",
+                    human_size(cap as i64)
+                )));
+            }
+            // Only the head is kept: `resolve_mime` and the FXE1 magic
+            // decide on it.
+            let room = crate::files::SNIFF_WINDOW - sample.len();
+            if room > 0 {
+                let take = room.min(chunk.len());
+                sample.extend_from_slice(&chunk[..take]);
+            }
+            file.write_all(&chunk).await.map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("writing temp body {path:?}: {e}"))
+            })?;
+        }
+        file.flush().await.map_err(|e| {
+            AppError::Internal(anyhow::anyhow!("flushing temp body {path:?}: {e}"))
+        })?;
+        Ok::<(), AppError>(())
+    }
+    .await;
+    drop(file);
+    if let Err(e) = pumped {
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err(e);
+    }
+    Ok((path, sample, size))
 }
 
 /// PUT /api/files/key – store a row's key record, leaving its bytes alone.
@@ -979,11 +1278,52 @@ pub async fn zip_download(
 
     let filename = zip_filename(&trees);
     let builder_state = state.clone();
-    let data = tokio::task::spawn_blocking(move || build_zip(&builder_state, trees))
-        .await
-        .map_err(|_| AppError::Join)??;
 
-    // RFC 5987 encoding so non-ASCII names survive the header.
+    // The archive is assembled on the blocking pool into a temp file (S1):
+    // `ZipWriter` must be able to seek - it patches its headers and lays down
+    // a central directory - so it cannot write into a pipe; a temp file
+    // gives it a seekable sink while memory stays flat: a 1 GiB selection
+    // costs kilobytes of RAM instead of a gigabyte, plus one temporary file
+    // on disk. The name ends in `.part`, so a crash mid-build is swept at
+    // the next startup, and a failed build removes it right here.
+    let temp = state.files.temp_path();
+    let build_path = temp.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut file = std::fs::File::create(&build_path).map_err(|e| {
+            AppError::Internal(anyhow::anyhow!("creating temp zip {build_path:?}: {e}"))
+        })?;
+        let result = build_zip(&builder_state, trees, &mut file);
+        drop(file);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&build_path);
+        }
+        result
+    })
+    .await
+    .map_err(|_| AppError::Join)??;
+
+    // Reopen the finished archive and unlink it immediately: the open handle
+    // keeps the inode alive, so the download runs from an unnamed file and a
+    // client that hangs up mid-transfer leaves nothing on disk.
+    let file = match tokio::fs::File::open(&temp).await {
+        Ok(file) => file,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&temp).await;
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "reopening temp zip {temp:?}: {e}"
+            )));
+        }
+    };
+    let _ = tokio::fs::remove_file(&temp).await;
+    let len = file
+        .metadata()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("stat temp zip {temp:?}: {e}")))?
+        .len();
+
+    // RFC 5987 encoding so non-ASCII names survive the header. The size is
+    // known - the file exists - so the response carries a Content-Length and
+    // streams out in 64 KiB chunks like every other content path.
     let encoded_name = encode_rfc5987(&filename);
     let disposition = format!("attachment; filename*=UTF-8''{encoded_name}");
     let headers = [
@@ -997,13 +1337,14 @@ pub async fn zip_download(
         ),
         (
             header::CONTENT_LENGTH,
-            data.len()
-                .to_string()
-                .parse::<header::HeaderValue>()
-                .unwrap(),
+            len.to_string().parse::<header::HeaderValue>().unwrap(),
+        ),
+        (
+            header::X_CONTENT_TYPE_OPTIONS,
+            "nosniff".parse::<header::HeaderValue>().unwrap(),
         ),
     ];
-    Ok((StatusCode::OK, headers, data).into_response())
+    Ok((StatusCode::OK, headers, file_stream(file)).into_response())
 }
 
 /// Download name: the single item's own name, or a generic count for more.
@@ -1021,16 +1362,19 @@ fn zip_filename(trees: &[Vec<(String, FileEntry)>]) -> String {
 
 /// Assemble the archive.
 ///
-/// Runs on the blocking pool: the zip crate writes synchronously and blobs are
-/// read off disk in 64 KiB chunks, so only the compressed output is held in
-/// memory (bounded by [`MAX_ZIP_BYTES`]). Content that disappeared mid-download
-/// is skipped and listed in `fxcloud-skipped.txt` inside the archive instead
-/// of failing the whole selection.
+/// Runs on the blocking pool: the zip crate writes synchronously, blobs are
+/// read off disk in 64 KiB chunks, and the finished bytes go to `writer` - a
+/// temp file (`ZipWriter` needs `Seek` for its headers and central
+/// directory), so not even the selection's size is ever held in memory (S1).
+/// Content that disappeared mid-download is skipped and listed in
+/// `fxcloud-skipped.txt` inside the archive instead of failing the whole
+/// selection.
 fn build_zip(
     state: &SharedState,
     trees: Vec<Vec<(String, FileEntry)>>,
-) -> Result<Vec<u8>, AppError> {
-    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer: &mut (impl std::io::Write + std::io::Seek),
+) -> Result<(), AppError> {
+    let mut writer = zip::ZipWriter::new(writer);
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
     let mut used: HashSet<String> = HashSet::new();
@@ -1098,8 +1442,8 @@ fn build_zip(
             .map_err(|e| AppError::Internal(anyhow::anyhow!("writing zip note: {e}")))?;
     }
 
-    let cursor = writer.finish().map_err(zip_error)?;
-    Ok(cursor.into_inner())
+    writer.finish().map_err(zip_error)?;
+    Ok(())
 }
 
 /// Stream one blob into the archive without loading it whole.

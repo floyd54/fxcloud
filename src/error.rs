@@ -55,6 +55,16 @@ pub enum AppError {
     #[error("storage quota exceeded: {} of {} used", fmt_bytes(*used), fmt_bytes(*quota))]
     QuotaExceeded { used: i64, quota: i64 },
 
+    /// A body grew past the size limit for its route (S1 counts uploads on
+    /// the way into the temp file, so nothing above the cap is ever kept).
+    ///
+    /// Distinct from `QuotaExceeded`: that one is about the account's
+    /// storage budget and answers 507, this one is about a single request
+    /// and answers 413 - the status sync clients render as "file too
+    /// large" instead of retrying forever.
+    #[error("{0}")]
+    PayloadTooLarge(String),
+
     #[error("bad request: {0}")]
     BadRequest(String),
 
@@ -87,6 +97,7 @@ impl AppError {
             AppError::BadRequest(_) => "bad_request",
             AppError::Conflict(_) => "conflict",
             AppError::QuotaExceeded { .. } => "quota_exceeded",
+            AppError::PayloadTooLarge(_) => "payload_too_large",
         }
     }
 
@@ -104,6 +115,7 @@ impl AppError {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::QuotaExceeded { .. } => StatusCode::INSUFFICIENT_STORAGE,
+            AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
         }
     }
 

@@ -13,6 +13,9 @@ axum = { version = "0.8", features = ["multipart", "macros"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "compression-gzip"] }
+# Streaming bodies: bounded read/write pipelines for the content paths
+# (uploads, downloads, ZIP output) instead of whole-file buffers
+futures-util = "0.3"
 
 # Database (bundled SQLite -> no system dependency, stays a single binary)
 rusqlite = { version = "0.32", features = ["bundled"] }

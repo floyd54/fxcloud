@@ -95,9 +95,10 @@ Facts taken from the code, all of which shape this concept:
    search would not work on encrypted data - noted for the roadmap.)
 7. **Browser platform: Web Crypto API.** AES-GCM, HKDF, ECDH, PBKDF2 and
    (in current browsers) X25519 are available natively. Argon2id is not -
-   it needs a WASM build. Uploads today are already fully buffered in
-   memory server-side, so chunked client-side encryption does not make the
-   memory profile worse.
+   it needs a WASM build. Since streaming S1 the server does not buffer
+   uploads in memory anymore (temp file + rename), so chunked
+   client-side encryption keeps the browser's heap flat as well: an
+   upload costs O(chunk) on both sides, never O(file).
 
 ---
 
@@ -713,9 +714,10 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
    properties follow, and both are the point of the rule: plaintext is
    never written behind an "Encrypted" badge, and no passphrase is ever
    demanded for a write the badge already describes (DECISION 11).
-   Small caveat: the server buffers uploads in memory today (constraint
-   7), so very large files are already limited before encryption is
-   considered - unchanged by this concept.
+   Small caveat: the server's per-file upload limit still applies
+   before encryption is considered (enforced while counting, 413 - since
+   streaming S1 without buffering the body), so very large files remain
+   limited - unchanged by this concept.
 4. **Download:** transparently decrypted client-side and saved under the
    original name. **Edit** works the same way for text files: opening
    decrypts, saving re-encrypts, and a file created while encryption is on
@@ -800,7 +802,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **556 checks**. The additions cover the key
+- Testing: the suite now runs **580 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
   `GET /api/keys/<username>` does and does not expose, and the record

@@ -9,7 +9,7 @@ Method: manual review of every authentication, authorization, cryptographic
 and file-handling code path in this repository, plus an automated
 dependency scan (`cargo audit`, RustSec advisory database: **0
 vulnerabilities across 211 crate dependencies**). The integration suite
-(556 checks) and the unit tests (43) were green at the time of review.
+(580 checks) and the unit tests (43) were green at the time of review.
 
 This document is a living record. Findings carry an id, a severity and a
 status; the status line moves as fixes land. Severity uses the usual

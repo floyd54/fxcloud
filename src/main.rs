@@ -117,6 +117,9 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState::new(db, config.clone()));
     // Move blobs from the legacy flat layout into <owner>/<year>/<h1>/<h2>.
     state.files.migrate_flat_blobs().await;
+    // Drop temp files of uploads a previous run was killed mid-stream
+    // (no request survives this restart, so they can only be garbage).
+    state.files.sweep_temps().await;
 
     // Trash purge: hard-delete trashed entries older than the retention
     // window - once at startup, then on the sweep interval.
