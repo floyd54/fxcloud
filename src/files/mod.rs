@@ -102,11 +102,14 @@ fn looks_like_text(data: &[u8]) -> bool {
 /// Blob layout: `<blob_dir>/<owner-id>/<year>/<h1>/<h2>/<file-id>` — the
 /// owner's tree and the year the file was created in come first (handy for
 /// per-user and per-year backups), then two hex levels derived from the id
-/// (`h1` covers 65 536 ids, `h2` covers 256) so no leaf directory ever holds
-/// more than 256 blobs and no directory grows without bound. The leaf keeps
-/// the plain decimal id as its file name, which is unique by construction and
-/// immune to path-traversal, and the whole path stays recomputable from a row
-/// without extra state.
+/// (`h1` covers 65 536 ids, `h2` covers 256). Both name levels are bounded
+/// at 256 entries each, and a leaf holds 256 blobs per generation of
+/// 2^24 = 16 777 216 ids: one owner-year carries up to 16.7 M files before
+/// any leaf sees a 257th blob, and past that a leaf only gains another 256
+/// per further 16.7 M ids handed out - the tree never gets deeper. The leaf
+/// keeps the plain decimal id as its file name, which is unique by
+/// construction and immune to path-traversal, and the whole path stays
+/// recomputable from a row without extra state.
 ///
 /// Blobs written before this layout existed live flat in `<blob_dir>/<id>`.
 /// [`FileService::migrate_flat_blobs`] moves them into place at startup; reads
@@ -241,7 +244,7 @@ impl FileService {
     }
 
     /// The two id levels: one `h1` dir per 65 536 ids, one `h2` dir (and thus
-    /// one leaf holding at most 256 files) per 256 ids.
+    /// one leaf holding 256 files per 2^24-id generation) per 256 ids.
     fn id_levels(file_id: i64) -> (String, String) {
         let id = file_id as u64;
         (

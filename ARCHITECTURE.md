@@ -62,10 +62,14 @@ Each file's content lives at
 ```
 
 Owner and creation year first (convenient for per-user and per-year
-backups), then two id levels (`h1` covers 65 536 ids, `h2` covers 256), so
-no directory ever holds more than 256 blobs. The leaf name is the plain
-database row id: unique by construction, immune to path-traversal, and the
-path is recomputable from a row without extra state. Installations that
+backups), then two id levels (`h1` covers 65 536 ids, `h2` covers 256).
+Both name levels always hold at most 256 entries, and a leaf holds 256
+blobs per id generation: one owner-year fits 16 777 216 files while no
+leaf exceeds 256 entries, and past that a leaf gains one more batch of 256
+per further 16.7 M ids (the tree never gets deeper). The leaf name is the
+plain database row id: unique by construction, immune to path-traversal,
+and the path is recomputable from a row without extra state. Installations
+that
 predate this layout are migrated at startup (idempotent, logged); reads and
 deletes fall back to the old flat `<data>/blobs/<file-id>` path.
 
