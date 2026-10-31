@@ -31,7 +31,7 @@ ceremony endpoints are public.
 | POST   | `/api/admin/users/:id/password` | -                        | **Admin only.** Reset the account's password; returns `{username, temporary_password}` with a one-time generated password (16 chars) for the next sign-in |
 | GET    | `/api/files`            | `?parent=<id>` (omit for root)     | List folder contents (dir rows carry `subtree_bytes`) |
 | GET    | `/api/files/breadcrumb` | `?id=<folderId>`                   | Breadcrumb trail (starts with an id-less `Home` crumb; every keyed level carries its `enc_key`) |
-| POST   | `/api/files/folder`     | `{parent_id, name}`                | Create folder               |
+| POST   | `/api/files/folder`     | `{parent_id, name}` (+ `group` at the root) | Create folder. With `group: <id>` and `parent_id: null` it bootstraps that group's top-level folder instead (member with CREATE; `group` next to a real `parent_id` = 400; see Group folders) |
 | POST   | `/api/files/file`       | `{parent_id, name}`                | Create empty file (409 on duplicates) |
 | POST   | `/api/files/folder/ensure` | `{parent_id, name}`             | Get-or-create folder (idempotent; powers folder uploads) |
 | POST   | `/api/files/upload`     | multipart: `parent`, `file`        | Upload file. For plaintext uploads the stored `mime` is decided from the bytes (magic numbers first, then a text heuristic), not from the browser's `Content-Type`, which is `application/octet-stream` for a file without an extension; the declared type is only the fallback for binary the sniffer does not know, and encrypted uploads keep `mime` null |
@@ -62,6 +62,17 @@ ceremony endpoints are public.
 | DELETE | `/api/shares/:id`       | -                                  | Revoke share (owner/grantee)|
 | GET    | `/api/shares/outgoing`  | `?file_id=<id>` (optional filter)  | Shares I created            |
 | GET    | `/api/shares/incoming`  | -                                  | Shares given to me          |
+| GET    | `/api/groups`           | -                                  | The caller's groups: raw array `[{id, name, role, quota_bytes, used_bytes}]` (`role` 1 = manager, 0 = member; empty for a non-member - the one listing not wrapped in `entries`) |
+| GET    | `/api/groups/keys`      | -                                  | Key envelopes sealed to me: `[{file_id, group_id, group_name, envelope, created_at}]` (empty for a member who has not been handed a key yet) |
+| GET    | `/api/groups/:id/keys/pending` | -                          | **Manager only (403 for a member, 404 for a non-member).** One pair per member without an envelope - including the manager's own: `[{file_id, folder_name, user_id, username, display_name, has_public_key}]` |
+| POST   | `/api/groups/:id/keys`  | `{file_id, user_id, envelope}`     | **Manager only.** Seal one top-level folder's key record to one member -> `{ok: true}`; upsert on `(file_id, user_id)` (re-distribution overwrites); empty or > 8192-char `envelope` = 400; the folder must belong to this group and the recipient to its membership |
+| GET    | `/api/admin/groups`     | -                                  | **Admin only (403 otherwise).** Every group: `[{id, name, quota_bytes, used_bytes, created_by, created_by_name, created_at, members: [{user_id, username, display_name, role, added_at}]}]` |
+| POST   | `/api/admin/groups`     | `{name, quota_bytes}`              | **Admin only.** Create a group -> the group row; the creator becomes its first manager (409 on a duplicate name, case-insensitive; empty name = 400) |
+| PUT    | `/api/admin/groups/:id` | `{name?}`, `{quota_bytes?}`        | **Admin only.** Partial update, each present field written on its own; lowering the quota below current usage is allowed (growth stops, files stay) |
+| DELETE | `/api/admin/groups/:id` | -                                  | **Admin only.** Delete a group -> `{ok: true}`; refused with 409 while any member or any attributed row remains (trashed rows count - empty the group first) |
+| POST   | `/api/admin/groups/:id/members` | `{username, role}`          | **Admin only.** Add a member (role 0/1 only, else 400) -> the new member list; unknown account or group = 404, already a member = 409 |
+| PUT    | `/api/admin/groups/:id/members/:uid` | `{role}`                | **Admin only.** Change one member's role -> the member list (role 0/1 only, else 400) |
+| DELETE | `/api/admin/groups/:id/members/:uid` | -                     | **Admin only.** Remove a member -> the member list; their key envelopes for this group go with them |
 
 ## Account activation
 
@@ -184,6 +195,44 @@ what gates every write to a key record, mirroring the API permission.
 Moves and copies take `dest_parent: null` for your own root, keep the
 original name (`409` on collision), refuse crossing owners, and enforce the
 permission bits above inherited from any covering share.
+
+## Group folders
+
+A group is a storage principal of its own (concepts/groups.md): its rows
+carry `owner_group_id`, its writes bill the group's `quota_bytes`, and
+every member works the same tree through the role mask `role` derives
+(manager = full, member = everything but the group-management gates).
+`owner_id` stays the creator either way - attribution is the audit trail,
+never the access decision - and the root listing wears the group's name
+as a badge, so a personal folder of the same name stays tellable apart.
+
+- **Bootstrap.** `POST /api/files/folder {"parent_id": null, "group":
+  <id>, "name": ...}` creates the group's top-level folder (member with
+  CREATE; a `group` next to a real `parent_id` = 400). Below that root
+  every member works the subtree normally - upload, rename, move, trash -
+  and one name per parent is unique across *all* members (one partial
+  index), not per creator.
+- **No sharing out.** `POST /api/shares` on a group row answers 403:
+  v1 keeps shares strictly user-to-user; group targets arrive with G2.
+- **Quota.** The group's usage is live sizes plus version rows, trash
+  included (a trashed row bills until the purge), checked on every write
+  like a user's quota (507 when full). Members never spend their own
+  budget on group writes, and lowering a quota below current usage is
+  allowed: files stay, growth stops.
+- **Trash.** Any member sees the group's trashed rows in *their* trash
+  view and may restore or purge them - the DELETE bit comes from the role
+  mask, not from creator attribution.
+- **Key distribution.** Folder keys travel manager -> member through the
+  pending list and `POST /api/groups/:id/keys`. The envelope is the
+  share's shape (ENCRYPTION.md 5.5, same AAD derivation, same 8192-char
+  cap), so a member's tab opens it through the same key map as a mount;
+  the server stores it opaque. Removing a member deletes their envelopes
+  for that group with them. Inside a group the record-swap line holds:
+  the first key record on a row may be set by any member with UPDATE,
+  swapping an existing one is manager-only (403).
+- **Delete.** A group disappears only when it is empty - no members, no
+  rows attributed to it, trashed rows counting. The admin empties it
+  first; the refusal is a 409, never a silent cascade.
 
 ## Batch operations
 

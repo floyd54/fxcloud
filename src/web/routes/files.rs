@@ -75,7 +75,7 @@ pub async fn create_folder(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let entry = state
         .db
-        .create_dir(user.id(), req.parent_id, req.name)
+        .create_dir(user.id(), req.parent_id, req.group, req.name)
         .await?;
     Ok(Json(json!({ "entry": entry })))
 }
@@ -95,7 +95,7 @@ pub async fn create_file(
         // An empty file is always created plaintext: only a client-side
         // encrypt-on-save (a later phase) can put ciphertext behind a row it
         // also knows the wrapped key for.
-        .create_file(user.id(), req.parent_id, req.name, 0, None, 0, None)
+        .create_file(user.id(), req.parent_id, req.group, req.name, 0, None, 0, None)
         .await?;
     // An empty blob on disk, so download and preview work right away.
     if let Err(e) = state.files.write_blob(&entry, Vec::new()).await {
@@ -116,7 +116,7 @@ pub async fn ensure_folder(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let entry = state
         .db
-        .ensure_dir(user.id(), req.parent_id, req.name)
+        .ensure_dir(user.id(), req.parent_id, req.group, req.name)
         .await?;
     Ok(Json(json!({ "entry": entry })))
 }
@@ -148,10 +148,11 @@ pub async fn delete(
 /// POST /api/files/move – move an entry into another folder (keeps its name).
 ///
 /// Enforced by the DB layer: UPDATE on the source, CREATE at the destination,
-/// and no moving items across owners. An encrypted row arrives with its key
-/// record already re-wrapped for its destination (ENCRYPTION.md 5.4), which
-/// is why this route takes the caller-trusted door of `move_entry_rebound`
-/// rather than the key-domain guard WebDAV runs.
+/// no moving items across owners (a user's own tree and a group they belong
+/// to are the two principals a row may travel between - concepts/groups.md
+/// section 4). An encrypted row arrives with its key record already re-wrapped
+/// for its destination (ENCRYPTION.md 5.4), which is why this route takes the
+/// caller-trusted door rather than the key-domain guard WebDAV runs.
 pub async fn move_entry(
     State(state): State<SharedState>,
     user: AuthUser,
@@ -163,8 +164,8 @@ pub async fn move_entry(
         .await?
         .ok_or(AppError::NotFound)?;
     let moved = state
-        .db
-        .move_entry_rebound(user.id(), req.id, req.dest_parent, entry.name)
+        .files
+        .move_entry(user.id(), req.id, req.dest_parent, entry.name, false)
         .await?;
     Ok(Json(json!({ "entry": moved })))
 }
@@ -331,6 +332,9 @@ async fn upload_parts(
         .create_file(
             user_id,
             parent_id,
+            // A root-level upload is always personal: the group bootstrap
+            // creates folders, files go inside them.
+            None,
             filename,
             size,
             mime,
@@ -957,13 +961,26 @@ async fn save_streamed(
             // keeps being able to unwrap it. Only the row's owner may *swap*
             // that record - the server holds no key and cannot check the
             // wrapping, and a foreign one would leave the owner holding a
-            // record nobody in their own tree can open (5.5).
+            // record nobody in their own tree can open (5.5). On a group
+            // row the F5 "owner" is the manager role (concepts/groups.md
+            // section 5): the creator being a member grants nothing extra.
             let same_record = entry.enc_key.as_ref().is_some_and(|current| {
                 BASE64.decode(current.trim()).is_ok_and(|c| c == key)
             });
-            if entry.owner_id != user_id && !same_record {
+            let key_owner = match entry.owner_group_id {
+                Some(group_id) => matches!(
+                    state.db.group_role_of(user_id, group_id).await?,
+                    Some(role) if role == crate::sharing::ROLE_MANAGER
+                ),
+                None => entry.owner_id == user_id,
+            };
+            if !key_owner && !same_record {
                 return Err(AppError::ForbiddenDetail(
-                    "only the row's owner may change its key record".into(),
+                    match entry.owner_group_id {
+                        Some(_) => "only a group manager may change this folder's key record",
+                        None => "only the row's owner may change its key record",
+                    }
+                    .into(),
                 ));
             }
             Some((1i64, key))
@@ -1236,8 +1253,8 @@ pub async fn batch_move(
                 .await?
                 .ok_or(AppError::NotFound)?;
             state
-                .db
-                .move_entry_rebound(user.id(), id, req.dest_parent, entry.name)
+                .files
+                .move_entry(user.id(), id, req.dest_parent, entry.name, false)
                 .await?;
             Ok::<(), AppError>(())
         }

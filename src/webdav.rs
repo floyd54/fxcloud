@@ -486,7 +486,7 @@ async fn put_finish(
             let mime = crate::files::resolve_mime(declared.as_deref(), sample);
             match state
                 .db
-                .create_file(owner_id, parent.id, name.to_string(), size, mime, 0, None)
+                .create_file(owner_id, parent.id, None, name.to_string(), size, mime, 0, None)
                 .await
             {
                 Ok(entry) => {
@@ -561,7 +561,7 @@ async fn mkcol(state: &SharedState, owner_id: i64, segments: &[String]) -> Respo
         return method_not_allowed();
     }
 
-    match state.db.create_dir(owner_id, parent.id, name).await {
+    match state.db.create_dir(owner_id, parent.id, None, name).await {
         Ok(_) => StatusCode::CREATED.into_response(),
         Err(e) => e.into_response(),
     }
@@ -641,8 +641,8 @@ async fn move_resource(
     }
 
     match state
-        .db
-        .move_entry(owner_id, src_entry.id, dest_parent.id, dest_name)
+        .files
+        .move_entry(owner_id, src_entry.id, dest_parent.id, dest_name, true)
         .await
     {
         Ok(_) => {
@@ -690,7 +690,10 @@ pub(crate) async fn copy_recursive(
              download and upload it instead"
         )));
     }
-    state.db.check_quota(owner_id, total).await?;
+    state
+        .db
+        .check_quota(owner_id, dst_parent, total)
+        .await?;
     copy_node(state, owner_id, src, dst_parent, dst_name).await
 }
 
@@ -704,7 +707,10 @@ async fn copy_node(
     dst_name: String,
 ) -> Result<FileEntry, AppError> {
     if src.is_dir {
-        let new_dir = state.db.create_dir(owner_id, dst_parent, dst_name).await?;
+        let new_dir = state
+            .db
+            .create_dir(owner_id, dst_parent, None, dst_name)
+            .await?;
         let children = state.db.list_children(owner_id, Some(src.id)).await?;
         for child in children {
             // Box::pin to allow this async fn to recurse.
@@ -726,6 +732,7 @@ async fn copy_node(
             .create_file(
                 owner_id,
                 dst_parent,
+                None,
                 dst_name,
                 src.size,
                 src.mime.clone(),

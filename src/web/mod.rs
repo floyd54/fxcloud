@@ -220,7 +220,37 @@ pub fn build_router(state: SharedState) -> Router {
         .route(
             "/admin/users/{id}/password",
             post(routes::admin::reset_password),
+        )
+        // Group administration (concepts/groups.md section 6): same `AdminUser`
+        // gate - creating groups, editing memberships, setting the budgets.
+        .route("/admin/groups", get(routes::admin::list_groups))
+        .route("/admin/groups", post(routes::admin::create_group))
+        .route("/admin/groups/{id}", put(routes::admin::update_group))
+        .route("/admin/groups/{id}", delete(routes::admin::delete_group))
+        .route(
+            "/admin/groups/{id}/members",
+            post(routes::admin::add_group_member),
+        )
+        .route(
+            "/admin/groups/{id}/members/{uid}",
+            put(routes::admin::set_group_member_role),
+        )
+        .route(
+            "/admin/groups/{id}/members/{uid}",
+            delete(routes::admin::remove_group_member),
         );
+
+    // Groups from the member's side (concepts/groups.md sections 4-5): their
+    // own groups for the root badge and the group-folder bootstrap, their key
+    // envelopes, and the manager's pending list plus distribution endpoint.
+    let api = api
+        .route("/groups", get(routes::groups::list_my))
+        .route("/groups/keys", get(routes::groups::my_envelopes))
+        .route(
+            "/groups/{id}/keys/pending",
+            get(routes::groups::keys_pending),
+        )
+        .route("/groups/{id}/keys", post(routes::groups::distribute_key));
 
     // Passkeys (WebAuthn): ceremony endpoints for adding a device and for
     // signing in, plus the device list the settings dialog manages. The

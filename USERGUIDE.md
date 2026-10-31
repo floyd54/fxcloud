@@ -19,15 +19,16 @@ Developer-facing documents:
 3. [Signing in](#3-signing-in)
 4. [Your files](#4-your-files)
 5. [Sharing](#5-sharing)
-6. [Trash](#6-trash)
-7. [Quotas](#7-quotas)
-8. [User administration](#8-user-administration)
-9. [Your account settings](#9-your-account-settings)
-10. [Encryption](#10-encryption)
-11. [Passkeys](#11-passkeys)
-12. [HTTPS behind a reverse proxy (worked example)](#12-https-behind-a-reverse-proxy-worked-example)
-13. [WebDAV](#13-webdav)
-14. [Troubleshooting](#14-troubleshooting)
+6. [Group folders](#6-group-folders)
+7. [Trash](#7-trash)
+8. [Quotas](#8-quotas)
+9. [User administration](#9-user-administration)
+10. [Your account settings](#10-your-account-settings)
+11. [Encryption](#11-encryption)
+12. [Passkeys](#12-passkeys)
+13. [HTTPS behind a reverse proxy (worked example)](#13-https-behind-a-reverse-proxy-worked-example)
+14. [WebDAV](#14-webdav)
+15. [Troubleshooting](#15-troubleshooting)
 
 ## 1. Install
 
@@ -74,7 +75,7 @@ The **first account** created on an instance is activated immediately and
 becomes its administrator. Every account created after that starts
 inactive: registration succeeds, but sign-in is refused with a hint to
 contact the administrator until an active account activates it (see
-[User administration](#8-user-administration)).
+[User administration](#9-user-administration)).
 
 ## 3. Signing in
 
@@ -82,7 +83,7 @@ The sign-in page has three tabs:
 
 - **Sign in** - username and password.
 - **Passkey** - username only; the device then asks for a PIN or
-  biometrics (see [Passkeys](#11-passkeys)).
+  biometrics (see [Passkeys](#12-passkeys)).
 - **Create account** - registration, as above.
 
 Sessions last 30 days by default (`FXCLOUD_SESSION_TTL`).
@@ -151,12 +152,50 @@ shared folder lands in *your* tree and counts against *your* quota.
 To revoke, open the **Share** dialog for the item again and press
 **Remove** next to the person.
 
-When [encryption](#10-encryption) is on for both sides, the share also
+When [encryption](#11-encryption) is on for both sides, the share also
 carries a key envelope sealed to the other person's public key - their
 key fingerprint is shown in the dialog so you can compare it out of band
 before trusting the exchange.
 
-## 6. Trash
+## 6. Group folders
+
+A group folder belongs to a *group*, not to one person: a shared
+workspace with its own quota, managed membership, and the same tree for
+every member. Group folders wear the group's name as a badge in your
+root, so they stay tellable apart from a personal folder of the same
+name.
+
+**Creating one.** An administrator creates the group itself (see
+[User administration](#9-user-administration): name, quota in MiB, and
+the members with their roles - the creator becomes its first manager).
+You then create the group's root folder yourself with the **New group
+folder...** button at the top of your file list - offered in the root
+listing only, and only while you belong to a group. From then on every
+member sees that folder in their root and works the whole tree -
+upload, rename, move, trash - without any individual shares. A group
+folder cannot be shared out to a person: membership is what grants
+access.
+
+**Quota.** The group's storage is its own budget, set by the
+administrator. Writes into a group folder count against the group, never
+against your personal quota; a full group refuses further uploads with
+`507 Insufficient Storage` until the budget is raised or somebody frees
+space. Files in the trash keep counting until they are purged.
+
+**Keys.** With encryption on, a manager hands out the folder keys: open
+the group root's row menu (the "..." column) and choose **Distribute
+folder keys**, then wrap and send to one member at a time. A member
+without a key sees the file names but cannot decrypt the content, and a
+member who has not set up file encryption cannot receive one yet (the
+button says so). Keys follow membership: removing a member removes their
+envelopes for that group as well.
+
+**Trash and deletion.** Group files go to the trash like any other, and
+every member sees the group's trashed rows in their own trash view -
+restore and purge are open to any member. The group itself is deleted by
+an administrator once it is empty: no members, no folders.
+
+## 7. Trash
 
 Nothing is deleted immediately: **Delete** moves entries to your personal
 trash, where they can be **Restore**d or **Delete permanently**.
@@ -166,7 +205,7 @@ A background sweep removes trashed entries for good after 30 days
 (`FXCLOUD_TRASH_DAYS`); the trash list shows each entry's deadline, and
 trashed content still counts against your quota while it sits there.
 
-## 7. Quotas
+## 8. Quotas
 
 Every account has a storage quota - 1 GiB by default, set per account by
 an administrator. What counts is everything *you own*: files you uploaded,
@@ -175,7 +214,7 @@ original owner. Exceeding it yields a clear `507 Insufficient Storage`
 error in the web UI and in WebDAV; your current usage is shown in
 **Settings** ("Storage: used of quota").
 
-## 8. User administration
+## 9. User administration
 
 Administrators get a **User administration** entry in the menu behind
 their name in the top bar. There they can:
@@ -193,7 +232,7 @@ with a hint to contact the administrator. Display name, theme and password
 are *not* on this list: every user changes those themselves in
 **Settings**.
 
-## 9. Your account settings
+## 10. Your account settings
 
 The menu behind your name in the top bar opens **Settings**:
 
@@ -203,7 +242,7 @@ The menu behind your name in the top bar opens **Settings**:
 - **Password** - change it; the current password is asked first.
 - **Passkeys** - manage your sign-in devices (see below).
 
-## 10. Encryption
+## 11. Encryption
 
 fxcloud can encrypt files **in your browser** before they leave your
 device: the server stores ciphertext and a wrapped key, and can still see
@@ -224,7 +263,7 @@ The full design (threat model, key hierarchy, the DECISIONs) lives in
   above. WebDAV desktop clients do not encrypt: encrypted files are
   visible there as ciphertext and cannot be written through them.
 
-## 11. Passkeys
+## 12. Passkeys
 
 A passkey signs you in with a PIN or biometrics instead of a password.
 fxcloud uses username-first FIDO2/WebAuthn with ES256 and requires user
@@ -251,7 +290,7 @@ Requirements:
   fxcloud with `FXCLOUD_ORIGIN` - the next section shows how, and what
   the error looks like when it is missing.
 
-## 12. HTTPS behind a reverse proxy (worked example)
+## 13. HTTPS behind a reverse proxy (worked example)
 
 fxcloud speaks plain HTTP, so a reverse proxy terminates TLS in front of
 it. Passkeys are the reason this needs one extra setting: WebAuthn binds
@@ -332,7 +371,7 @@ Without `FXCLOUD_ORIGIN`, fxcloud derives the origin per request from
 correct when the proxy passes both through unchanged - and wrong the
 moment it does not.
 
-## 13. WebDAV
+## 14. WebDAV
 
 fxcloud speaks WebDAV at **`/dav/`** with HTTP Basic auth (your fxcloud
 username + password; passkeys are web-only). The path after `/dav/` is
@@ -347,14 +386,14 @@ rclone lsd remote:
 
 Deactivated accounts get 403, quota violations 507. Encrypted files show
 up as ciphertext and cannot be written from a desktop client (see
-[Encryption](#10-encryption)); the web UI is the way in and out for those.
+[Encryption](#11-encryption)); the web UI is the way in and out for those.
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 **"Origin does not match this server's address - set FXCLOUD_ORIGIN ..."**
 when adding or using a passkey: the URL users open fxcloud under differs
 from what fxcloud derives from the proxy headers. Set `FXCLOUD_ORIGIN` as
-in [section 12](#12-https-behind-a-reverse-proxy-worked-example) and
+in [section 13](#13-https-behind-a-reverse-proxy-worked-example) and
 restart.
 
 **The passkey UI says the browser blocks passkeys**: you are on plain

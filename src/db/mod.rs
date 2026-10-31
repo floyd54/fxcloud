@@ -1,4 +1,5 @@
 pub mod file;
+pub mod group;
 pub mod keys;
 pub mod passkey;
 pub mod session;
@@ -194,6 +195,16 @@ impl Db {
                 Some(
                     "SELECT COUNT(*) FROM pragma_table_info('users')
                      WHERE name = 'version_keep_days'",
+                ),
+            ),
+            (
+                "017_groups",
+                include_str!("../../migrations/017_groups.sql"),
+                // Skip once `files.owner_group_id` exists (the tables in it
+                // are `IF NOT EXISTS`, the column cannot be).
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('files')
+                     WHERE name = 'owner_group_id'",
                 ),
             ),
         ];

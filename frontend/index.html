@@ -33,6 +33,11 @@
     <div class="toolbar">
       <button class="btn" id="new-file-btn" data-i18n="files.new">＋ New file</button>
       <button class="btn" id="new-folder-btn" data-i18n="files.newFolder">＋ New folder</button>
+      <!-- Only shown in the root listing, and only for members of a group
+           (renderToolbar decides): a group's top-level folder is the one
+           thing a member bootstraps themselves (concepts/groups.md section 6). -->
+      <button class="btn" id="new-group-btn" type="button" style="display:none"
+              data-i18n="group.newFolder">＋ New group folder</button>
       <button class="btn" id="upload-btn" data-i18n="files.upload">⬆ Upload file</button>
       <button class="btn" id="upload-folder-btn" data-i18n="files.uploadFolder">⬆ Upload folder</button>
       <button class="btn secondary" id="trash-btn" data-i18n="files.trash">Trash</button>
@@ -262,6 +267,21 @@
 
       <p class="settings-status" id="admin-status"></p>
 
+      <!-- Group folders (concepts/groups.md section 6): same dialog, second
+           section - identity and quota against consumption, the member list
+           with roles, and the create row underneath. A group must be emptied
+           (no members, no folders) before the delete button goes through,
+           and the server says so when it is not. -->
+      <h4 class="admin-subhead" data-i18n="admin.groups">Group folders</h4>
+      <div class="group-list" id="group-rows"></div>
+      <div class="group-new">
+        <input type="text" id="group-new-name" data-i18n-ph="group.newName"
+               placeholder="New group name" />
+        <input type="number" id="group-new-quota" min="0" step="1" class="admin-quota-input"
+               data-i18n-ph="group.newQuota" placeholder="Quota in MiB" />
+        <button class="btn" id="group-new-btn" type="button" data-i18n="group.create">Create group</button>
+      </div>
+
       <div class="modal-footer">
         <button class="btn secondary" id="admin-close-btn" type="button" data-i18n="act.close">Close</button>
       </div>
@@ -283,6 +303,40 @@
       </div>
       <div class="modal-footer">
         <button class="btn" id="reset-close-btn" type="button" data-i18n="reset.done">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bootstrap a group's top-level folder (member side, concepts/groups.md
+       section 6): pick one of your groups, name the folder, and the server
+       attributes the row - creator stays the owner for the audit trail, the
+       group pays the quota. -->
+  <div class="modal-backdrop" id="gfolder-modal" style="display:none">
+    <div class="modal reset-modal">
+      <h3 data-i18n="group.newFolder">New group folder</h3>
+      <label class="gfolder-label" for="gfolder-group" data-i18n="group.pick">Group</label>
+      <select id="gfolder-group"></select>
+      <label class="gfolder-label" for="gfolder-name" data-i18n="group.folderName">Folder name</label>
+      <input type="text" id="gfolder-name" />
+      <p class="settings-status" id="gfolder-status"></p>
+      <div class="modal-footer">
+        <button class="btn secondary" id="gfolder-cancel-btn" type="button" data-i18n="act.cancel">Cancel</button>
+        <button class="btn" id="gfolder-create-btn" type="button" data-i18n="group.bootstrap">Create folder</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Distribute folder keys (managers, concepts/groups.md section 5): one
+       row per (folder, member) pair without an envelope yet. Wrapping runs
+       in this tab - the server only ever stores the sealed blob. -->
+  <div class="modal-backdrop" id="distrib-modal" style="display:none">
+    <div class="modal reset-modal">
+      <h3 data-i18n="group.distribute">Distribute folder keys</h3>
+      <p class="reset-user" id="distrib-folder"></p>
+      <div class="distrib-rows" id="distrib-rows"></div>
+      <p class="settings-status" id="distrib-status"></p>
+      <div class="modal-footer">
+        <button class="btn" id="distrib-close-btn" type="button" data-i18n="act.close">Close</button>
       </div>
     </div>
   </div>

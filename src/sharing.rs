@@ -29,6 +29,23 @@ pub fn normalize(mask: i64) -> i64 {
     mask & PERM_ALL
 }
 
+/// Membership roles: one role per member, applying to every folder of its
+/// group (concepts/groups.md section 4).
+pub const ROLE_MEMBER: i64 = 0;
+pub const ROLE_MANAGER: i64 = 1;
+
+/// What a role may do in its group's folders: the manager is the
+/// owner-equivalent (`PERM_ALL`, including re-shares and key-record swaps),
+/// the member is a full collaborator minus `PERM_SHARE` - v1 draws no
+/// sharing out of a group folder (section 4).
+pub fn role_perms(role: i64) -> i64 {
+    if role == ROLE_MANAGER {
+        PERM_ALL
+    } else {
+        PERM_READ | PERM_UPDATE | PERM_CREATE | PERM_DELETE
+    }
+}
+
 /// A resolved grant: the share row that authorizes access to an entry the
 /// requester does not own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +133,19 @@ mod tests {
         // A negative mask has every bit set, including bits that do not exist.
         assert_eq!(normalize(-1), PERM_ALL);
         assert_eq!(normalize(0), 0);
+    }
+
+    #[test]
+    fn the_manager_role_is_owner_equivalent_and_the_member_may_not_share() {
+        assert_eq!(role_perms(ROLE_MANAGER), PERM_ALL);
+        let member = role_perms(ROLE_MEMBER);
+        assert_eq!(member, PERM_READ | PERM_UPDATE | PERM_CREATE | PERM_DELETE);
+        assert!(!grants(member, PERM_SHARE));
+        for req in [PERM_READ, PERM_UPDATE, PERM_CREATE, PERM_DELETE] {
+            assert!(grants(member, req), "a member must grant {req}");
+        }
+        // An unknown role gets the member's mask at most - never more.
+        assert_eq!(role_perms(99), member);
     }
 
     #[test]

@@ -204,12 +204,12 @@ impl FileService {
         match blob {
             BlobRef::Entry {
                 file_id,
-                owner_id,
+                owner,
                 created_at,
             } => {
                 let (h1, h2) = Self::id_levels(*file_id);
                 PathBuf::new()
-                    .join(owner_id.to_string())
+                    .join(owner.dir_segment())
                     .join(created_at.format("%Y").to_string())
                     .join(h1)
                     .join(h2)
@@ -453,6 +453,89 @@ impl FileService {
                 "copying blob {src:?} -> {dst_path:?}: {e}"
             ))),
         }
+    }
+
+    /// Hard-link a blob to its relocation target: the link a move between
+    /// principals lays down *before* the row updates - link, row, unlink,
+    /// the same order the version exchange uses, so a crash at any instant
+    /// leaves the content reachable under some path.
+    pub async fn link_blob(&self, from: &BlobRef, to: &BlobRef) -> Result<(), AppError> {
+        let src = self.blob_path(from.clone());
+        let dst = self.blob_path(to.clone());
+        if let Some(parent) = dst.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("creating blob dir {parent:?}: {e}"))
+            })?;
+        }
+        match tokio::fs::hard_link(&src, &dst).await {
+            Ok(()) => Ok(()),
+            // Flat layout fallback for blobs the startup migration could
+            // not move yet (see the module docs).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let BlobRef::Entry { file_id, .. } = from {
+                    tokio::fs::hard_link(self.legacy_blob_path(*file_id), &dst)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| {
+                            AppError::Internal(anyhow::anyhow!(
+                                "relocating flat blob {file_id} -> {dst:?}: {e}"
+                            ))
+                        })
+                } else {
+                    Err(AppError::Internal(anyhow::anyhow!(
+                        "relocating blob {src:?} -> {dst:?}: {e}"
+                    )))
+                }
+            }
+            Err(e) => Err(AppError::Internal(anyhow::anyhow!(
+                "relocating blob {src:?} -> {dst:?}: {e}"
+            ))),
+        }
+    }
+
+    /// Move an entry to another parent and name - and, when the attribution
+    /// changes with it, between blob namespaces. Sequences the crash-safe
+    /// order around [`Db::prepare_move`] / [`Db::apply_move`]: plan
+    /// (permissions, cycle, destination quota, group boundaries), link the
+    /// new blob path, apply the rows, drop the old name. The final unlink is
+    /// best effort - a lingering hardlink keeps the content readable and
+    /// only leaks an extra name for one inode.
+    ///
+    /// `guard_key_domains` selects the key-blind door (WebDAV `true`, the
+    /// JSON routes `false` - see [`Db::prepare_move`]).
+    pub async fn move_entry(
+        &self,
+        user_id: i64,
+        id: i64,
+        new_parent: Option<i64>,
+        new_name: String,
+        guard_key_domains: bool,
+    ) -> Result<FileEntry, AppError> {
+        let plan = self
+            .db
+            .prepare_move(user_id, id, new_parent, new_name, guard_key_domains)
+            .await?;
+        let relocation = plan
+            .relocation()
+            .map(|(old, new)| (old.clone(), new.clone()));
+        if let Some((old, new)) = &relocation {
+            self.link_blob(old, new).await?;
+        }
+        let moved = match self.db.apply_move(plan).await {
+            Ok(entry) => entry,
+            Err(e) => {
+                // The rows never moved: take the fresh link away again
+                // (best effort - a leftover link keeps content readable).
+                if let Some((_, new)) = &relocation {
+                    self.delete_blobs(&[new.clone()]).await;
+                }
+                return Err(e);
+            }
+        };
+        if let Some((old, _)) = relocation {
+            self.delete_blobs(&[old]).await;
+        }
+        Ok(moved)
     }
 
     /// Exchange a version in (concepts/versioning.md section 4): the chosen

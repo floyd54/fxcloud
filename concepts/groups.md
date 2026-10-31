@@ -1,8 +1,9 @@
 # Concept: groups and group folders (decided)
 
-Status: decided 2026-10-30. Implementation order: **3 of 3** - after
-streaming S1 and versioning. Green means the open questions are answered
-(section 11); this document is the working spec until the feature ships.
+Status: **implemented** 2026-10-31 (v0.1.4). Implementation order: **3
+of 3** - after streaming S1 and versioning. Everything below shipped;
+section 12 records the places where the implementation had to decide
+beyond this spec.
 
 ## 1. Goal
 
@@ -169,3 +170,61 @@ distribution flow, ~14 pins)
 | 7 | E2EE distribution | manager click / pending-key list (key-blind server), **in v1** |
 | 8 | Quota | **own quota per group**, operator-set, enforced on every write |
 | - | Shape | group-owned folders (storage principals), not share routing; roles manager/member; no re-share out of group folders in v1; trash visible to members; delete group only when empty; order 3 of 3 |
+
+## 12. Implementation notes (v0.1.4)
+
+Where the code went past or beside the spec above:
+
+- **Migration number.** The tables landed as `017_groups.sql`; `015`
+  and `016` went to versioning before this work started. `PRAGMA
+  foreign_keys = ON` is set for every connection, so the cascades below
+  actually fire.
+- **Bootstrap request.** A member creates the group's top-level folder
+  with `POST /api/files/folder {"parent_id": null, "group": <id>,
+  "name": ...}`. `group` together with a real `parent_id` is a 400: the
+  parameter only means "this row starts a group's root". The creator
+  becomes its first **manager** server-side (decision 5: a fresh group
+  is never left without a manager).
+- **Sibling uniqueness.** A partial index
+  `idx_files_group_sibling ON files(owner_group_id, IFNULL(parent_id,
+  -1), name) WHERE owner_group_id IS NOT NULL` keeps one name per
+  parent across *all* members (carol cannot create a second `OpsRoot`).
+  A personal root and a group root of the same name may still coexist -
+  different principals, and the root badge (`.group-badge`) is what
+  tells them apart. The bootstrap creator is the exception: the personal
+  unique index applies to them too, so their own root name is refused
+  with the usual 409.
+- **Shares stay out.** `POST /api/shares` on a group row answers 403
+  ("group folders cannot be shared with individuals"): v1 keeps shares
+  user-to-user, group targets arrive with G2 (section 7).
+- **Usage includes the trash.** `GROUP_USAGE` is the `ensure_quota`
+  formula per principal: live sizes of `owner_group_id = g` *plus* their
+  version rows, with no `deleted_at` filter - a trashed row keeps
+  billing the group until the purge. A member's own quota is never
+  touched by group writes.
+- **Delete only when empty.** `delete_group` refuses with 409 while
+  *any* member row or *any* file row (trashed included) still points at
+  the group; the admin empties it first (delete to trash, purge, remove
+  members), then the delete goes through.
+- **Keys follow membership.** Removing a member deletes their
+  `group_keys` rows for that group with them, so an ex-member's tab
+  falls back to name-only like any non-member (their envelopes are
+  gone, not merely hidden).
+- **F5 inside groups.** The first key record on a group row may be set
+  by any member with UPDATE (a plaintext folder needs one record to
+  exist); swapping an existing record stays manager-only
+  (`group_role` gates in the DB layer, 403 otherwise).
+- **Cross-principal moves.** personal -> group re-bills the group and
+  sets `owner_group_id`; group -> personal clears it again. The blobs
+  relocate through the same link-first path, so a failed move leaves
+  both sides consistent.
+- **Envelope shape.** A group key envelope is byte-for-byte the share
+  envelope shape (same AAD derivation, `shareEnvelopeAad(file_id,
+  recipient)`, same 8192-char cap): the member's tab opens it through
+  the same key map as a mount, and one crypto path serves both. The
+  manager's distribution UI reuses `FXEnc.shareEnvelope` directly.
+- **Trash across members.** Any member sees the group's trashed rows in
+  *their* trash view and may restore or purge them (the DELETE bit comes
+  from the role mask, not from creator attribution). Emptying one's
+  trash therefore purges group rows too - documented behaviour, not an
+  accident.

@@ -21,6 +21,7 @@ src/
 |   |-- file.rs      # file-tree metadata: recursive ops, breadcrumbs,
 |   |                #   subtree sizes, quota gates
 |   |-- passkey.rs   # webauthn_credentials rows (public keys, counters)
+|   |-- group.rs     # groups, membership roles, group key envelopes
 |   \-- share.rs     # share records: covering shares, mount names
 |-- sharing.rs       # permission bitmask (PERM_*) and helpers
 |-- files/           # FileService: DB metadata + on-disk blob storage
@@ -32,7 +33,10 @@ src/
     |-- ui.rs        # embedded pages + version slot injection
     \-- routes/
         |-- auth.rs  # /api/register, /login, /logout, /me, /users
+        |-- admin.rs # /api/admin/* account and group administration
         |-- files.rs # /api/files/* (listing, upload, preview, editor, zip)
+        |-- groups.rs# /api/groups/* own groups + folder key distribution
+        |-- keys.rs  # /api/keys/* key records and the public-key lookup
         |-- passkeys.rs # /api/passkeys/* ceremonies + /api/me/passkeys
         \-- shares.rs# /api/shares/*
 frontend/            # static UI (plain JS, no framework), embedded at build time

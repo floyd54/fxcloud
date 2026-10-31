@@ -408,6 +408,14 @@ Key points:
   grantee public key once per share; keys are cacheable (section 6, `GET
   /api/keys/<username>`), and a changed public key is caught before it is
   used (see key substitution below).
+- **Group folder keys** (v0.1.4) reuse this envelope byte for byte: a
+  group's manager seals a top-level folder's key record to one member
+  with the same AAD derivation (`shareEnvelopeAad(file_id, recipient)`),
+  and stores it in `group_keys` instead of `shares.envelope` (`POST
+  /api/groups/:id/keys`, same 8192-char cap, same opaque-server stance).
+  The member's tab opens it through the same key map as a mount, so one
+  crypto path serves both; removing the member deletes their envelopes
+  with the membership.
 
 Server-side enforcement that must stay strict: a grantee's `enc_key`
 values and share envelopes are only ever returned to rows the existing
@@ -802,7 +810,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   logic - envelope rows are copied when a share is copied, dropped by
   `ON DELETE CASCADE` when a share or file dies (trash -> purge already
   cascades).
-- Testing: the suite now runs **622 checks**. The additions cover the key
+- Testing: the suite now runs **663 checks**. The additions cover the key
   endpoints (server-side KDF floor, idempotent setup, 409 when a second
   differing payload arrives, rewrap round trip, what
   `GET /api/keys/<username>` does and does not expose, and the record

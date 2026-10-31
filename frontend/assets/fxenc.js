@@ -171,6 +171,11 @@
     // sealed blobs, useful while still locked; their envelopes are opened
     // once the private key exists.
     incomingShares: [],
+    // Group folder envelopes sealed to me (GET /api/groups/keys, groups.md
+    // section 5): same wrapped record shape as a share's, keyed by the
+    // folder id, so the chain walk below a group root works exactly like
+    // the one below a mount.
+    groupKeys: [],
   };
 
   // Raw keys, memory only like everything else here (DECISION 7):
@@ -665,6 +670,13 @@
       // open as plaintext; a read that needs one reports the usual message.
       state.incomingShares = [];
     }
+    try {
+      state.groupKeys = await http("/api/groups/keys").then((r) => r.json());
+    } catch (_) {
+      // Same position as the shares above: group folders still list, they
+      // just do not open encrypted; a read reports the usual message.
+      state.groupKeys = [];
+    }
   }
 
   /**
@@ -682,6 +694,19 @@
       try {
         const aad = FX().shareEnvelopeAad(share.file_id, state.username);
         shareKeys.set(share.file_id, await FX().eciesOpen(state.session.privateKey, share.envelope, aad));
+      } catch (_) {
+        /* sealed for another key, or altered: the read reports it */
+      }
+    }
+    // Group folder envelopes (groups.md section 5): sealed by the group's
+    // manager with the same record shape and AAD as a share's envelope, so
+    // they open into the same map and resolveFileKey treats a group root
+    // exactly like a mount. A stale one is skipped, never fatal.
+    for (const gk of state.groupKeys) {
+      if (!gk.envelope) continue;
+      try {
+        const aad = FX().shareEnvelopeAad(gk.file_id, state.username);
+        shareKeys.set(gk.file_id, await FX().eciesOpen(state.session.privateKey, gk.envelope, aad));
       } catch (_) {
         /* sealed for another key, or altered: the read reports it */
       }

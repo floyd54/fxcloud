@@ -1123,6 +1123,108 @@ textarea#enc-rcv-key:focus {
 }
 .admin-quota-input:focus { outline: none; border-color: var(--accent); }
 
+/* ---------- Group folders (admin dialog + key distribution) ---------- */
+/* The badge in the root listing tells a group folder apart from a personal
+   one of the same name; purple, to stay clear of the share blue. */
+.group-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b3fb5;
+  background: #f1ecfb;
+  border-radius: 8px;
+  padding: 1px 7px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.admin-subhead { margin: 16px 0 8px; font-size: 14px; font-weight: 600; }
+.group-list {
+  max-height: 40vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+}
+.group-list:empty { display: none; }
+.group-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 9px 11px;
+  font-size: 13px;
+}
+.group-head { display: flex; align-items: center; gap: 10px; }
+.group-head .gname { font-weight: 600; }
+.group-head .gused { color: var(--muted); font-size: 12.5px; }
+.group-head .grow { flex: 1; }
+.group-head .btn { padding: 4px 9px; font-size: 12.5px; }
+.group-members { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+.group-member { display: flex; align-items: center; gap: 8px; }
+.group-member .gwho { flex: 1; }
+.group-member .btn { padding: 3px 8px; font-size: 12px; }
+.group-add { display: flex; gap: 6px; margin-top: 8px; }
+.group-add input {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+}
+.group-add input:focus { outline: none; border-color: var(--accent); }
+.group-new { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+.group-new input[type="text"] {
+  flex: 1;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+}
+.group-new input:focus { outline: none; border-color: var(--accent); }
+.group-empty { color: var(--muted); font-size: 13px; margin: 2px; }
+
+/* Bootstrap + distribution dialogs (both reuse the compact modal width). */
+#gfolder-group {
+  width: 100%;
+  margin: 6px 0 12px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13.5px;
+  background: var(--bg);
+  color: var(--text);
+}
+.gfolder-label { display: block; margin-top: 10px; font-size: 13px; color: var(--muted); }
+#gfolder-name {
+  width: 100%;
+  margin-top: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13.5px;
+  background: var(--bg);
+  color: var(--text);
+}
+#gfolder-name:focus, #gfolder-group:focus { outline: none; border-color: var(--accent); }
+.distrib-rows { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 4px; }
+.distrib-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+.distrib-row .distrib-user { flex: 1; }
+.distrib-row .btn { padding: 4px 9px; font-size: 12.5px; }
+.distrib-empty { color: var(--muted); font-size: 13px; margin: 10px 0; }
+
 /* Temporary-password dialog (result of an admin password reset) */
 .reset-modal { width: min(460px, 92vw); }
 .reset-user { margin: 6px 0 0; font-size: 14px; }

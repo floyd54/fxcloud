@@ -23,15 +23,47 @@ impl Db {
     ) -> Result<OutgoingShare, AppError> {
         let perms = normalize(permissions);
         self.run(move |conn| {
-            // Source must exist and belong to the owner.
-            let (source_name, is_dir): (String, bool) = conn
+            // Source must exist, be a personal row, and belong to the owner.
+            let (source_name, is_dir, row_owner, source_group): (
+                String,
+                bool,
+                i64,
+                Option<i64>,
+            ) = conn
                 .query_row(
-                    "SELECT name, is_dir != 0 FROM files WHERE id = ?1 AND owner_id = ?2",
-                    params![source_id, owner_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    "SELECT name, is_dir != 0, owner_id, owner_group_id
+                       FROM files WHERE id = ?1",
+                    params![source_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?
                 .ok_or(AppError::NotFound)?;
+            if let Some(group_id) = source_group {
+                // Group files take no incoming shares, and v1 draws no
+                // re-share *out of* a group folder to individuals
+                // (concepts/groups.md section 4): members learn why (403),
+                // for non-members the row is not there (404) - the same
+                // answer their listings give them.
+                let member: Option<i64> = conn
+                    .query_row(
+                        "SELECT role FROM group_members
+                          WHERE group_id = ?1 AND user_id = ?2",
+                        params![group_id, owner_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                return Err(match member {
+                    Some(_) => AppError::ForbiddenDetail(
+                        "group folders cannot be shared with individuals - their \
+                         members receive access through the group"
+                            .into(),
+                    ),
+                    None => AppError::NotFound,
+                });
+            }
+            if row_owner != owner_id {
+                return Err(AppError::NotFound);
+            }
 
             // Resolve grantee.
             let grantee_id: i64 = conn

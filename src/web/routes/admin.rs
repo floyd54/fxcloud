@@ -15,7 +15,10 @@ use serde_json::json;
 
 use crate::auth::{hash_password, AdminUser};
 use crate::error::AppError;
-use crate::models::{AdminUpdateUserRequest, AdminUser as AdminUserRow};
+use crate::models::{
+    AddGroupMemberRequest, AdminUpdateUserRequest, AdminUser as AdminUserRow, CreateGroupRequest,
+    GroupInfo, GroupMember, GroupRoleRequest, UpdateGroupRequest,
+};
 use crate::web::state::SharedState;
 
 /// GET /api/admin/users -- every account with the fields the admin dialog
@@ -162,4 +165,124 @@ fn generate_temporary_password() -> String {
         .take(16)
         .map(char::from)
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Groups (concepts/groups.md section 6): administration of the storage
+// principal - who belongs to which group, and how much storage it may take.
+// The server is the permission authority for membership; the file checks in
+// `db/file.rs` read exactly these rows. The member's own view of their
+// groups (root badge, key envelopes) is `src/web/routes/groups.rs`.
+
+/// GET /api/admin/groups -- every group: identity, quota against
+/// consumption, creator, and the member list with roles.
+pub async fn list_groups(
+    State(state): State<SharedState>,
+    _admin: AdminUser,
+) -> Result<Json<Vec<GroupInfo>>, AppError> {
+    Ok(Json(state.db.list_groups().await?))
+}
+
+/// POST /api/admin/groups -- create a group.
+///
+/// The creator is put in as the group's first manager (implementation note
+/// in concepts/groups.md), so a fresh group is never left without anybody
+/// who may add members or hand out folder keys.
+pub async fn create_group(
+    State(state): State<SharedState>,
+    admin: AdminUser,
+    Json(req): Json<CreateGroupRequest>,
+) -> Result<Json<GroupInfo>, AppError> {
+    let name = req.name.trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("group name must not be empty".into()));
+    }
+    Ok(Json(
+        state
+            .db
+            .create_group(admin.id(), name, req.quota_bytes)
+            .await?,
+    ))
+}
+
+/// PUT /api/admin/groups/{id} -- apply the partial update: each present
+/// field is written on its own. Lowering the quota below what the group
+/// already stores is allowed - existing files stay, growth stops.
+pub async fn update_group(
+    State(state): State<SharedState>,
+    _admin: AdminUser,
+    Path(group_id): Path<i64>,
+    Json(req): Json<UpdateGroupRequest>,
+) -> Result<Json<GroupInfo>, AppError> {
+    let name = req.name.map(|n| n.trim().to_string());
+    if name.as_deref() == Some("") {
+        return Err(AppError::BadRequest("group name must not be empty".into()));
+    }
+    Ok(Json(
+        state
+            .db
+            .update_group(group_id, name, req.quota_bytes)
+            .await?,
+    ))
+}
+
+/// DELETE /api/admin/groups/{id} -- delete a group that has been emptied.
+///
+/// Refused while members remain or file rows are still attributed to it
+/// (live or trashed): deleting content is the file side's job, and doing it
+/// implicitly here would turn one dialog click into a silent data loss the
+/// trash could not undo.
+pub async fn delete_group(
+    State(state): State<SharedState>,
+    _admin: AdminUser,
+    Path(group_id): Path<i64>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    state.db.delete_group(group_id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// POST /api/admin/groups/{id}/members -- add an account by username with a
+/// role (`0` member, `1` manager). Answers with the new member list.
+pub async fn add_group_member(
+    State(state): State<SharedState>,
+    _admin: AdminUser,
+    Path(group_id): Path<i64>,
+    Json(req): Json<AddGroupMemberRequest>,
+) -> Result<Json<Vec<GroupMember>>, AppError> {
+    Ok(Json(
+        state
+            .db
+            .add_group_member(group_id, req.username.trim().to_string(), req.role)
+            .await?,
+    ))
+}
+
+/// PUT /api/admin/groups/{id}/members/{user_id} -- change one member's role.
+pub async fn set_group_member_role(
+    State(state): State<SharedState>,
+    _admin: AdminUser,
+    Path((group_id, user_id)): Path<(i64, i64)>,
+    Json(req): Json<GroupRoleRequest>,
+) -> Result<Json<Vec<GroupMember>>, AppError> {
+    Ok(Json(
+        state
+            .db
+            .set_group_member_role(group_id, user_id, req.role)
+            .await?,
+    ))
+}
+
+/// DELETE /api/admin/groups/{id}/members/{user_id} -- remove a member.
+///
+/// Their key envelopes for the group's folders go with the membership (the
+/// member view of `group_keys` only ever reads rows of groups the caller
+/// belongs to - this clears them outright so nothing lingers either way).
+/// The rows they created stay attributed to the group: `owner_id` is the
+/// audit trail, never the access decision.
+pub async fn remove_group_member(
+    State(state): State<SharedState>,
+    _admin: AdminUser,
+    Path((group_id, user_id)): Path<(i64, i64)>,
+) -> Result<Json<Vec<GroupMember>>, AppError> {
+    Ok(Json(state.db.remove_group_member(group_id, user_id).await?))
 }

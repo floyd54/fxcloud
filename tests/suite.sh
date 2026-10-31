@@ -1411,6 +1411,175 @@ NVH=$(grep -c '"versions.history":' "$REPO/frontend/assets/i18n.js")
 NSET=$(grep -c '"settings.versioning":' "$REPO/frontend/assets/i18n.js")
 [ "$NSET" = "3" ] && ok "settings.versioning translated en/de/tlh" || bad "settings.versioning appears $NSET times, expected 3"
 
+# ---- group folders (concepts/groups.md) ------------------------------------
+# A group is a storage principal of its own (section 3): the creator staffs
+# it, every member works one shared tree, the group pays the quota, and the
+# folder keys travel from a manager to the members - never the other way
+# round (section 5). carol joins as the second member; her activation goes
+# through the same sqlite door the user-settings section used for dave.
+note "group folders: admin CRUD, and the creator becomes the first manager"
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET is_active=1 WHERE username='carol';" >/dev/null
+GC=$ROOT/carol.jar
+req POST /api/login "$GC" '{"username":"carol","password":"correct-horse"}' >/dev/null
+GLIST=$(req GET /api/admin/users "$JA")
+ALICEID=$(afield "$GLIST" alice id)
+BOBID=$(afield "$GLIST" bob id)
+CAROLID=$(afield "$GLIST" carol id)
+DAVEID=$(afield "$GLIST" dave id)
+
+GRESP=$(req POST /api/admin/groups "$JA" '{"name":"Ops","quota_bytes":1048576}')
+echo "$GRESP"
+GID=$(jget "$GRESP" id)
+NM=$(printf '%s' "$GRESP" | perl -MJSON::PP -0777 -ne 'print scalar @{decode_json($_)->{members}}')
+[ -n "$GID" ] && [ "$(jget "$GRESP" created_by_name)" = "alice" ] && [ "$NM" = "1" ] \
+  && [ "$(jget "$GRESP" members.0.role)" = "1" ] \
+  && ok "create group: the creator is its first manager" || bad "group create: $GRESP"
+
+[ "$(reqcode GET /api/admin/groups "$JB")" = "403" ] \
+  && ok "group administration is admin-only (403 for bob)" || bad "bob reached /api/admin/groups"
+
+[ "$(reqcode POST /api/admin/groups "$JA" '{"name":"ops","quota_bytes":1}')" = "409" ] \
+  && ok "duplicate group names are refused (409, case-insensitive)" || bad "duplicate group name accepted"
+
+note "group folders: members join, and see only their own groups"
+[ "$(reqcode POST "/api/admin/groups/$GID/members" "$JA" '{"username":"bob","role":0}')" = "200" ] \
+  && [ "$(reqcode POST "/api/admin/groups/$GID/members" "$JA" '{"username":"carol","role":0}')" = "200" ] \
+  && ok "bob and carol join as members" || bad "adding members failed"
+[ "$(reqcode POST "/api/admin/groups/$GID/members" "$JA" '{"username":"dave","role":7}')" = "400" ] \
+  && ok "a role outside the table is refused (400)" || bad "bogus role accepted"
+
+MV=$(req GET /api/groups "$JB")
+echo "$MV"
+[ "$(jget "$MV" 0.name)" = "Ops" ] && [ "$(jget "$MV" 0.role)" = "0" ] \
+  && [ "$(jget "$MV" 0.quota_bytes)" = "1048576" ] \
+  && ok "the member view lists the group with role and quota" || bad "member view: $MV"
+NL=$(printf '%s' "$(req GET /api/groups "$JD")" | perl -MJSON::PP -0777 -ne 'print scalar @{decode_json($_)}')
+[ "$NL" = "0" ] && ok "a non-member's group list is empty" || bad "non-member sees $NL groups"
+
+note "group folders: the bootstrap creates the group's top-level folder"
+BT=$(req POST /api/files/folder "$JB" "{\"parent_id\":null,\"group\":$GID,\"name\":\"OpsRoot\"}")
+echo "$BT"
+GROOT=$(jget "$BT" entry.id)
+[ -n "$GROOT" ] && [ "$(jget "$BT" entry.owner_group_id)" = "$GID" ] \
+  && [ "$(jget "$BT" entry.owner_id)" = "$BOBID" ] \
+  && ok "bootstrap: the row bills the group, the creator stays the owner" \
+  || bad "bootstrap: $BT"
+
+[ "$(reqcode POST /api/files/folder "$GC" "{\"parent_id\":null,\"group\":$GID,\"name\":\"OpsRoot\"}")" = "409" ] \
+  && ok "a second top-level folder of the same name is refused (409)" || bad "sibling duplicate accepted"
+
+[ "$(field "$(req GET /api/files "$JB")" OpsRoot group_name)" = "Ops" ] \
+  && ok "the root listing carries the group badge" || bad "no group badge in bob's root"
+[ -n "$(idof "$(req GET /api/files "$GC")" OpsRoot)" ] \
+  && ok "the other member sees the root entry" || bad "carol cannot see the group folder"
+[ -z "$(idof "$(req GET /api/files "$JD")" OpsRoot)" ] \
+  && ok "a non-member sees nothing of it" || bad "dave sees a group folder"
+
+note "group folders: members work one tree, and cannot share it out"
+NR=$(req POST /api/files/folder "$JB" "{\"parent_id\":$GROOT,\"name\":\"notes\"}")
+NOTES=$(jget "$NR" entry.id)
+up "$GC" "$NOTES" a.txt >/dev/null
+[ -n "$(idof "$(req GET "/api/files?parent=$NOTES" "$JB")" a.txt)" ] \
+  && ok "a member's upload lands in the shared subtree for everyone" \
+  || bad "carol's upload is invisible to bob"
+
+[ "$(reqcode POST /api/shares "$JB" "{\"file_id\":$GROOT,\"username\":\"dave\",\"permissions\":1}")" = "403" ] \
+  && ok "a group folder cannot be shared out (403)" || bad "group folder was shareable"
+
+[ "$(reqcode POST /api/files/rename "$GC" "{\"id\":$GROOT,\"name\":\"RenamedByCarol\"}")" = "200" ] \
+  && [ "$(field "$(req GET /api/files "$JB")" RenamedByCarol group_name)" = "Ops" ] \
+  && ok "members work the subtree normally (rename included)" || bad "member rename failed"
+req POST /api/files/rename "$GC" "{\"id\":$GROOT,\"name\":\"OpsRoot\"}" >/dev/null
+
+note "group folders: key distribution (pending list, wrap, manager gate)"
+PEND=$(req GET "/api/groups/$GID/keys/pending" "$JA")
+echo "$PEND"
+# Every member without an envelope is one pair - and that includes the
+# manager herself: alice holds no key for OpsRoot either (bob created it),
+# so she is pending next to bob and carol.
+NP=$(printf '%s' "$PEND" | perl -MJSON::PP -0777 -ne 'print scalar @{decode_json($_)}')
+[ "$NP" = "3" ] && ok "the pending list starts with one pair per member" || bad "pending pairs: $NP"
+[ "$(reqcode GET "/api/groups/$GID/keys/pending" "$JB")" = "403" ] \
+  && ok "the pending list is manager-only (403 for a member)" || bad "member read the pending list"
+[ "$(reqcode GET "/api/groups/$GID/keys/pending" "$JD")" = "404" ] \
+  && ok "a non-member gets the listing's 404" || bad "dave read a pending list"
+
+[ "$(reqcode POST "/api/groups/$GID/keys" "$JA" "{\"file_id\":$GROOT,\"user_id\":$BOBID,\"envelope\":\"R3JvdXBLZXkx\"}")" = "200" ] \
+  && ok "the manager distributes an envelope (200)" || bad "distribution failed"
+NP2=$(printf '%s' "$(req GET "/api/groups/$GID/keys/pending" "$JA")" | perl -MJSON::PP -0777 -ne 'print scalar @{decode_json($_)}')
+[ "$NP2" = "2" ] && ok "the wrapped pair leaves the pending list" || bad "pending still shows $NP2 pairs"
+[ "$(reqcode POST "/api/groups/$GID/keys" "$JA" "{\"file_id\":$GROOT,\"user_id\":$BOBID,\"envelope\":\"R3JvdXBLZXky\"}")" = "200" ] \
+  && ok "re-distributing overwrites the envelope (200)" || bad "re-distribution failed"
+EK=$(req GET /api/groups/keys "$JB")
+NE=$(printf '%s' "$EK" | perl -MJSON::PP -0777 -ne 'print scalar @{decode_json($_)}')
+[ "$NE" = "1" ] && [ "$(jget "$EK" 0.file_id)" = "$GROOT" ] \
+  && [ "$(jget "$EK" 0.group_name)" = "Ops" ] && [ "$(jget "$EK" 0.envelope)" = "R3JvdXBLZXky" ] \
+  && ok "the member's envelope cache holds exactly the latest record" || bad "envelope cache: $EK"
+[ "$(reqcode POST "/api/groups/$GID/keys" "$GC" "{\"file_id\":$GROOT,\"user_id\":$CAROLID,\"envelope\":\"eA==\"}")" = "403" ] \
+  && ok "only a manager hands out folder keys (403 for a member)" || bad "member distributed a key"
+NC=$(printf '%s' "$(req GET /api/groups/keys "$GC")" | perl -MJSON::PP -0777 -ne 'print scalar @{decode_json($_)}')
+[ "$NC" = "0" ] && ok "a member without an envelope receives no key material" || bad "carol got $NC envelopes"
+
+note "group folders: the record-swap line (F5) holds inside a group"
+[ "$(reqcode PUT /api/files/key "$JA" "{\"id\":$GROOT,\"key\":\"YWxpY2UtcmVjb3Jk\"}")" = "200" ] \
+  && ok "the manager sets the folder's first record (200)" || bad "first record refused"
+[ "$(reqcode PUT /api/files/key "$JB" "{\"id\":$GROOT,\"key\":\"Ym9iLXJlY29yZA==\"}")" = "403" ] \
+  && ok "a member cannot swap a record that exists (403)" || bad "member swapped a record"
+[ "$(reqcode PUT /api/files/key "$JA" "{\"id\":$GROOT,\"key\":\"YWxpY2UtdjI=\"}")" = "200" ] \
+  && ok "the manager may swap it (200)" || bad "manager swap refused"
+
+note "group folders: the group's quota bills the group, not the member"
+sqlite3 "$DATA/fxcloud.db" "UPDATE groups SET quota_bytes=4 WHERE id=$GID;" >/dev/null
+RC=$(curl -s -o /dev/null -w '%{http_code}' -b "$JB" -F "parent=$GROOT" -F "file=@$ROOT/src/b.txt" "$BASE/api/files/upload")
+[ "$RC" = "507" ] && ok "upload beyond the group's budget is refused (507)" || bad "quota not enforced (rc=$RC)"
+sqlite3 "$DATA/fxcloud.db" "UPDATE groups SET quota_bytes=1048576 WHERE id=$GID;" >/dev/null
+USED=$(jget "$(req GET /api/groups "$JB")" 0.used_bytes)
+[ -n "$USED" ] && [ "$USED" -ge 10 ] \
+  && ok "the member view reports the group's consumption ($USED bytes)" || bad "used_bytes: $USED"
+
+note "group folders: trash spans the members, removal cuts the access"
+[ "$(reqcode POST /api/files/delete "$JB" "{\"id\":$NOTES}")" = "200" ] \
+  && [ -n "$(idof "$(req GET /api/files/trash "$JA")" notes)" ] \
+  && ok "a row trashed by one member shows up in the other's trash" || bad "cross-member trash failed"
+[ "$(reqcode POST /api/files/trash/restore "$JA" "{\"id\":$NOTES}")" = "200" ] \
+  && [ -n "$(idof "$(req GET "/api/files?parent=$GROOT" "$GC")" notes)" ] \
+  && ok "the other member restores it (back in the group)" || bad "cross-member restore failed"
+
+up "$JB" "" d.txt >/dev/null
+PERF=$(idof "$(req GET /api/files "$JB")" d.txt)
+[ "$(reqcode POST /api/files/move "$JB" "{\"id\":$PERF,\"dest_parent\":$GROOT}")" = "200" ] \
+  && [ "$(field "$(req GET "/api/files?parent=$GROOT" "$JB")" d.txt owner_group_id)" = "$GID" ] \
+  && ok "a personal file moved in bills the group from then on" || bad "move-in attribution"
+[ "$(reqcode POST /api/files/move "$JB" "{\"id\":$PERF,\"dest_parent\":null}")" = "200" ] \
+  && [ "$(field "$(req GET /api/files "$JB")" d.txt owner_group_id)" = "" ] \
+  && ok "moved back out, the attribution is cleared" || bad "move-out attribution"
+
+[ "$(reqcode DELETE "/api/admin/groups/$GID/members/$CAROLID" "$JA")" = "200" ] \
+  && [ -z "$(idof "$(req GET /api/files "$GC")" OpsRoot)" ] \
+  && ok "a removed member no longer sees the group's folders" || bad "removal did not cut access"
+NC2=$(printf '%s' "$(req GET /api/groups/keys "$GC")" | perl -MJSON::PP -0777 -ne 'print scalar @{decode_json($_)}')
+[ "$NC2" = "0" ] && ok "the removed member's envelopes went with the membership" \
+  || bad "$NC2 envelopes outlived the membership"
+[ "$(reqcode GET "/api/groups/$GID/keys/pending" "$GC")" = "404" ] \
+  && ok "and so did their place in the group (404)" || bad "carol still reaches the group"
+
+note "group folders: a group is deleted only once it is empty"
+[ "$(reqcode DELETE "/api/admin/groups/$GID" "$JA")" = "409" ] \
+  && ok "content still attributed to the group refuses the delete (409)" \
+  || bad "delete with content went through"
+[ "$(reqcode POST /api/files/delete "$JB" "{\"id\":$GROOT}")" = "200" ] \
+  && [ "$(reqcode POST /api/files/trash/purge "$JB" "{\"id\":$GROOT}")" = "200" ] \
+  && [ "$(reqcode DELETE "/api/admin/groups/$GID/members/$BOBID" "$JA")" = "200" ] \
+  && [ "$(reqcode DELETE "/api/admin/groups/$GID/members/$ALICEID" "$JA")" = "200" ] \
+  && [ "$(reqcode DELETE "/api/admin/groups/$GID" "$JA")" = "200" ] \
+  && ok "emptied and unmembered, the group deletes cleanly" || bad "empty-group delete failed"
+
+note "group folders: the i18n keys ship in all three dictionaries"
+for GKEY in admin.groups group.newFolder group.distribute; do
+  NGK=$(grep -c "\"$GKEY\":" "$REPO/frontend/assets/i18n.js")
+  [ "$NGK" = "3" ] && ok "$GKEY translated en/de/tlh" || bad "$GKEY appears $NGK times, expected 3"
+done
+
 # ---- client-side encryption (ENCRYPTION.md) -------------------------------
 # The server stores wrapped blobs it cannot open. What it must not do is leak
 # them, believe a client that says "this is encrypted" without looking, or let

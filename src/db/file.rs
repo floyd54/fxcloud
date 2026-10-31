@@ -6,8 +6,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 use crate::error::AppError;
-use crate::models::{BlobRef, Breadcrumb, FileEntry, FileVersion};
-use crate::sharing::PERM_ALL;
+use crate::models::{BlobOwner, BlobRef, Breadcrumb, FileEntry, FileVersion, TreeOwner};
+use crate::sharing::{role_perms, PERM_ALL};
 
 use super::share::{covering_share, share_name_taken};
 use super::user::parse_ts;
@@ -20,6 +20,11 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
     Ok(FileEntry {
         id: row.get("id")?,
         owner_id: row.get("owner_id")?,
+        owner_group_id: row.get("owner_group_id")?,
+        // Filled by listings that alias the join in (`g.name AS
+        // group_name`); queries without the join leave it empty (the lookup
+        // of a missing column is an error, which reads as "absent" here).
+        group_name: row.get::<_, Option<String>>("group_name").unwrap_or(None),
         parent_id: row.get("parent_id")?,
         name: row.get("name")?,
         is_dir: row.get::<_, i64>("is_dir")? != 0,
@@ -41,13 +46,58 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
     })
 }
 
-/// Build a [`BlobRef`] from `(id, owner_id, created_at)` row values.
-fn blob_ref(id: i64, owner_id: i64, created_at: &str) -> rusqlite::Result<BlobRef> {
+/// Build a [`BlobRef`] from row values: the attribution decides the
+/// namespace - personal rows keep their user id forever, group rows go
+/// under `g<group_id>` (concepts/groups.md section 3).
+fn blob_ref(
+    id: i64,
+    owner_id: i64,
+    owner_group_id: Option<i64>,
+    created_at: &str,
+) -> rusqlite::Result<BlobRef> {
     Ok(BlobRef::Entry {
         file_id: id,
-        owner_id,
+        owner: match owner_group_id {
+            Some(group_id) => BlobOwner::Group(group_id),
+            None => BlobOwner::User(owner_id),
+        },
         created_at: parse_ts(created_at, 2)?,
     })
+}
+
+/// The acting user's role in `group_id`, or `None` when they are not a
+/// member - the one fact every group permission check starts from.
+pub(super) fn group_role(conn: &Connection, user_id: i64, group_id: i64) -> rusqlite::Result<Option<i64>> {
+    let role: Option<i64> = conn
+        .query_row(
+            "SELECT role FROM group_members WHERE group_id = ?1 AND user_id = ?2",
+            params![group_id, user_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(role)
+}
+
+/// The `(owner_id, owner_group_id)` pair a new row under `principal` is
+/// created with: a personal tree records the tree owner (the sharer, as
+/// always), a group folder records the *creator* for the audit while the
+/// group pays (concepts/groups.md section 3).
+fn insert_owner(principal: TreeOwner, creator: i64) -> (i64, Option<i64>) {
+    match principal {
+        TreeOwner::User(owner) => (owner, None),
+        TreeOwner::Group(group_id) => (creator, Some(group_id)),
+    }
+}
+
+/// Bindings for [`PRINCIPAL_GUARD`], in its placeholder order: the acting
+/// user's id for a personal tree (and no group), or the group id (and no
+/// user). A personal write never lands on a group row and vice versa, even
+/// when the requester created the group row themselves.
+fn principal_params(principal: TreeOwner) -> (Option<i64>, Option<i64>) {
+    match principal {
+        TreeOwner::User(user_id) => (Some(user_id), None),
+        TreeOwner::Group(group_id) => (None, Some(group_id)),
+    }
 }
 
 /// Build a version's [`BlobRef`] from `(file_id, blob_created_at)` row
@@ -59,7 +109,7 @@ fn version_blob_ref(file_id: i64, blob_key: &str) -> BlobRef {
     }
 }
 
-/// Whether `additional` more bytes still fit into `owner_id`'s quota.
+/// Whether `additional` more bytes still fit into `principal`'s quota.
 ///
 /// Every path that adds content funnels through here — `create_file` and
 /// `update_file_meta` run this in the same statement block as their write, so
@@ -67,31 +117,48 @@ fn version_blob_ref(file_id: i64, blob_key: &str) -> BlobRef {
 /// subtree via [`Db::check_quota`] before they start.
 ///
 /// Kept versions count (concepts/versioning.md decision 4): the sum is the
-/// user's own rows plus the history of those rows, so a save that pins the
-/// outgoing bytes cannot slip past the gate by keeping them.
-fn ensure_quota(conn: &Connection, owner_id: i64, additional: i64) -> Result<(), AppError> {
+/// principal's own rows plus the history of those rows, so a save that pins
+/// the outgoing bytes cannot slip past the gate by keeping them. A user's
+/// sum covers only their personal rows - group folders bill the group, never
+/// the member who happened to write into them (concepts/groups.md section 4).
+fn ensure_quota(conn: &Connection, principal: TreeOwner, additional: i64) -> Result<(), AppError> {
     if additional <= 0 {
         return Ok(());
     }
-    let (quota, used): (i64, i64) = conn.query_row(
-        "SELECT u.quota_bytes,
-                COALESCE((SELECT SUM(f.size) FROM files f
-                           WHERE f.owner_id = u.id AND f.is_dir = 0), 0)
-              + COALESCE((SELECT SUM(v.size) FROM file_versions v
-                          JOIN files f ON f.id = v.file_id
-                           WHERE f.owner_id = u.id AND f.is_dir = 0), 0)
-           FROM users u WHERE u.id = ?1",
-        params![owner_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
+    let (quota, used): (i64, i64) = match principal {
+        TreeOwner::User(owner_id) => conn.query_row(
+            "SELECT u.quota_bytes,
+                    COALESCE((SELECT SUM(f.size) FROM files f
+                               WHERE f.owner_id = u.id AND f.owner_group_id IS NULL
+                                 AND f.is_dir = 0), 0)
+                  + COALESCE((SELECT SUM(v.size) FROM file_versions v
+                              JOIN files f ON f.id = v.file_id
+                               WHERE f.owner_id = u.id AND f.owner_group_id IS NULL
+                                 AND f.is_dir = 0), 0)
+               FROM users u WHERE u.id = ?1",
+            params![owner_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?,
+        TreeOwner::Group(group_id) => conn.query_row(
+            "SELECT g.quota_bytes,
+                    COALESCE((SELECT SUM(f.size) FROM files f
+                               WHERE f.owner_group_id = ?1 AND f.is_dir = 0), 0)
+                  + COALESCE((SELECT SUM(v.size) FROM file_versions v
+                              JOIN files f ON f.id = v.file_id
+                               WHERE f.owner_group_id = ?1 AND f.is_dir = 0), 0)
+               FROM groups g WHERE g.id = ?1",
+            params![group_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?,
+    };
     if used + additional > quota {
         return Err(AppError::QuotaExceeded { used, quota });
     }
     Ok(())
 }
 
-const ENTRY_COLS: &str = "id, owner_id, parent_id, name, is_dir, size, mime, created_at, \
-                         modified_at, deleted_at, enc_version, enc_key";
+const ENTRY_COLS: &str = "id, owner_id, owner_group_id, parent_id, name, is_dir, size, mime, \
+                         created_at, modified_at, deleted_at, enc_version, enc_key";
 
 /// Enforce the count bound on one file's history: keep the newest `keep`
 /// versions, collect and delete the rest. `keep <= 0` disables the bound
@@ -152,12 +219,44 @@ const TRASH_ROOTS: &str = "deleted_at IS NOT NULL
        AND (parent_id IS NULL
             OR parent_id IN (SELECT id FROM files WHERE deleted_at IS NULL))";
 
+/// The row interlock for a write whose permission check resolved a
+/// [`TreeOwner`]: the row must sit under that same principal - a personal
+/// tree touches only its own un-attributed rows, a group only its own.
+/// Binds two trailing params in this order (see [`principal_params`]).
+const PRINCIPAL_GUARD: &str = "((owner_id = ? AND owner_group_id IS NULL)
+            OR (owner_group_id = ?))";
+
+/// A validated move whose rows have not been touched yet (see
+/// [`Db::prepare_move`]). The caller relocates the blob when
+/// [`MovePlan::relocation`] returns one - link the new path, apply, then
+/// drop the old name - so a crash at any instant leaves the content
+/// reachable under some path (the crash discipline, Audit.md F).
+#[derive(Debug)]
+pub struct MovePlan {
+    id: i64,
+    new_parent: Option<i64>,
+    new_name: String,
+    src: TreeOwner,
+    dest: TreeOwner,
+    relocation: Option<(BlobRef, BlobRef)>,
+}
+
+impl MovePlan {
+    /// Old path first, destination path second - only when the attribution
+    /// (and with it the blob namespace) changes with the move.
+    pub fn relocation(&self) -> Option<(&BlobRef, &BlobRef)> {
+        self.relocation.as_ref().map(|(old, new)| (old, new))
+    }
+}
+
 impl Db {
     /// List the direct children of `parent_id` as seen by `user_id`
     /// (root when `None`), folders-first then alphabetically.
     ///
-    /// Root merges the user's own entries with incoming share mounts; a foreign
-    /// parent folder is listed when a covering share grants READ.
+    /// Root merges the user's own entries with their groups' top-level
+    /// folders (badged) and incoming share mounts; a foreign parent folder
+    /// is listed when a covering share grants READ, a group folder whenever
+    /// the requester is a member with READ.
     pub async fn list_children(
         &self,
         user_id: i64,
@@ -167,6 +266,7 @@ impl Db {
             let mut entries = match parent_id {
                 None => {
                     let mut entries = own_children(conn, user_id, None)?;
+                    entries.extend(group_roots(conn, user_id)?);
                     entries.extend(incoming_mounts(conn, user_id)?);
                     sort_entries(&mut entries);
                     entries
@@ -176,7 +276,25 @@ impl Db {
                     if !parent.is_dir {
                         return Err(AppError::BadRequest("parent is not a folder".into()));
                     }
-                    if parent.owner_id == user_id {
+                    if let Some(group_id) = parent.owner_group_id {
+                        // The membership role decides, creator or not
+                        // (concepts/groups.md section 4).
+                        let role = group_role(conn, user_id, group_id)?
+                            .ok_or(AppError::NotFound)?;
+                        let perms = role_perms(role);
+                        if !crate::sharing::grants(perms, crate::sharing::PERM_READ) {
+                            return Err(AppError::NotFound);
+                        }
+                        let mut entries = group_children(conn, group_id, Some(pid))?;
+                        let group_name = group_name(conn, group_id)?;
+                        let owners = creator_names(conn, group_id, Some(pid))?;
+                        for e in &mut entries {
+                            e.permissions = perms;
+                            e.owner_name = owners.get(&e.owner_id).cloned();
+                            e.group_name = Some(group_name.clone());
+                        }
+                        entries
+                    } else if parent.owner_id == user_id {
                         own_children(conn, user_id, Some(pid))?
                     } else {
                         // Foreign folder: only a covering share may open it.
@@ -214,22 +332,27 @@ impl Db {
 
     /// Create a directory under `parent_id` (root when `None`).
     ///
-    /// A foreign parent is allowed when a covering share grants CREATE; the new
-    /// entry then joins the *owner's* tree, exactly like Nextcloud.
+    /// A foreign parent is allowed when a covering share grants CREATE; the
+    /// new entry then joins the *owner's* tree, exactly like Nextcloud. A
+    /// group folder joins the group's tree with the creator in `owner_id`;
+    /// `group` bootstraps a group's top-level folder at the root.
     pub async fn create_dir(
         &self,
         user_id: i64,
         parent_id: Option<i64>,
+        group: Option<i64>,
         name: String,
     ) -> Result<FileEntry, AppError> {
         self.run(move |conn| {
             validate_name(&name)?;
-            let tree_owner = create_target(conn, user_id, parent_id, &name)?;
+            let principal = create_target(conn, user_id, parent_id, group, &name)?;
+            let (owner, owner_group_id) = insert_owner(principal, user_id);
             let now = Utc::now().to_rfc3339();
             conn.execute(
-                "INSERT INTO files (owner_id, parent_id, name, is_dir, size, mime, created_at, modified_at)
-                 VALUES (?1, ?2, ?3, 1, 0, NULL, ?4, ?4)",
-                params![tree_owner, parent_id, name, now],
+                "INSERT INTO files (owner_id, owner_group_id, parent_id, name, is_dir, size,
+                                    mime, created_at, modified_at)
+                 VALUES (?1, ?2, ?3, ?4, 1, 0, NULL, ?5, ?5)",
+                params![owner, owner_group_id, parent_id, name, now],
             )
             .map_err(|e| map_constraint(e, &name))?;
             let id = conn.last_insert_rowid();
@@ -241,11 +364,13 @@ impl Db {
 
     /// Insert a file entry (metadata only). The caller writes the blob separately.
     ///
-    /// Shares the parent rules of [`Db::create_dir`].
+    /// Shares the parent rules of [`Db::create_dir`], including the root
+    /// bootstrap through `group`.
     pub async fn create_file(
         &self,
         user_id: i64,
         parent_id: Option<i64>,
+        group: Option<i64>,
         name: String,
         size: i64,
         mime: Option<String>,
@@ -254,18 +379,21 @@ impl Db {
     ) -> Result<FileEntry, AppError> {
         self.run(move |conn| {
             validate_name(&name)?;
-            let tree_owner = create_target(conn, user_id, parent_id, &name)?;
+            let principal = create_target(conn, user_id, parent_id, group, &name)?;
             // Quota gate sits before the INSERT: content is never tracked that
-            // the owner has no space for (shared uploads count against the
-            // sharer, because the tree owner stores the bytes).
-            ensure_quota(conn, tree_owner, size)?;
+            // the principal has no space for (shared uploads count against
+            // the sharer, group uploads against the group, because that tree
+            // stores the bytes).
+            ensure_quota(conn, principal, size)?;
+            let (owner, owner_group_id) = insert_owner(principal, user_id);
             let now = Utc::now().to_rfc3339();
             conn.execute(
-                "INSERT INTO files (owner_id, parent_id, name, is_dir, size, mime, created_at,
-                                    modified_at, enc_version, enc_key)
-                 VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?6, ?7, ?8)",
+                "INSERT INTO files (owner_id, owner_group_id, parent_id, name, is_dir, size,
+                                    mime, created_at, modified_at, enc_version, enc_key)
+                 VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?7, ?8, ?9)",
                 params![
-                    tree_owner,
+                    owner,
+                    owner_group_id,
                     parent_id,
                     name,
                     size,
@@ -287,39 +415,65 @@ impl Db {
     ///
     /// Returns the existing folder when one is already there; otherwise creates
     /// it. A foreign parent needs a covering share with CREATE (read-only
-    /// shares can only return an existing folder, never create one).
+    /// shares can only return an existing folder, never create one), a group
+    /// folder needs the role's CREATE; `group` bootstraps at the root.
     pub async fn ensure_dir(
         &self,
         user_id: i64,
         parent_id: Option<i64>,
+        group: Option<i64>,
         name: String,
     ) -> Result<FileEntry, AppError> {
         self.run(move |conn| {
             validate_name(&name)?;
 
             // Whose tree are we operating in, and may we create there?
-            let (tree_owner, can_create) = match parent_id {
-                None => (user_id, true),
+            let (principal, can_create) = match parent_id {
+                None => match group {
+                    Some(group_id) => {
+                        let role =
+                            group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
+                        let perms = role_perms(role);
+                        (
+                            TreeOwner::Group(group_id),
+                            crate::sharing::grants(perms, crate::sharing::PERM_CREATE),
+                        )
+                    }
+                    None => (TreeOwner::User(user_id), true),
+                },
                 Some(pid) => {
                     let parent = get_entry_by_id(conn, pid)?;
                     if !parent.is_dir {
                         return Err(AppError::BadRequest("parent is not a folder".into()));
                     }
-                    if parent.owner_id == user_id {
-                        (user_id, true)
+                    if let Some(group_id) = parent.owner_group_id {
+                        // Non-members 404 (the folder does not exist for
+                        // them), members carry their role's mask.
+                        let role =
+                            group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
+                        let perms = role_perms(role);
+                        (
+                            TreeOwner::Group(group_id),
+                            crate::sharing::grants(perms, crate::sharing::PERM_CREATE),
+                        )
+                    } else if parent.owner_id == user_id {
+                        (TreeOwner::User(user_id), true)
                     } else {
                         let access =
                             covering_share(conn, user_id, pid)?.ok_or(AppError::NotFound)?;
                         if !access.can(crate::sharing::PERM_READ) {
                             return Err(AppError::NotFound);
                         }
-                        (parent.owner_id, access.can(crate::sharing::PERM_CREATE))
+                        (
+                            TreeOwner::User(parent.owner_id),
+                            access.can(crate::sharing::PERM_CREATE),
+                        )
                     }
                 }
             };
 
             // Already there? That's our answer (as long as it's a folder).
-            if let Some(existing) = find_child(conn, tree_owner, parent_id, &name)? {
+            if let Some(existing) = find_child(conn, principal, parent_id, &name)? {
                 if existing.is_dir {
                     return Ok(existing);
                 }
@@ -335,11 +489,13 @@ impl Db {
                 return Err(AppError::Conflict(format!("'{name}' already exists here")));
             }
 
+            let (owner, owner_group_id) = insert_owner(principal, user_id);
             let now = Utc::now().to_rfc3339();
             conn.execute(
-                "INSERT INTO files (owner_id, parent_id, name, is_dir, size, mime, created_at, modified_at)
-                 VALUES (?1, ?2, ?3, 1, 0, NULL, ?4, ?4)",
-                params![tree_owner, parent_id, name, now],
+                "INSERT INTO files (owner_id, owner_group_id, parent_id, name, is_dir, size,
+                                    mime, created_at, modified_at)
+                 VALUES (?1, ?2, ?3, ?4, 1, 0, NULL, ?5, ?5)",
+                params![owner, owner_group_id, parent_id, name, now],
             )
             .map_err(|e| map_constraint(e, &name))?;
             get_entry_by_id(conn, conn.last_insert_rowid())
@@ -349,7 +505,8 @@ impl Db {
 
     /// Rename an entry (or update a file's metadata after an overwrite).
     ///
-    /// Foreign entries require the covering share to grant UPDATE.
+    /// Foreign entries require the covering share to grant UPDATE; group
+    /// entries the membership role's UPDATE.
     pub async fn rename_entry(
         &self,
         user_id: i64,
@@ -358,11 +515,14 @@ impl Db {
     ) -> Result<FileEntry, AppError> {
         self.run(move |conn| {
             validate_name(&name)?;
-            let tree_owner = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
+            let principal = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
+            let (user, group) = principal_params(principal);
             let changed = conn.execute(
-                "UPDATE files SET name = ?1, modified_at = ?2
-                 WHERE id = ?3 AND owner_id = ?4",
-                params![name, Utc::now().to_rfc3339(), id, tree_owner],
+                &format!(
+                    "UPDATE files SET name = ?1, modified_at = ?2
+                     WHERE id = ?3 AND {PRINCIPAL_GUARD}"
+                ),
+                params![name, Utc::now().to_rfc3339(), id, user, group],
             )?;
             if changed == 0 {
                 return Err(AppError::NotFound);
@@ -377,15 +537,19 @@ impl Db {
     /// deletion time - its subtree rows and blob content stay untouched, so
     /// a restore is a single UPDATE and nothing moves on disk.
     ///
-    /// Foreign entries require the covering share to grant DELETE; the mark
-    /// lands in the *owner's* tree, so the owner sees and restores it.
+    /// Foreign entries require the covering share to grant DELETE, group
+    /// entries the role's DELETE; the mark lands in the *tree's* trash, so
+    /// the owner (or every member, for a group row) sees and restores it.
     pub async fn trash_entry(&self, user_id: i64, id: i64) -> Result<(), AppError> {
         self.run(move |conn| {
-            let tree_owner = update_target(conn, user_id, id, crate::sharing::PERM_DELETE)?;
+            let principal = update_target(conn, user_id, id, crate::sharing::PERM_DELETE)?;
+            let (user, group) = principal_params(principal);
             conn.execute(
-                "UPDATE files SET deleted_at = ?1
-                 WHERE id = ?2 AND owner_id = ?3 AND deleted_at IS NULL",
-                params![Utc::now().to_rfc3339(), id, tree_owner],
+                &format!(
+                    "UPDATE files SET deleted_at = ?1
+                     WHERE id = ?2 AND {PRINCIPAL_GUARD} AND deleted_at IS NULL"
+                ),
+                params![Utc::now().to_rfc3339(), id, user, group],
             )?;
             Ok(())
         })
@@ -416,16 +580,27 @@ impl Db {
 
     /// The caller's trash: trashed roots, newest first. One row per restore
     /// unit - children of a trashed folder come back with their parent.
+    /// Group rows are in every member's view, badged with their group
+    /// (concepts/groups.md section 4).
     pub async fn trash_list(&self, user_id: i64) -> Result<Vec<FileEntry>, AppError> {
         self.run(move |conn| {
             let mut stmt = conn.prepare(&format!(
                 "SELECT {ENTRY_COLS} FROM files
-                 WHERE owner_id = ?1 AND {TRASH_ROOTS}
+                 WHERE {TRASH_ROOTS}
+                   AND ((owner_id = ?1 AND owner_group_id IS NULL)
+                        OR owner_group_id IN (SELECT group_id FROM group_members
+                                               WHERE user_id = ?1))
                  ORDER BY deleted_at DESC, name COLLATE NOCASE ASC"
             ))?;
             let mut entries = stmt
                 .query_map(params![user_id], row_to_entry)?
                 .collect::<Result<Vec<_>, _>>()?;
+            for e in &mut entries {
+                if let Some(group_id) = e.owner_group_id {
+                    e.group_name = Some(group_name(conn, group_id)?);
+                    e.owner_name = Some(username_by_id(conn, e.owner_id)?);
+                }
+            }
             // Trashed folders still occupy the disk, so their subtree size
             // belongs in the listing just like for live folders.
             fill_subtree_sizes(conn, &mut entries)?;
@@ -437,12 +612,33 @@ impl Db {
     /// Bring a trashed entry back to where it was; the whole subtree returns
     /// with it. A live sibling that took the name in the meantime gets a
     /// " (restored)" suffix, so the restore always succeeds visibly.
+    ///
+    /// Personal rows restore through their owner (as always), group rows
+    /// through any member's DELETE bit - the trash view shows them to every
+    /// member, so every member may put them back (concepts/groups.md
+    /// section 4).
     pub async fn restore_trash(&self, user_id: i64, id: i64) -> Result<FileEntry, AppError> {
         self.run(move |conn| {
             let entry = get_entry_by_id(conn, id)?;
-            if entry.owner_id != user_id || entry.deleted_at.is_none() {
+            if entry.deleted_at.is_none() {
                 return Err(AppError::NotFound);
             }
+            let principal = match entry.owner_group_id {
+                Some(group_id) => {
+                    let role =
+                        group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
+                    if !crate::sharing::grants(role_perms(role), crate::sharing::PERM_DELETE) {
+                        return Err(AppError::NotFound);
+                    }
+                    TreeOwner::Group(group_id)
+                }
+                None => {
+                    if entry.owner_id != user_id {
+                        return Err(AppError::NotFound);
+                    }
+                    TreeOwner::User(user_id)
+                }
+            };
             match entry.parent_id {
                 // A root-level item goes straight back to the root.
                 None => {
@@ -474,7 +670,7 @@ impl Db {
                     }
                     let mut name = entry.name.clone();
                     let mut nth = 0;
-                    while find_child(conn, user_id, Some(pid), &name)?.is_some() {
+                    while find_child(conn, principal, Some(pid), &name)?.is_some() {
                         nth += 1;
                         name = match nth {
                             1 => format!("{} (restored)", entry.name),
@@ -510,12 +706,28 @@ impl Db {
             .await
     }
 
-    /// Hard-delete a single trashed root of this user ("Delete permanently").
+    /// Hard-delete a single trashed root in the caller's trash ("Delete
+    /// permanently"): their personal rows, or a group row any member may
+    /// purge with the role's DELETE bit (concepts/groups.md section 4).
     pub async fn purge_trash_item(&self, user_id: i64, id: i64) -> Result<Vec<BlobRef>, AppError> {
         self.run(move |conn| {
             let entry = get_entry_by_id(conn, id)?;
-            if entry.owner_id != user_id || entry.deleted_at.is_none() {
+            if entry.deleted_at.is_none() {
                 return Err(AppError::NotFound);
+            }
+            match entry.owner_group_id {
+                Some(group_id) => {
+                    let role =
+                        group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
+                    if !crate::sharing::grants(role_perms(role), crate::sharing::PERM_DELETE) {
+                        return Err(AppError::NotFound);
+                    }
+                }
+                None => {
+                    if entry.owner_id != user_id {
+                        return Err(AppError::NotFound);
+                    }
+                }
             }
             // Only trash roots are units of their own; a child of a trashed
             // folder goes with its parent.
@@ -531,16 +743,18 @@ impl Db {
         .await
     }
 
-    /// Owner and creation time of every file row — one query feeding the
-    /// startup blob migration, instead of one lookup per blob.
+    /// Owner, attribution and creation time of every file row — one query
+    /// feeding the startup blob migration, instead of one lookup per blob.
     pub async fn blob_origins(&self) -> Result<HashMap<i64, BlobRef>, AppError> {
         self.run(move |conn| {
-            let mut stmt = conn.prepare("SELECT id, owner_id, created_at FROM files")?;
+            let mut stmt =
+                conn.prepare("SELECT id, owner_id, owner_group_id, created_at FROM files")?;
             let mut rows = stmt.query_map([], |r| {
                 let id: i64 = r.get(0)?;
                 let owner_id: i64 = r.get(1)?;
-                let created_at: String = r.get(2)?;
-                Ok((id, blob_ref(id, owner_id, &created_at)?))
+                let owner_group_id: Option<i64> = r.get(2)?;
+                let created_at: String = r.get(3)?;
+                Ok((id, blob_ref(id, owner_id, owner_group_id, &created_at)?))
             })?;
             let mut out = HashMap::new();
             while let Some(row) = rows.next() {
@@ -556,12 +770,15 @@ impl Db {
     ///
     /// For entries reached through a share the trail is cut at the mount point
     /// (the owner's own root above the shared item is not visible), and the
-    /// mount crumb shows the share's display name.
+    /// mount crumb shows the share's display name. A trail that starts at a
+    /// group's top-level folder stays whole - that folder *is* the viewer's
+    /// root when they are a member, and there is nothing to show above it.
     pub async fn breadcrumbs(&self, user_id: i64, id: i64) -> Result<Vec<Breadcrumb>, AppError> {
         self.run(move |conn| {
             let mut trail: Vec<Breadcrumb> = Vec::new();
             let mut current = Some(id);
             let mut top_owner: Option<i64> = None;
+            let mut top_group: Option<i64> = None;
             let mut hops = 0;
             while let Some(cid) = current {
                 // The depth cap turns a corrupt parent cycle into a clean
@@ -572,13 +789,20 @@ impl Db {
                 if hops > 64 {
                     return Err(AppError::NotFound);
                 }
-                let (name, parent, owner, enc_key): (String, Option<i64>, i64, Option<Vec<u8>>) =
-                    conn.query_row(
-                        "SELECT name, parent_id, owner_id, enc_key FROM files WHERE id = ?1",
-                        params![cid],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                    )?;
+                let (name, parent, owner, group, enc_key): (
+                    String,
+                    Option<i64>,
+                    i64,
+                    Option<i64>,
+                    Option<Vec<u8>>,
+                ) = conn.query_row(
+                    "SELECT name, parent_id, owner_id, owner_group_id, enc_key
+                       FROM files WHERE id = ?1",
+                    params![cid],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )?;
                 top_owner = Some(owner);
+                top_group = group;
                 trail.push(Breadcrumb {
                     id: Some(cid),
                     name,
@@ -587,7 +811,14 @@ impl Db {
                 current = parent;
             }
             trail.reverse();
-            if top_owner != Some(user_id) {
+            if let Some(group_id) = top_group {
+                // Membership is the gate for a group trail - a removed
+                // member gets the same 404 their entries give them.
+                let role = group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
+                if !crate::sharing::grants(role_perms(role), crate::sharing::PERM_READ) {
+                    return Err(AppError::NotFound);
+                }
+            } else if top_owner != Some(user_id) {
                 // Reached via a share: cut at the mount and rename that crumb.
                 let access = covering_share(conn, user_id, id)?.ok_or(AppError::NotFound)?;
                 let display: String = conn.query_row(
@@ -632,116 +863,119 @@ impl Db {
         segments: Vec<String>,
     ) -> Result<Option<FileEntry>, AppError> {
         self.run(move |conn| {
-            let mut owner = user_id;
+            let mut principal = TreeOwner::User(user_id);
             let mut parent: Option<i64> = None;
             let mut perms = PERM_ALL;
             let mut owner_name: Option<String> = None;
             let mut crossed = false;
             for seg in segments {
-                match find_child(conn, owner, parent, &seg)? {
-                    Some(e) => parent = Some(e.id),
+                let found = match find_child(conn, principal, parent, &seg)? {
+                    Some(e) => e,
                     None => {
-                        // Root-level fallback: an incoming share mount?
+                        // Root-level fallbacks: one of my groups' top-level
+                        // folders first (membership-checked, with the role's
+                        // mask), then an incoming share mount.
                         if parent.is_none() && !crossed {
-                            let Some(access) =
-                                super::share::share_by_display_name(conn, user_id, &seg)?
-                            else {
-                                return Ok(None);
-                            };
-                            if !access.can(crate::sharing::PERM_READ) {
-                                return Ok(None);
+                            if let Some((e, role)) = group_root_by_name(conn, user_id, &seg)? {
+                                perms = role_perms(role);
+                                owner_name = Some(username_by_id(conn, e.owner_id)?);
+                                e
+                            } else {
+                                let Some(access) =
+                                    super::share::share_by_display_name(conn, user_id, &seg)?
+                                else {
+                                    return Ok(None);
+                                };
+                                if !access.can(crate::sharing::PERM_READ) {
+                                    return Ok(None);
+                                }
+                                let Ok(src) = get_entry_by_id(conn, access.source_id) else {
+                                    return Ok(None);
+                                };
+                                perms = access.permissions;
+                                owner_name = Some(username_by_id(conn, access.owner_id)?);
+                                crossed = true;
+                                src
                             }
-                            let Ok(src) = get_entry_by_id(conn, access.source_id) else {
-                                return Ok(None);
-                            };
-                            owner = access.owner_id;
-                            perms = access.permissions;
-                            owner_name = Some(username_by_id(conn, access.owner_id)?);
-                            crossed = true;
-                            parent = Some(src.id);
                         } else {
                             return Ok(None);
                         }
                     }
-                }
+                };
+                // Attribution picks the tree the next segment resolves in:
+                // group rows stay in their group's tree, everything else in
+                // the row owner's.
+                principal = match found.owner_group_id {
+                    Some(group_id) => TreeOwner::Group(group_id),
+                    None => TreeOwner::User(found.owner_id),
+                };
+                parent = Some(found.id);
             }
             let Some(id) = parent else { return Ok(None); };
             let Ok(mut entry) = get_entry_by_id(conn, id) else {
                 return Ok(None);
             };
             entry.permissions = perms;
-            entry.owner_name = owner_name;
+            entry.owner_name = match entry.owner_group_id {
+                // The creator of the row itself, not of the top folder.
+                Some(_) => Some(username_by_id(conn, entry.owner_id)?),
+                None => owner_name,
+            };
             Ok(Some(entry))
         })
         .await
     }
 
-    /// Move an entry to a new parent and name (blobs keep their id).
+    /// Validate a move without touching a row: UPDATE on the source, CREATE
+    /// at the destination, both trees' rules (a user's own tree or a group
+    /// they belong to - never another user's tree, never another group,
+    /// concepts/groups.md section 4), the cycle and name guards, and -
+    /// when the attribution changes - the destination quota over the whole
+    /// subtree plus the refusal to smuggle active shares into a group.
     ///
-    /// Foreign entries require UPDATE on the source and CREATE at the
-    /// destination; moving an item across owners is refused (use COPY).
-    /// Move a row within one owner's tree (UPDATE on the source, CREATE at
-    /// the destination, never across owners).
+    /// The `guard_key_domains` flag is the key-blind door: WebDAV MOVE
+    /// passes `true` and holds no keys (DECISION 9 - treat encrypted rows
+    /// as opaque), so a keyed row may only travel between parents that
+    /// already carry the same key record. The JSON routes arrive with the
+    /// record already re-wrapped for the destination (ENCRYPTION.md 5.4)
+    /// and pass `false`.
     ///
-    /// This is the key-blind door: WebDAV MOVE takes it and holds no keys
-    /// (DECISION 9 - treat encrypted rows as opaque), so a keyed row may
-    /// only travel between parents that already carry the same key record.
-    /// Anything else would produce a row whose record no longer opens, and
-    /// the move refuses rather than doing that silently.
-    pub async fn move_entry(
-        &self,
-        user_id: i64,
-        id: i64,
-        new_parent: Option<i64>,
-        new_name: String,
-    ) -> Result<FileEntry, AppError> {
-        self.move_entry_inner(user_id, id, new_parent, new_name, true)
-            .await
-    }
-
-    /// The JSON move: the caller re-wrapped the row's key record for its
-    /// destination *before* asking (ENCRYPTION.md 5.4 - app.js re-binds,
-    /// moves, and puts the record back if the move is refused), so only the
-    /// metadata travels now.
-    ///
-    /// The server cannot read keys and so cannot verify that wrap. This is
-    /// the position `PUT /files/key` already takes for the same caller:
-    /// PERM_UPDATE is the check, the crypto stays the client's. Keeping the
-    /// key-domain guard here would refuse exactly the moves the client
-    /// prepared - in a keyed tree every folder carries its own record, so
-    /// every destination differs from every source (5.4).
-    pub async fn move_entry_rebound(
-        &self,
-        user_id: i64,
-        id: i64,
-        new_parent: Option<i64>,
-        new_name: String,
-    ) -> Result<FileEntry, AppError> {
-        self.move_entry_inner(user_id, id, new_parent, new_name, false)
-            .await
-    }
-
-    async fn move_entry_inner(
+    /// The blob relocation when [`MovePlan::relocation`] returns one is the
+    /// caller's job - link first, apply via [`Db::apply_move`], then drop
+    /// the old name ([`crate::files::FileService::move_entry`] sequences
+    /// it that way).
+    pub async fn prepare_move(
         &self,
         user_id: i64,
         id: i64,
         new_parent: Option<i64>,
         new_name: String,
         guard_key_domains: bool,
-    ) -> Result<FileEntry, AppError> {
+    ) -> Result<MovePlan, AppError> {
         self.run(move |conn| {
             validate_name(&new_name)?;
-            let src_owner = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
-            if new_parent.is_none() && src_owner != user_id {
-                return Err(AppError::BadRequest(
-                    "cannot move a shared item into your own root".into(),
-                ));
-            }
-            let dest_owner = create_target(conn, user_id, new_parent, &new_name)?;
-            if dest_owner != src_owner {
-                return Err(AppError::BadRequest(
-                    "cannot move an item across owners".into(),
-                ));
+            let src = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
+            let dest = create_target(conn, user_id, new_parent, None, &new_name)?;
+            match (src, dest) {
+                (TreeOwner::User(a), TreeOwner::User(b)) if a != b => {
+                    return Err(AppError::BadRequest(if new_parent.is_none() {
+                        "cannot move a shared item into your own root"
+                    } else {
+                        "cannot move an item across owners"
+                    }
+                    .into()));
+                }
+                (TreeOwner::User(a), TreeOwner::Group(_)) if a != user_id => {
+                    return Err(AppError::BadRequest(
+                        "cannot move a shared item into a group folder".into(),
+                    ));
+                }
+                (TreeOwner::Group(a), TreeOwner::Group(b)) if a != b => {
+                    return Err(AppError::BadRequest(
+                        "cannot move an item between groups".into(),
+                    ));
+                }
+                _ => {}
             }
             // A key record is wrapped under the *source* parent's key, so for
             // a caller that holds no keys a move is a pure metadata operation
@@ -793,12 +1027,133 @@ impl Db {
                 cur = parent_of.flatten();
             }
 
-            conn.execute(
-                "UPDATE files SET parent_id = ?1, name = ?2, modified_at = ?3
-                 WHERE id = ?4 AND owner_id = ?5",
-                params![new_parent, new_name, Utc::now().to_rfc3339(), id, src_owner],
-            )
-            .map_err(|e| map_constraint(e, &new_name))?;
+            // An attribution change moves bytes between budgets and between
+            // blob namespaces - both decided here, applied by the caller.
+            let relocation = if src != dest {
+                if let (TreeOwner::User(_), TreeOwner::Group(_)) = (src, dest) {
+                    // A shared subtree keeps its shares (they would outlive
+                    // the move and expose a group row - concepts/groups.md
+                    // section 4: group files take no incoming shares).
+                    let shared: i64 = conn.query_row(
+                        "WITH RECURSIVE subtree(id) AS (
+                             SELECT id FROM files WHERE id = ?1
+                             UNION ALL
+                             SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+                         )
+                         SELECT COUNT(*) FROM shares
+                          WHERE source_id IN (SELECT id FROM subtree)",
+                        params![id],
+                        |r| r.get(0),
+                    )?;
+                    if shared > 0 {
+                        return Err(AppError::Conflict(
+                            "this item is shared - revoke its shares before moving \
+                             it into a group folder"
+                                .into(),
+                        ));
+                    }
+                }
+                // The destination gains the subtree's rows and their version
+                // history - exactly what its sums will count from then on.
+                let delta: i64 = conn.query_row(
+                    "WITH RECURSIVE subtree(id) AS (
+                         SELECT id FROM files WHERE id = ?1
+                         UNION ALL
+                         SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+                     )
+                     SELECT COALESCE((SELECT SUM(size) FROM files
+                                       WHERE is_dir = 0
+                                         AND id IN (SELECT id FROM subtree)), 0)
+                          + COALESCE((SELECT SUM(v.size) FROM file_versions v
+                                       WHERE v.file_id IN (SELECT id FROM subtree)), 0)",
+                    params![id],
+                    |r| r.get(0),
+                )?;
+                ensure_quota(conn, dest, delta)?;
+                let src_entry = get_entry_by_id(conn, id)?;
+                let old = BlobRef::from(&src_entry);
+                let owner = match dest {
+                    TreeOwner::Group(group_id) => BlobOwner::Group(group_id),
+                    TreeOwner::User(owner_id) => BlobOwner::User(owner_id),
+                };
+                let new = BlobRef::Entry {
+                    file_id: id,
+                    owner,
+                    created_at: src_entry.created_at,
+                };
+                Some((old, new))
+            } else {
+                None
+            };
+
+            Ok(MovePlan {
+                id,
+                new_parent,
+                new_name,
+                src,
+                dest,
+                relocation,
+            })
+        })
+        .await
+    }
+
+    /// Apply a [`MovePlan`]: one statement re-parents the root row and, on
+    /// an attribution change, re-attributes the whole subtree - materialized
+    /// attribution must never be half a move behind (concepts/groups.md
+    /// section 3). Interlocked on the source principal the permission check
+    /// resolved.
+    pub async fn apply_move(&self, plan: MovePlan) -> Result<FileEntry, AppError> {
+        let MovePlan {
+            id,
+            new_parent,
+            new_name,
+            src,
+            dest,
+            relocation,
+        } = plan;
+        self.run(move |conn| {
+            let now = Utc::now().to_rfc3339();
+            let changed = if relocation.is_some() {
+                // Crossing: destination attribution for every row of the
+                // subtree (creators stay put when entering a group, rows
+                // join the destination user's tree when leaving one), root
+                // row parent/name in the same statement.
+                let (dest_user, dest_group) = principal_params(dest);
+                let (src_user, src_group) = principal_params(src);
+                conn.execute(
+                    &format!(
+                        "WITH RECURSIVE subtree(id) AS (
+                             SELECT id FROM files WHERE id = ?1
+                             UNION ALL
+                             SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+                         )
+                         UPDATE files SET
+                             parent_id = CASE WHEN id = ?1 THEN ?2 ELSE parent_id END,
+                             name = CASE WHEN id = ?1 THEN ?3 ELSE name END,
+                             modified_at = CASE WHEN id = ?1 THEN ?4 ELSE modified_at END,
+                             owner_group_id = ?5,
+                             owner_id = COALESCE(?6, owner_id)
+                          WHERE id IN (SELECT id FROM subtree)
+                            AND (id != ?1 OR {PRINCIPAL_GUARD})"
+                    ),
+                    params![id, new_parent, new_name, now, dest_group, dest_user, src_user, src_group],
+                )
+                .map_err(|e| map_constraint(e, &new_name))?
+            } else {
+                let (user, group) = principal_params(src);
+                conn.execute(
+                    &format!(
+                        "UPDATE files SET parent_id = ?1, name = ?2, modified_at = ?3
+                         WHERE id = ?4 AND {PRINCIPAL_GUARD}"
+                    ),
+                    params![new_parent, new_name, now, id, user, group],
+                )
+                .map_err(|e| map_constraint(e, &new_name))?
+            };
+            if changed == 0 {
+                return Err(AppError::NotFound);
+            }
             get_entry_by_id(conn, id)
         })
         .await
@@ -826,19 +1181,23 @@ impl Db {
         pins_old: bool,
     ) -> Result<(), AppError> {
         self.run(move |conn| {
-            let tree_owner = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
+            let principal = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
+            let (user, group) = principal_params(principal);
             // Overwriting replaces content in place: only the *growth* has
             // to fit into the quota.
             let old_size: Option<i64> = conn
                 .query_row(
-                    "SELECT size FROM files WHERE id = ?1 AND owner_id = ?2 AND is_dir = 0",
-                    params![id, tree_owner],
+                    &format!(
+                        "SELECT size FROM files
+                          WHERE id = ?1 AND is_dir = 0 AND {PRINCIPAL_GUARD}"
+                    ),
+                    params![id, user, group],
                     |r| r.get(0),
                 )
                 .optional()?;
             if let Some(old_size) = old_size {
                 let delta = if pins_old { size } else { size - old_size };
-                ensure_quota(conn, tree_owner, delta)?;
+                ensure_quota(conn, principal, delta)?;
             }
             let now = Utc::now().to_rfc3339();
             // Mode change and content change belong in one statement: a row
@@ -847,15 +1206,19 @@ impl Db {
             // branch in this codebase is written to avoid.
             let changed = match enc {
                 Some((version, key)) => conn.execute(
-                    "UPDATE files SET size = ?1, mime = ?2, modified_at = ?3,
-                                     enc_version = ?4, enc_key = ?5
-                     WHERE id = ?6 AND owner_id = ?7 AND is_dir = 0",
-                    params![size, mime, now, version, key, id, tree_owner],
+                    &format!(
+                        "UPDATE files SET size = ?1, mime = ?2, modified_at = ?3,
+                                          enc_version = ?4, enc_key = ?5
+                          WHERE id = ?6 AND is_dir = 0 AND {PRINCIPAL_GUARD}"
+                    ),
+                    params![size, mime, now, version, key, id, user, group],
                 )?,
                 None => conn.execute(
-                    "UPDATE files SET size = ?1, mime = ?2, modified_at = ?3
-                     WHERE id = ?4 AND owner_id = ?5 AND is_dir = 0",
-                    params![size, mime, now, id, tree_owner],
+                    &format!(
+                        "UPDATE files SET size = ?1, mime = ?2, modified_at = ?3
+                          WHERE id = ?4 AND is_dir = 0 AND {PRINCIPAL_GUARD}"
+                    ),
+                    params![size, mime, now, id, user, group],
                 )?,
             };
             if changed == 0 {
@@ -866,17 +1229,21 @@ impl Db {
         .await
     }
 
-    /// Bytes of content owned by `owner_id` — what counts against the quota
+    /// Bytes of content owned by `owner_id` — what counts against their quota
     /// and what `GET /api/me` reports as `used_bytes`. Version history of
-    /// the owner's files counts alongside the live rows (decision 4).
+    /// the owner's files counts alongside the live rows (decision 4); group
+    /// folders are excluded because they bill the group, not the member who
+    /// wrote into them (concepts/groups.md section 4).
     pub async fn owner_usage(&self, owner_id: i64) -> Result<i64, AppError> {
         self.run(move |conn| {
             let used: i64 = conn.query_row(
                 "SELECT COALESCE((SELECT SUM(size) FROM files
-                                  WHERE owner_id = ?1 AND is_dir = 0), 0)
+                                  WHERE owner_id = ?1 AND owner_group_id IS NULL
+                                    AND is_dir = 0), 0)
                        + COALESCE((SELECT SUM(v.size) FROM file_versions v
                                    JOIN files f ON f.id = v.file_id
-                                    WHERE f.owner_id = ?1 AND f.is_dir = 0), 0)",
+                                    WHERE f.owner_id = ?1 AND f.owner_group_id IS NULL
+                                      AND f.is_dir = 0), 0)",
                 params![owner_id],
                 |r| r.get(0),
             )?;
@@ -887,11 +1254,20 @@ impl Db {
 
     /// Up-front quota gate for bulk writes: fails with
     /// [`AppError::QuotaExceeded`] when `additional` more bytes would not fit
-    /// into `owner_id`'s quota. Called before copying a subtree so a full
-    /// quota never leaves a partial copy behind.
-    pub async fn check_quota(&self, owner_id: i64, additional: i64) -> Result<(), AppError> {
-        self.run(move |conn| ensure_quota(conn, owner_id, additional))
-            .await
+    /// into the principal of `parent_id`'s tree (the destination's group,
+    /// the folder owner's, or the requester's own root). Called before
+    /// copying a subtree so a full quota never leaves a partial copy behind.
+    pub async fn check_quota(
+        &self,
+        user_id: i64,
+        parent_id: Option<i64>,
+        additional: i64,
+    ) -> Result<(), AppError> {
+        self.run(move |conn| {
+            let principal = target_principal(conn, user_id, parent_id)?;
+            ensure_quota(conn, principal, additional)
+        })
+        .await
     }
 
     /// Assert the UPDATE grant on a row without changing anything.
@@ -1152,11 +1528,10 @@ impl Db {
     /// like the content write's key field (see `save_content`): the server
     /// cannot see through a wrapper - it holds no key - so it cannot tell the
     /// owner's re-binding after a move from a grantee handing it a wrapper
-    /// only the grantee can open. The owner re-binds moved rows and migrates
-    /// subtrees for a share; a grantee who moves an encrypted row within a
-    /// share leaves it to the owner to re-bind (the frontend refuses that
-    /// move up front rather than landing an unopenable row). A plaintext
-    /// file has no record to set and is refused.
+    /// only the grantee can open. On a group row the F5 rule reads "owner"
+    /// as "manager" (concepts/groups.md section 5) - the creator being a
+    /// member grants nothing extra. A plaintext file has no record to set
+    /// and is refused.
     pub async fn set_enc_key(
         &self,
         user_id: i64,
@@ -1167,12 +1542,15 @@ impl Db {
             if key.is_empty() {
                 return Err(AppError::BadRequest("key is empty".into()));
             }
-            let tree_owner = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
+            let principal = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
+            let (user, group) = principal_params(principal);
             let (is_dir, enc_version, has_record): (bool, i64, bool) = conn
                 .query_row(
-                    "SELECT is_dir != 0, enc_version, enc_key IS NOT NULL
-                       FROM files WHERE id = ?1 AND owner_id = ?2",
-                    params![id, tree_owner],
+                    &format!(
+                        "SELECT is_dir != 0, enc_version, enc_key IS NOT NULL
+                           FROM files WHERE id = ?1 AND {PRINCIPAL_GUARD}"
+                    ),
+                    params![id, user, group],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?
@@ -1184,15 +1562,31 @@ impl Db {
             // UPDATE-grantee would hand themselves the row for good - the
             // owner's chain stops opening it and every write below a folder
             // record is wrapped for the grantee's key from then on. Same
-            // line `save_content` draws, same words.
-            if has_record && user_id != tree_owner {
+            // line `save_content` draws, same words; on group rows the
+            // "owner" is the manager role.
+            let may_swap = match principal {
+                TreeOwner::User(owner) => user_id == owner,
+                TreeOwner::Group(group_id) => matches!(
+                    group_role(conn, user_id, group_id)?,
+                    Some(role) if role == crate::sharing::ROLE_MANAGER
+                ),
+            };
+            if has_record && !may_swap {
                 return Err(AppError::ForbiddenDetail(
-                    "only the row's owner may change its key record".into(),
+                    match principal {
+                        TreeOwner::User(_) => "only the row's owner may change its key record",
+                        TreeOwner::Group(_) => {
+                            "only a group manager may change this folder's key record"
+                        }
+                    }
+                    .into(),
                 ));
             }
             conn.execute(
-                "UPDATE files SET enc_key = ?1 WHERE id = ?2 AND owner_id = ?3",
-                params![key, id, tree_owner],
+                &format!(
+                    "UPDATE files SET enc_key = ?1 WHERE id = ?2 AND {PRINCIPAL_GUARD}"
+                ),
+                params![key, id, user, group],
             )?;
             get_entry_by_id(conn, id)
         })
@@ -1207,6 +1601,18 @@ impl Db {
         id: i64,
     ) -> Result<Option<FileEntry>, AppError> {
         self.run(move |conn| readable_entry(conn, user_id, id))
+            .await
+    }
+
+    /// The acting user's role in `group_id`, or `None` when they are not a
+    /// member: the F5 rule's "owner" stand-in on group rows and the gate on
+    /// the key-distribution routes (concepts/groups.md section 5).
+    pub async fn group_role_of(
+        &self,
+        user_id: i64,
+        group_id: i64,
+    ) -> Result<Option<i64>, AppError> {
+        self.run(move |conn| Ok(group_role(conn, user_id, group_id)?))
             .await
     }
 
@@ -1293,6 +1699,22 @@ fn readable_entry(conn: &Connection, user_id: i64, id: i64) -> Result<Option<Fil
     if under_trash(conn, &entry)? {
         return Ok(None);
     }
+    // Group attribution decides before ownership: a member removed from the
+    // group loses the rows they created too, and every member's mask is
+    // their role's (concepts/groups.md section 4).
+    if let Some(group_id) = entry.owner_group_id {
+        let Some(role) = group_role(conn, user_id, group_id)? else {
+            return Ok(None);
+        };
+        let perms = role_perms(role);
+        if !crate::sharing::grants(perms, crate::sharing::PERM_READ) {
+            return Ok(None);
+        }
+        let mut entry = entry;
+        entry.permissions = perms;
+        entry.owner_name = Some(username_by_id(conn, entry.owner_id)?);
+        return Ok(Some(entry));
+    }
     if entry.owner_id == user_id {
         return Ok(Some(entry));
     }
@@ -1308,20 +1730,53 @@ fn readable_entry(conn: &Connection, user_id: i64, id: i64) -> Result<Option<Fil
     Ok(Some(entry))
 }
 
-/// Which user's tree a create operation lands in: the requester's own tree, or
-/// the folder owner's tree when a covering share grants CREATE. Also guards a
-/// root create against shadowing an incoming share's display name.
+/// Which storage principal a create lands in: the requester's own tree, the
+/// group of a group folder (the role must grant CREATE), or the folder
+/// owner's tree when a covering share grants CREATE. Also guards a root
+/// create against shadowing an incoming share's display name.
+///
+/// `group` bootstraps a group's top-level folder at the root: it names the
+/// group the requester is a member of. Deeper levels take attribution from
+/// their parent, so the parameter applies to root creates only.
 fn create_target(
     conn: &Connection,
     user_id: i64,
     parent_id: Option<i64>,
+    group: Option<i64>,
     name: &str,
-) -> Result<i64, AppError> {
+) -> Result<TreeOwner, AppError> {
     let Some(pid) = parent_id else {
         if share_name_taken(conn, user_id, name)? {
             return Err(AppError::Conflict(format!("'{name}' already exists here")));
         }
-        return Ok(user_id);
+        if let Some(group_id) = group {
+            let role = group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
+            if !crate::sharing::grants(role_perms(role), crate::sharing::PERM_CREATE) {
+                return Err(AppError::Forbidden);
+            }
+            return Ok(TreeOwner::Group(group_id));
+        }
+        return Ok(TreeOwner::User(user_id));
+    };
+    if group.is_some() {
+        return Err(AppError::BadRequest(
+            "a group target applies only to root-level creates".into(),
+        ));
+    }
+    target_principal(conn, user_id, Some(pid))
+}
+
+/// The storage principal a write under `parent_id` bills to, applying the
+/// parent's gates first: group membership and its CREATE bit (a non-member
+/// gets NotFound, the same answer removal gives everywhere else), ownership,
+/// then the covering share's CREATE. `None` is the requester's own root.
+fn target_principal(
+    conn: &Connection,
+    user_id: i64,
+    parent_id: Option<i64>,
+) -> Result<TreeOwner, AppError> {
+    let Some(pid) = parent_id else {
+        return Ok(TreeOwner::User(user_id));
     };
     let parent = get_entry_by_id(conn, pid)?;
     if !parent.is_dir {
@@ -1330,36 +1785,53 @@ fn create_target(
     if under_trash(conn, &parent)? {
         return Err(AppError::NotFound);
     }
+    if let Some(group_id) = parent.owner_group_id {
+        let role = group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
+        if !crate::sharing::grants(role_perms(role), crate::sharing::PERM_CREATE) {
+            return Err(AppError::Forbidden);
+        }
+        return Ok(TreeOwner::Group(group_id));
+    }
     if parent.owner_id == user_id {
-        return Ok(user_id);
+        return Ok(TreeOwner::User(user_id));
     }
     let access = covering_share(conn, user_id, pid)?.ok_or(AppError::NotFound)?;
     if !access.can(crate::sharing::PERM_CREATE) {
         return Err(AppError::Forbidden);
     }
-    Ok(parent.owner_id)
+    Ok(TreeOwner::User(parent.owner_id))
 }
 
-/// Which user's tree an update/delete operates in. Owners pass unconditionally;
-/// foreign entries require the covering share to grant `required`.
+/// Which storage principal an update/delete operates on: a group row resolves
+/// through the membership role *first* (a removed member loses even the rows
+/// they created - concepts/groups.md section 4), own rows pass
+/// unconditionally, foreign entries require the covering share to grant
+/// `required`.
 fn update_target(
     conn: &Connection,
     user_id: i64,
     id: i64,
     required: i64,
-) -> Result<i64, AppError> {
+) -> Result<TreeOwner, AppError> {
     let entry = get_entry_by_id(conn, id)?;
     if under_trash(conn, &entry)? {
         return Err(AppError::NotFound);
     }
+    if let Some(group_id) = entry.owner_group_id {
+        let role = group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
+        if !crate::sharing::grants(role_perms(role), required) {
+            return Err(AppError::Forbidden);
+        }
+        return Ok(TreeOwner::Group(group_id));
+    }
     if entry.owner_id == user_id {
-        return Ok(user_id);
+        return Ok(TreeOwner::User(user_id));
     }
     let access = covering_share(conn, user_id, id)?.ok_or(AppError::NotFound)?;
     if !access.can(required) {
         return Err(AppError::Forbidden);
     }
-    Ok(entry.owner_id)
+    Ok(TreeOwner::User(entry.owner_id))
 }
 
 /// Whether an entry is trashed or sits inside a trashed folder. Such rows
@@ -1391,21 +1863,26 @@ fn under_trash(conn: &Connection, entry: &FileEntry) -> Result<bool, AppError> {
     Ok(false)
 }
 
-/// Find a direct child of `parent` in `owner`'s tree by name.
+/// Find a direct child of `parent` inside `principal`'s tree by name: a
+/// personal tree filters on its rows (they carry that owner and no group),
+/// a group tree on its attribution (rows carry their creators, so `owner_id`
+/// is no discriminator there).
 fn find_child(
     conn: &Connection,
-    owner_id: i64,
+    principal: TreeOwner,
     parent: Option<i64>,
     name: &str,
 ) -> Result<Option<FileEntry>, AppError> {
+    let (user, group) = principal_params(principal);
     let entry = conn
         .query_row(
             &format!(
                 "SELECT {ENTRY_COLS} FROM files
-                 WHERE owner_id = ?1 AND parent_id IS ?2 AND name = ?3
+                 WHERE parent_id IS ?1 AND name = ?2
+                   AND {PRINCIPAL_GUARD}
                    AND deleted_at IS NULL"
             ),
-            params![owner_id, parent, name],
+            params![parent, name, user, group],
             row_to_entry,
         )
         .optional()?;
@@ -1420,13 +1897,113 @@ fn own_children(
 ) -> Result<Vec<FileEntry>, AppError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {ENTRY_COLS} FROM files
-         WHERE owner_id = ?1 AND parent_id IS ?2 AND deleted_at IS NULL
+         WHERE owner_id = ?1 AND owner_group_id IS NULL AND parent_id IS ?2
+           AND deleted_at IS NULL
          ORDER BY is_dir DESC, name COLLATE NOCASE ASC"
     ))?;
     let entries = stmt
         .query_map(params![owner_id, parent_id], row_to_entry)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(entries)
+}
+
+/// A group folder's children: attribution, not the creator, groups them, so
+/// every member lists every row of the folder they may open.
+fn group_children(
+    conn: &Connection,
+    group_id: i64,
+    parent_id: Option<i64>,
+) -> Result<Vec<FileEntry>, AppError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ENTRY_COLS} FROM files
+         WHERE owner_group_id = ?1 AND parent_id IS ?2 AND deleted_at IS NULL
+         ORDER BY is_dir DESC, name COLLATE NOCASE ASC"
+    ))?;
+    let entries = stmt
+        .query_map(params![group_id, parent_id], row_to_entry)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(entries)
+}
+
+/// The user's root group entries: every top-level folder of every group
+/// they belong to, with group name and creator filled for the badge.
+fn group_roots(conn: &Connection, user_id: i64) -> Result<Vec<FileEntry>, AppError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ENTRY_COLS} FROM files
+         WHERE parent_id IS NULL AND deleted_at IS NULL
+           AND owner_group_id IN
+               (SELECT group_id FROM group_members WHERE user_id = ?1)
+         ORDER BY is_dir DESC, name COLLATE NOCASE ASC"
+    ))?;
+    let mut entries = stmt
+        .query_map(params![user_id], row_to_entry)?
+        .collect::<Result<Vec<_>, _>>()?;
+    for e in &mut entries {
+        if let Some(group_id) = e.owner_group_id {
+            e.group_name = Some(group_name(conn, group_id)?);
+            e.owner_name = Some(username_by_id(conn, e.owner_id)?);
+        }
+    }
+    Ok(entries)
+}
+
+/// A group's top-level folder by root name for `user_id`, with their role:
+/// the WebDAV path walk's way into a group tree (the JSON listing merges
+/// the same rows through [`group_roots`]). `None` when no group the user
+/// belongs to owns that name - visibility follows membership.
+fn group_root_by_name(
+    conn: &Connection,
+    user_id: i64,
+    name: &str,
+) -> Result<Option<(FileEntry, i64)>, AppError> {
+    let hit = conn
+        .query_row(
+            &format!(
+                "SELECT {ENTRY_COLS}, m.role FROM files
+                 JOIN group_members m ON m.group_id = files.owner_group_id
+                 WHERE m.user_id = ?1 AND files.parent_id IS NULL
+                   AND files.name = ?2 AND files.deleted_at IS NULL
+                 LIMIT 1"
+            ),
+            params![user_id, name],
+            |r| {
+                let entry = row_to_entry(r)?;
+                let role: i64 = r.get("role")?;
+                Ok((entry, role))
+            },
+        )
+        .optional()?;
+    Ok(hit)
+}
+
+/// A group's display name - the root badge and every grouped listing say
+/// which group the row belongs to.
+fn group_name(conn: &Connection, group_id: i64) -> Result<String, AppError> {
+    let name: String = conn.query_row(
+        "SELECT name FROM groups WHERE id = ?1",
+        params![group_id],
+        |r| r.get(0),
+    )?;
+    Ok(name)
+}
+
+/// Creator usernames for a group folder's direct children in one query -
+/// `owner_id` differs per row in a group tree, so unlike a share listing
+/// there is no single owner to ask for once.
+fn creator_names(
+    conn: &Connection,
+    group_id: i64,
+    parent_id: Option<i64>,
+) -> Result<HashMap<i64, String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, u.username FROM files f
+         JOIN users u ON u.id = f.owner_id
+         WHERE f.owner_group_id = ?1 AND f.parent_id IS ?2 AND f.deleted_at IS NULL",
+    )?;
+    let rows = stmt.query_map(params![group_id, parent_id], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    })?;
+    Ok(rows.collect::<Result<HashMap<_, _>, _>>()?)
 }
 
 /// Entries that appear in a user's root because someone shared them: one
@@ -1448,6 +2025,11 @@ fn incoming_mounts(conn: &Connection, user_id: i64) -> Result<Vec<FileEntry>, Ap
             Ok(FileEntry {
                 id: r.get(0)?,
                 owner_id: r.get(1)?,
+                // A share is strictly user-to-user: a group-owned source is
+                // refused at creation and cannot ride in through a move, so
+                // mount rows are never group rows (concepts/groups.md 4).
+                owner_group_id: None,
+                group_name: None,
                 parent_id: r.get(2)?,
                 name: r.get(3)?,
                 is_dir: r.get::<_, i64>(4)? != 0,
@@ -1531,15 +2113,16 @@ fn hard_delete(conn: &Connection, id: i64) -> Result<Vec<BlobRef>, AppError> {
              UNION ALL
              SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
          )
-         SELECT id, owner_id, created_at FROM files
+         SELECT id, owner_id, owner_group_id, created_at FROM files
           WHERE is_dir = 0 AND id IN (SELECT id FROM subtree)",
     )?;
     let mut blobs = stmt
         .query_map(params![id], |r| {
             let id: i64 = r.get(0)?;
             let owner_id: i64 = r.get(1)?;
-            let created_at: String = r.get(2)?;
-            blob_ref(id, owner_id, &created_at)
+            let owner_group_id: Option<i64> = r.get(2)?;
+            let created_at: String = r.get(3)?;
+            blob_ref(id, owner_id, owner_group_id, &created_at)
         })?
         .collect::<Result<Vec<_>, _>>()?;
     // Version rows follow the foreign-key cascade, the blobs they point at do
@@ -1564,7 +2147,10 @@ fn hard_delete(conn: &Connection, id: i64) -> Result<Vec<BlobRef>, AppError> {
 }
 
 /// Shared engine of `purge_expired_trash` / `empty_trash`: hard-delete every
-/// matching trash root and collect the blobs to unlink.
+/// matching trash root and collect the blobs to unlink. `owner = None` is
+/// the age-based sweep over everyone; a user scope is their own trash -
+/// personal rows plus the group rows every member may purge with the role's
+/// DELETE bit (concepts/groups.md section 4).
 fn purge_roots(
     conn: &Connection,
     owner: Option<i64>,
@@ -1573,7 +2159,10 @@ fn purge_roots(
     let mut stmt = conn.prepare(&format!(
         "SELECT id FROM files
          WHERE {TRASH_ROOTS}
-           AND (?1 IS NULL OR owner_id = ?1)
+           AND (?1 IS NULL
+                OR (owner_id = ?1 AND owner_group_id IS NULL)
+                OR owner_group_id IN (SELECT group_id FROM group_members
+                                       WHERE user_id = ?1))
            AND (?2 IS NULL OR deleted_at < ?2)"
     ))?;
     let roots = stmt
@@ -1684,17 +2273,17 @@ mod tests {
         let owner = user_with_quota(&conn, 100);
 
         assert!(
-            ensure_quota(&conn, owner, 100).is_ok(),
+            ensure_quota(&conn, TreeOwner::User(owner), 100).is_ok(),
             "exactly the quota fits"
         );
         assert!(
-            ensure_quota(&conn, owner, 101).is_err(),
+            ensure_quota(&conn, TreeOwner::User(owner), 101).is_err(),
             "one byte over does not"
         );
 
         add_file(&conn, owner, "a", 60, false);
-        assert!(ensure_quota(&conn, owner, 40).is_ok(), "60 + 40 == 100");
-        assert!(ensure_quota(&conn, owner, 41).is_err(), "60 + 41 > 100");
+        assert!(ensure_quota(&conn, TreeOwner::User(owner), 40).is_ok(), "60 + 40 == 100");
+        assert!(ensure_quota(&conn, TreeOwner::User(owner), 41).is_err(), "60 + 41 > 100");
     }
 
     #[test]
@@ -1712,8 +2301,8 @@ mod tests {
         )
         .expect("trash");
 
-        assert!(ensure_quota(&conn, owner, 10).is_ok(), "90 + 10 == 100");
-        assert!(ensure_quota(&conn, owner, 11).is_err());
+        assert!(ensure_quota(&conn, TreeOwner::User(owner), 10).is_ok(), "90 + 10 == 100");
+        assert!(ensure_quota(&conn, TreeOwner::User(owner), 11).is_err());
     }
 
     #[test]
@@ -1727,7 +2316,7 @@ mod tests {
         conn.execute("UPDATE files SET size = 999 WHERE is_dir = 1", [])
             .expect("size");
         assert!(
-            ensure_quota(&conn, owner, 100).is_ok(),
+            ensure_quota(&conn, TreeOwner::User(owner), 100).is_ok(),
             "folder bytes must not count"
         );
     }
@@ -1741,8 +2330,8 @@ mod tests {
         let owner = user_with_quota(&conn, 100);
         add_file(&conn, owner, "full", 500, false);
 
-        assert!(ensure_quota(&conn, owner, 0).is_ok());
-        assert!(ensure_quota(&conn, owner, -5).is_ok());
+        assert!(ensure_quota(&conn, TreeOwner::User(owner), 0).is_ok());
+        assert!(ensure_quota(&conn, TreeOwner::User(owner), -5).is_ok());
     }
 
     #[test]
@@ -1752,7 +2341,7 @@ mod tests {
         let owner = user_with_quota(&conn, 100);
         add_file(&conn, owner, "a", 90, false);
 
-        match ensure_quota(&conn, owner, 20) {
+        match ensure_quota(&conn, TreeOwner::User(owner), 20) {
             Err(AppError::QuotaExceeded { used, quota }) => {
                 assert_eq!(used, 90);
                 assert_eq!(quota, 100);
@@ -1797,6 +2386,8 @@ mod tests {
         let entry = |name: &str, is_dir: bool| FileEntry {
             id: 0,
             owner_id: 1,
+            owner_group_id: None,
+            group_name: None,
             parent_id: None,
             name: name.to_string(),
             is_dir,
@@ -1928,12 +2519,12 @@ mod tests {
         );
 
         assert!(
-            s.db.check_quota(owner, 900).await.is_ok(),
+            s.db.check_quota(owner, None, 900).await.is_ok(),
             "100 + 900 fits 1000"
         );
         assert!(
             matches!(
-                s.db.check_quota(owner, 901).await,
+                s.db.check_quota(owner, None, 901).await,
                 Err(AppError::QuotaExceeded { .. })
             ),
             "the version bytes are part of the gate"

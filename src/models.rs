@@ -99,6 +99,16 @@ pub struct AdminUser {
 pub struct FileEntry {
     pub id: i64,
     pub owner_id: i64,
+    /// The group whose storage pays for this row when it sits in a group
+    /// folder (concepts/groups.md section 3); `None` is a personal row.
+    /// `owner_id` stays the creator either way - attribution is what grants
+    /// access, bills the quota, and picks the blob namespace.
+    #[serde(default)]
+    pub owner_group_id: Option<i64>,
+    /// The group's name, filled by the listings that join it (the root's
+    /// badge) and skipped elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_name: Option<String>,
     pub parent_id: Option<i64>,
     pub name: String,
     pub is_dir: bool,
@@ -210,14 +220,46 @@ pub struct PublicKeyInfo {
 /// for the layout), so a blob can be located without a database row - which
 /// is exactly what deletions need: the rows are gone by the time the content
 /// is removed, therefore they are captured before.
+/// Whose namespace a blob sits in: a user's numeric id (what every personal
+/// row has used forever and keeps forever) or a group's `g<id>`, so group 5
+/// can never shadow user 5 (concepts/groups.md section 3).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BlobOwner {
+    User(i64),
+    Group(i64),
+}
+
+impl BlobOwner {
+    /// The path segment this principal owns under the blob dir.
+    pub fn dir_segment(&self) -> String {
+        match self {
+            BlobOwner::User(id) => id.to_string(),
+            BlobOwner::Group(id) => format!("g{id}"),
+        }
+    }
+}
+
+/// Whose storage a resolved tree operation bills to and interlocks on: the
+/// acting user's own quota or a group's (concepts/groups.md section 4).
+/// Every permission check resolves one of these before a row is touched, so
+/// the quota gate, the row interlock and the blob namespace all read the
+/// same principal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeOwner {
+    User(i64),
+    Group(i64),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum BlobRef {
     /// A file entry's content: `<owner>/<year>/<h1>/<h2>/<file_id>` under
     /// the blob dir (the flat pre-layout only ever applies here, which is
-    /// why the legacy fallback is this variant's alone).
+    /// why the legacy fallback is this variant's alone). `<owner>` is the
+    /// current attribution's namespace - a personal row keeps its path
+    /// forever, and a move between principals relocates the blob with it.
     Entry {
         file_id: i64,
-        owner_id: i64,
+        owner: BlobOwner,
         created_at: DateTime<Utc>,
     },
     /// A kept version's content: `_versions/<file_id>/<version_key>`, where
@@ -230,7 +272,10 @@ impl From<&FileEntry> for BlobRef {
     fn from(entry: &FileEntry) -> Self {
         Self::Entry {
             file_id: entry.id,
-            owner_id: entry.owner_id,
+            owner: match entry.owner_group_id {
+                Some(group_id) => BlobOwner::Group(group_id),
+                None => BlobOwner::User(entry.owner_id),
+            },
             created_at: entry.created_at,
         }
     }
@@ -273,6 +318,11 @@ pub struct Breadcrumb {
 pub struct CreateFolderRequest {
     pub parent_id: Option<i64>,
     pub name: String,
+    /// Root-level bootstrap of a group folder: the group the requester
+    /// belongs to (concepts/groups.md section 4). Refused on deeper
+    /// parents, where attribution follows the parent.
+    #[serde(default)]
+    pub group: Option<i64>,
 }
 
 /// Payload for creating a new (initially empty) file.
@@ -280,6 +330,9 @@ pub struct CreateFolderRequest {
 pub struct CreateFileRequest {
     pub parent_id: Option<i64>,
     pub name: String,
+    /// See [`CreateFolderRequest::group`].
+    #[serde(default)]
+    pub group: Option<i64>,
 }
 
 /// Payload for renaming an entry.
@@ -354,6 +407,118 @@ pub struct AdminUpdateUserRequest {
     /// Set the storage quota in bytes.
     #[serde(default)]
     pub quota_bytes: Option<i64>,
+}
+
+/// One membership of a group, with the member's labels and the role mask
+/// value (`ROLE_MEMBER` / `ROLE_MANAGER`, concepts/groups.md section 4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMember {
+    pub user_id: i64,
+    pub username: String,
+    pub display_name: String,
+    /// 0 = member, 1 = manager (`crate::sharing::role_perms` derives the
+    /// permission mask from this).
+    pub role: i64,
+    pub added_at: DateTime<Utc>,
+}
+
+/// A group as the admin dialog renders it: identity, the operator-set quota
+/// against the group's current consumption, who created it, and the member
+/// list.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupInfo {
+    pub id: i64,
+    pub name: String,
+    pub quota_bytes: i64,
+    pub used_bytes: i64,
+    pub created_by: Option<i64>,
+    pub created_by_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub members: Vec<GroupMember>,
+}
+
+/// One of the caller's own groups (the member view behind `GET
+/// /api/groups`): the root badge, their role, and the quota figures - which
+/// members see read-only (concepts/groups.md section 8: the budget is
+/// operator-set).
+#[derive(Debug, Clone, Serialize)]
+pub struct MyGroup {
+    pub id: i64,
+    pub name: String,
+    pub role: i64,
+    pub quota_bytes: i64,
+    pub used_bytes: i64,
+}
+
+/// One stored key envelope of the caller's for a group's top-level folder
+/// (ENCRYPTION.md 5.5; the wrapped record the client unwraps with its ARK).
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupKeyEnvelope {
+    pub file_id: i64,
+    pub group_id: i64,
+    pub group_name: String,
+    pub envelope: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One (top-level folder, member) pair a manager has not wrapped a key
+/// record for yet (`GET /api/groups/{id}/keys/pending`).
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingGroupKey {
+    pub file_id: i64,
+    pub folder_name: String,
+    pub user_id: i64,
+    pub username: String,
+    pub display_name: String,
+    /// Whether the member has published a public key to wrap against: a
+    /// `false` means the manager cannot produce the envelope yet (the
+    /// member has not set up encryption).
+    pub has_public_key: bool,
+}
+
+/// Payload for creating a group (admin dialog).
+#[derive(Debug, Deserialize)]
+pub struct CreateGroupRequest {
+    pub name: String,
+    /// Operator-set storage budget in bytes (concepts/groups.md section 8).
+    pub quota_bytes: i64,
+}
+
+/// Payload for the partial group update: each present field is written,
+/// absent ones stay.
+#[derive(Debug, Default, Deserialize)]
+pub struct UpdateGroupRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub quota_bytes: Option<i64>,
+}
+
+/// Payload for adding a member by username (admin dialog).
+#[derive(Debug, Deserialize)]
+pub struct AddGroupMemberRequest {
+    pub username: String,
+    /// 0 = member, 1 = manager; anything else is refused.
+    pub role: i64,
+}
+
+/// Payload for changing one member's role (admin dialog).
+#[derive(Debug, Deserialize)]
+pub struct GroupRoleRequest {
+    /// 0 = member, 1 = manager; anything else is refused.
+    pub role: i64,
+}
+
+/// Payload for distributing one wrapped folder key to one member
+/// (manager UI; the envelope is opaque here, ENCRYPTION.md 5.5).
+#[derive(Debug, Deserialize)]
+pub struct GroupKeyPutRequest {
+    /// The group's top-level folder the record opens.
+    pub file_id: i64,
+    /// The member to hand the envelope to.
+    pub user_id: i64,
+    /// Base64 ECIES envelope, at most 8192 characters (same cap as a share).
+    pub envelope: String,
 }
 
 /// A share row (a grant from an owner to a grantee).

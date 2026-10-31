@@ -192,10 +192,12 @@ impl Db {
             let mut stmt = conn.prepare(&format!(
                 "SELECT {USER_COLUMNS},
                         (SELECT COALESCE(SUM(size), 0) FROM files
-                          WHERE owner_id = users.id AND deleted_at IS NULL)
+                          WHERE owner_id = users.id AND owner_group_id IS NULL
+                            AND deleted_at IS NULL)
                       + (SELECT COALESCE(SUM(v.size), 0) FROM file_versions v
                          JOIN files f ON f.id = v.file_id
-                          WHERE f.owner_id = users.id AND f.deleted_at IS NULL)
+                          WHERE f.owner_id = users.id AND f.owner_group_id IS NULL
+                            AND f.deleted_at IS NULL)
                                                                AS used_bytes
                    FROM users ORDER BY username",
             ))?;

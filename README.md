@@ -54,6 +54,14 @@ with sharing, quotas and WebDAV. New to fxcloud? The
   grantee's public key - their fingerprint is shown for out-of-band
   comparison - so they can unlock and actually open what is inside.
   Details: [API.md](API.md#permissions).
+- **Group folders** - a folder that belongs to a *group* instead of one
+  person: a shared workspace with its own quota, managed membership with
+  manager/member roles (administrators create groups in the user
+  administration), and one tree every member works directly - no
+  individual shares involved. Group roots wear the group's badge in your
+  root listing, folder keys travel from a manager to each member (the
+  same envelope shape as a share's), and a group folder cannot be shared
+  out to an individual. Details: [API.md](API.md#group-folders).
 - **WebDAV** - mount your files with Nextcloud desktop clients, rclone,
   Cyberduck, Windows network drives (see [WebDAV](#webdav)).
 - **Quotas** - 1 GiB per account by default, enforced with
@@ -316,9 +324,9 @@ Supported methods and protocol notes: [API.md](API.md#webdav).
 Two layers, both runnable straight after a checkout:
 
 ```bash
-cargo test          # unit tests: permissions, quota, KDF floor, filename and
-                    # RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 622 checks against a throwaway instance
+cargo test          # unit tests: permissions, quota, group roles, KDF floor,
+                    # filename and RFC 5987 encoding, session-cookie parsing
+./tests/suite.sh    # integration: 663 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

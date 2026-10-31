@@ -32,6 +32,24 @@
   // The last /api/me payload, shown in the settings dialog (account facts)
   // and updated in place when a setting is saved.
   let meData = null;
+  // The groups I belong to (GET /api/groups): the root listing's badges,
+  // the "new group folder" picker, and the key distribution's manager gate
+  // (role 1 = manager, crate::sharing::ROLE_MANAGER).
+  let myGroups = [];
+  const GROUP_MANAGER = 1;
+  // The top-level group folder whose keys are being distributed right now.
+  let distribEntry = null;
+  let distribGroupId = null;
+
+  // My groups, for the badges and pickers above. A failed list is not fatal:
+  // the file side keeps working, just without group affordances.
+  async function loadMyGroups() {
+    try {
+      myGroups = await api("/api/groups").then((r) => r.json());
+    } catch (_) {
+      myGroups = [];
+    }
+  }
 
   // Multi-selection: id -> entry, as shown in the current listing.
   const selected = new Map();
@@ -309,6 +327,13 @@
         (entry.owner_name
           ? ' <span class="shared-badge">↔ ' + escapeHtml(entry.owner_name) + "</span>"
           : "") +
+        // A group folder wears its group's name, so a personal folder of the
+        // same name at the root stays tellable apart (concepts/groups.md
+        // section 3 allows both; the badge is what tells them).
+        (entry.group_name
+          ? ' <span class="group-badge" title="' + escapeHtml(t("group.badge")) +
+            '">' + escapeHtml(entry.group_name) + "</span>"
+          : "") +
         (entry.enc_version > 0
           ? ' <span class="enc-mark" title="' + escapeHtml(t("row.encTitle")) +
             '">&#128274;</span>'
@@ -545,6 +570,17 @@
       }
       if (isOwner) {
         items.push([t("bulk.share"), () => openShareDialog([entry])]);
+      }
+      // A group's top-level folder offers its key distribution to the
+      // group's managers (concepts/groups.md section 5). The server is the
+      // gate on the role; this only keeps the menu free of dead entries.
+      if (
+        entry.is_dir &&
+        entry.owner_group_id != null &&
+        entry.parent_id == null &&
+        myGroups.some((g) => g.id === entry.owner_group_id && g.role === GROUP_MANAGER)
+      ) {
+        items.push([t("group.distribute"), () => openDistributeDialog(entry)]);
       }
       if (perms & PERM_UPDATE) {
         items.push([t("bulk.move"), () => openTransferDialog("move", [entry])]);
@@ -793,7 +829,13 @@
   function renderToolbar() {
     const trashBtn = document.getElementById("trash-btn");
     const emptyBtn = document.getElementById("empty-trash-btn");
-    const fileBtns = ["new-file-btn", "new-folder-btn", "upload-btn", "upload-folder-btn"];
+    const fileBtns = [
+      "new-file-btn",
+      "new-folder-btn",
+      "new-group-btn",
+      "upload-btn",
+      "upload-folder-btn",
+    ];
     if (trashView) {
       for (const id of fileBtns) document.getElementById(id).style.display = "none";
       dropzone.style.display = "none";
@@ -807,6 +849,11 @@
     const show = canCreate ? "" : "none";
     for (const id of fileBtns) document.getElementById(id).style.display = show;
     dropzone.style.display = show;
+    // A group's top-level folder bootstraps from the root listing only, and
+    // only for someone who belongs to a group (concepts/groups.md section 6);
+    // inside a folder every member creates ordinary rows anyway.
+    document.getElementById("new-group-btn").style.display =
+      canCreate && currentParent == null && myGroups.length > 0 ? "" : "none";
   }
 
   // Binary units (1024-based), matching the server's quota messages, so the
@@ -2772,6 +2819,7 @@
     setAdminStatus("");
     adminModal.style.display = "flex";
     loadAdminUsers();
+    loadAdminGroups();
   }
 
   function closeAdmin() {
@@ -2946,6 +2994,251 @@
     }
   });
 
+  // ---------- group folders (admin dialog, concepts/groups.md section 6) ----------
+  //
+  // Same shape as the user table above: a list the handlers read their state
+  // from via data-attributes, reloaded after every round trip. The status
+  // line is the shared one - one dialog, one voice for errors.
+
+  async function loadAdminGroups() {
+    try {
+      renderGroupRows(await api("/api/admin/groups").then((r) => r.json()));
+    } catch (e) {
+      setAdminStatus(e.message, true);
+    }
+  }
+
+  // One card per group: name, quota against consumption, the member list
+  // with roles, and the add-a-member row. Buttons carry their action as a
+  // data-attribute; ids come from the card, so a re-render never invalidates
+  // a click that is already in flight.
+  function renderGroupRows(groups) {
+    const list = document.getElementById("group-rows");
+    list.innerHTML = "";
+    if (groups.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "group-empty";
+      empty.textContent = t("group.empty");
+      list.appendChild(empty);
+      return;
+    }
+    for (const g of groups) {
+      const card = document.createElement("div");
+      card.className = "group-card";
+      card.dataset.gid = String(g.id);
+
+      const head = document.createElement("div");
+      head.className = "group-head";
+      const name = document.createElement("span");
+      name.className = "gname";
+      name.textContent = g.name;
+      head.appendChild(name);
+
+      const quota = document.createElement("input");
+      quota.type = "number";
+      quota.min = "0";
+      quota.step = "1";
+      quota.className = "admin-quota-input";
+      quota.value = String(mibFromBytes(g.quota_bytes));
+      quota.title = t("admin.quotaMiB");
+      quota.dataset.action = "group-quota";
+      head.appendChild(quota);
+
+      const used = document.createElement("span");
+      used.className = "gused";
+      used.textContent = t("admin.used", { size: fmtBytes(g.used_bytes) });
+      head.appendChild(used);
+
+      const grow = document.createElement("div");
+      grow.className = "grow";
+      head.appendChild(grow);
+
+      const renameBtn = document.createElement("button");
+      renameBtn.type = "button";
+      renameBtn.className = "btn secondary";
+      renameBtn.dataset.action = "group-rename";
+      renameBtn.textContent = t("group.rename");
+      head.appendChild(renameBtn);
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "btn secondary";
+      delBtn.dataset.action = "group-delete";
+      delBtn.textContent = t("group.delete");
+      head.appendChild(delBtn);
+      card.appendChild(head);
+
+      const members = document.createElement("div");
+      members.className = "group-members";
+      for (const m of g.members) {
+        const row = document.createElement("div");
+        row.className = "group-member";
+        const who = document.createElement("span");
+        who.className = "gwho";
+        who.textContent =
+          m.display_name && m.display_name !== m.username
+            ? m.display_name + " (" + m.username + ")"
+            : m.username;
+        row.appendChild(who);
+
+        const badge = document.createElement("span");
+        badge.className = "admin-badge " + (m.role === GROUP_MANAGER ? "admin" : "member");
+        badge.textContent =
+          m.role === GROUP_MANAGER ? t("group.manager") : t("group.member");
+        row.appendChild(badge);
+
+        const roleBtn = document.createElement("button");
+        roleBtn.type = "button";
+        roleBtn.className = "btn secondary";
+        roleBtn.dataset.action = "member-role";
+        roleBtn.dataset.uid = String(m.user_id);
+        roleBtn.dataset.role = String(m.role);
+        roleBtn.textContent =
+          m.role === GROUP_MANAGER ? t("group.makeMember") : t("group.makeManager");
+        row.appendChild(roleBtn);
+
+        const rmBtn = document.createElement("button");
+        rmBtn.type = "button";
+        rmBtn.className = "btn secondary";
+        rmBtn.dataset.action = "member-remove";
+        rmBtn.dataset.uid = String(m.user_id);
+        rmBtn.textContent = t("act.remove");
+        row.appendChild(rmBtn);
+
+        members.appendChild(row);
+      }
+      card.appendChild(members);
+
+      const add = document.createElement("div");
+      add.className = "group-add";
+      const uname = document.createElement("input");
+      uname.type = "text";
+      uname.placeholder = t("group.addUsername");
+      uname.dataset.action = "member-username";
+      add.appendChild(uname);
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "btn secondary";
+      addBtn.dataset.action = "member-add";
+      addBtn.textContent = t("group.addMember");
+      add.appendChild(addBtn);
+      card.appendChild(add);
+
+      list.appendChild(card);
+    }
+  }
+
+  function groupPut(gid, body) {
+    return api(`/api/admin/groups/${gid}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  // After any membership or group change my own view may have changed too
+  // (I can be added, removed, made manager), so the member-side list and
+  // the toolbar follow every reload.
+  async function reloadAfterGroupChange() {
+    await loadAdminGroups();
+    await loadMyGroups();
+    renderToolbar();
+  }
+
+  // One delegated handler for every group card action.
+  document.getElementById("group-rows").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    const card = btn.closest(".group-card");
+    const gid = Number(card.dataset.gid);
+    const action = btn.dataset.action;
+    setAdminStatus("");
+    try {
+      if (action === "group-rename") {
+        const current = card.querySelector(".gname").textContent;
+        const name = prompt(t("group.rename"), current);
+        if (!name || !name.trim() || name.trim() === current) return;
+        await groupPut(gid, { name: name.trim() });
+      } else if (action === "group-delete") {
+        const name = card.querySelector(".gname").textContent;
+        if (!confirm(t("group.deleteConfirm", { name }))) return;
+        await api(`/api/admin/groups/${gid}`, { method: "DELETE" });
+      } else if (action === "member-add") {
+        const uname = card.querySelector('input[data-action="member-username"]');
+        const username = uname.value.trim();
+        if (!username) return;
+        await api(`/api/admin/groups/${gid}/members`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: username, role: 0 }),
+        });
+      } else if (action === "member-role") {
+        const role = btn.dataset.role === "1" ? 0 : 1;
+        await api(`/api/admin/groups/${gid}/members/${btn.dataset.uid}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: role }),
+        });
+      } else if (action === "member-remove") {
+        await api(`/api/admin/groups/${gid}/members/${btn.dataset.uid}`, {
+          method: "DELETE",
+        });
+      } else {
+        return;
+      }
+      await reloadAfterGroupChange();
+    } catch (err) {
+      setAdminStatus(err.message, true);
+    }
+  });
+
+  // The group quota saves on change, like the user quota above.
+  document.getElementById("group-rows").addEventListener("change", async (e) => {
+    const input = e.target.closest('input[data-action="group-quota"]');
+    if (!input) return;
+    const gid = Number(input.closest(".group-card").dataset.gid);
+    const mib = Number(input.value);
+    if (!Number.isFinite(mib) || mib < 0) {
+      setAdminStatus(t("admin.quotaBad"), true);
+      return;
+    }
+    setAdminStatus("");
+    try {
+      await groupPut(gid, { quota_bytes: Math.round(mib * 1048576) });
+      await loadAdminGroups();
+    } catch (err) {
+      setAdminStatus(err.message, true);
+    }
+  });
+
+  // Create a group. The creator becomes its first manager (server-side), so
+  // a fresh group is never left without anybody who may add members or hand
+  // out folder keys.
+  document.getElementById("group-new-btn").addEventListener("click", async () => {
+    const nameEl = document.getElementById("group-new-name");
+    const quotaEl = document.getElementById("group-new-quota");
+    const name = nameEl.value.trim();
+    const mib = Number(quotaEl.value);
+    if (!name) return;
+    if (!Number.isFinite(mib) || mib < 0) {
+      setAdminStatus(t("admin.quotaBad"), true);
+      return;
+    }
+    setAdminStatus("");
+    try {
+      const g = await api("/api/admin/groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name, quota_bytes: Math.round(mib * 1048576) }),
+      }).then((r) => r.json());
+      nameEl.value = "";
+      setAdminStatus(t("group.created", { name: g.name }));
+      await reloadAfterGroupChange();
+    } catch (err) {
+      setAdminStatus(err.message, true);
+    }
+  });
+
   // Show the freshly generated temporary password once, for the admin to
   // copy. It is never retrievable again, so the dialog is the only place it
   // appears.
@@ -2966,6 +3259,187 @@
     } catch (_) {
       // Clipboard can be unavailable (insecure context); the code element is
       // selectable, so the user can still copy it by hand.
+    }
+  });
+
+  // ---------- group folder bootstrap (member side) ----------
+  //
+  // The root listing's "New group folder...": pick one of your groups, name
+  // the folder, and the server attributes the row - the creator stays the
+  // owner for the audit trail, the group pays the quota (concepts/groups.md
+  // section 6). The button that opens this is only shown where it applies
+  // (renderToolbar), so an empty picker is a stale page, not a path.
+  const gfolderModal = document.getElementById("gfolder-modal");
+
+  function setGfolderStatus(text, isError) {
+    const el = document.getElementById("gfolder-status");
+    el.textContent = text || "";
+    el.className = isError ? "settings-status error" : "settings-status";
+  }
+
+  function openGfolderDialog() {
+    const sel = document.getElementById("gfolder-group");
+    sel.innerHTML = "";
+    if (myGroups.length === 0) {
+      // Belt and braces: the toolbar button is already hidden without
+      // groups, so this is a stale page - say so instead of showing an
+      // empty picker that would post nowhere.
+      setGfolderStatus(t("group.noGroups"), true);
+      gfolderModal.style.display = "flex";
+      return;
+    }
+    for (const g of myGroups) {
+      const opt = document.createElement("option");
+      opt.value = String(g.id);
+      opt.textContent = g.name;
+      sel.appendChild(opt);
+    }
+    document.getElementById("gfolder-name").value = "";
+    setGfolderStatus("");
+    gfolderModal.style.display = "flex";
+    if (myGroups.length > 0) document.getElementById("gfolder-name").focus();
+  }
+
+  function closeGfolderDialog() {
+    gfolderModal.style.display = "none";
+  }
+
+  async function createGroupFolder() {
+    const sel = document.getElementById("gfolder-group");
+    const gid = Number(sel.value);
+    const name = document.getElementById("gfolder-name").value.trim();
+    if (!name || !Number.isFinite(gid)) return;
+    setGfolderStatus("");
+    try {
+      await api("/api/files/folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parent_id: null, group: gid, name: name }),
+      });
+      closeGfolderDialog();
+      await loadFiles(null);
+    } catch (e) {
+      setGfolderStatus(e.message, true);
+    }
+  }
+
+  // ---------- folder key distribution (managers) ----------
+  //
+  // One row per (top-level folder, member) pair without an envelope yet
+  // (concepts/groups.md section 5). Wrapping runs in this tab - the server
+  // only ever stores the sealed blob, and only a manager may post one.
+  const distribModal = document.getElementById("distrib-modal");
+
+  function setDistribStatus(text, isError) {
+    const el = document.getElementById("distrib-status");
+    el.textContent = text || "";
+    el.className = isError ? "settings-status error" : "settings-status";
+  }
+
+  function openDistributeDialog(entry) {
+    const group = myGroups.find((g) => g.id === entry.owner_group_id);
+    if (!group) return;
+    distribEntry = entry;
+    distribGroupId = group.id;
+    document.getElementById("distrib-folder").textContent =
+      t("group.distributeFolder", { name: entry.name });
+    setDistribStatus("");
+    distribModal.style.display = "flex";
+    loadDistribRows();
+  }
+
+  function closeDistribDialog() {
+    distribModal.style.display = "none";
+    distribEntry = null;
+    distribGroupId = null;
+  }
+
+  async function loadDistribRows() {
+    const rows = document.getElementById("distrib-rows");
+    rows.innerHTML = "";
+    let pending;
+    try {
+      pending = await api(`/api/groups/${distribGroupId}/keys/pending`).then((r) => r.json());
+    } catch (e) {
+      setDistribStatus(e.message, true);
+      return;
+    }
+    // A plaintext folder has no key to wrap; the pending list would still
+    // name every member, so say what has to happen first instead.
+    if (!FXEnc.isEncrypted(distribEntry)) {
+      const hint = document.createElement("p");
+      hint.className = "distrib-empty";
+      hint.textContent = t("group.plainFolder");
+      rows.appendChild(hint);
+      return;
+    }
+    if (pending.length === 0) {
+      const done = document.createElement("p");
+      done.className = "distrib-empty";
+      done.textContent = t("group.allSet");
+      rows.appendChild(done);
+      return;
+    }
+    for (const p of pending) {
+      const row = document.createElement("div");
+      row.className = "distrib-row";
+      const who = document.createElement("span");
+      who.className = "distrib-user";
+      who.textContent =
+        p.display_name && p.display_name !== p.username
+          ? p.display_name + " (" + p.username + ")"
+          : p.username;
+      row.appendChild(who);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn secondary";
+      btn.textContent = t("group.wrap");
+      btn.dataset.uid = String(p.user_id);
+      btn.dataset.uname = p.username;
+      if (!p.has_public_key) {
+        // The member has not set up encryption: there is no public key to
+        // seal against, so the button says why instead of failing later.
+        btn.disabled = true;
+        btn.title = t("group.noPublicKey");
+      }
+      row.appendChild(btn);
+      rows.appendChild(row);
+    }
+  }
+
+  // Wrap one member's envelope: fetch their public key, seal the folder's
+  // key record to it (same envelope shape and AAD as a share's, so the
+  // member's tab opens it through the same key map), post the blob.
+  document.getElementById("distrib-rows").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-uid]");
+    if (!btn || btn.disabled) return;
+    setDistribStatus("");
+    try {
+      if (!(await FXEnc.requestKeys())) {
+        setDistribStatus(t("group.needUnlock"), true);
+        return;
+      }
+      const username = btn.dataset.uname;
+      const keyInfo = await api(`/api/keys/${encodeURIComponent(username)}`).then((r) =>
+        r.json()
+      );
+      const envelope = await FXEnc.shareEnvelope(
+        distribEntry,
+        username,
+        keyInfo.key.public_key
+      );
+      await api(`/api/groups/${distribGroupId}/keys`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_id: distribEntry.id,
+          user_id: Number(btn.dataset.uid),
+          envelope: envelope,
+        }),
+      });
+      await loadDistribRows();
+    } catch (err) {
+      setDistribStatus(err.message, true);
     }
   });
 
@@ -3033,6 +3507,14 @@
     if (e.target === adminModal) closeAdmin();
   });
   document.getElementById("reset-close-btn").addEventListener("click", closeResetModal);
+  // Group folder bootstrap + key distribution dialogs.
+  document.getElementById("new-group-btn").addEventListener("click", openGfolderDialog);
+  document.getElementById("gfolder-cancel-btn").addEventListener("click", closeGfolderDialog);
+  document.getElementById("gfolder-create-btn").addEventListener("click", createGroupFolder);
+  document.getElementById("gfolder-name").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") createGroupFolder();
+  });
+  document.getElementById("distrib-close-btn").addEventListener("click", closeDistribDialog);
   resetModal.addEventListener("click", (e) => {
     if (e.target === resetModal) closeResetModal();
   });
@@ -3196,6 +3678,7 @@
   updateSortHeaders();
   setHiddenToggle();
   loadMe()
+    .then(() => loadMyGroups())
     .then(() => FXEnc.init(meName))
     .then(() => loadFiles(currentParent))
     .catch((e) => {

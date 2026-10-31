@@ -327,6 +327,42 @@
     "admin.make": "Zum Admin machen",
     "admin.resetPw": "Passwort zur\u00fccksetzen",
     "admin.quotaBad": "Das Kontingent muss eine nicht negative Zahl in MiB sein.",
+
+    // group folders: the admin dialog's section, the member's bootstrap,
+    // and the manager's key distribution (concepts/groups.md sections 4-6)
+    "admin.groups": "Gruppenordner",
+    "group.empty": "Noch keine Gruppenordner.",
+    "group.newName": "Name der neuen Gruppe",
+    "group.newQuota": "Kontingent in MiB",
+    "group.create": "Gruppe anlegen",
+    "group.created": "Gruppe \"{name}\" ist bereit.",
+    "group.delete": "Gruppe l\u00f6schen",
+    "group.deleteConfirm":
+      "Gruppe \"{name}\" l\u00f6schen? Sie muss zuerst leer sein: keine Mitglieder, keine Ordner.",
+    "group.rename": "Gruppe umbenennen",
+    "group.members": "Mitglieder",
+    "group.addMember": "Mitglied hinzuf\u00fcgen",
+    "group.addUsername": "Benutzername",
+    "group.makeManager": "Zum Manager machen",
+    "group.makeMember": "Zum Mitglied machen",
+    "group.manager": "Manager",
+    "group.member": "Mitglied",
+    "group.newFolder": "Neuer Gruppenordner",
+    "group.pick": "Gruppe",
+    "group.folderName": "Ordnername",
+    "group.bootstrap": "Ordner anlegen",
+    "group.noGroups": "Du geh\u00f6rst noch zu keinem Gruppenordner.",
+    "group.badge": "Gruppenordner",
+    "group.distribute": "Ordner-Schl\u00fcssel verteilen",
+    "group.distributeFolder": "Ordner: {name}",
+    "group.allSet": "Jedes Mitglied hat einen Schl\u00fcssel f\u00fcr diesen Ordner.",
+    "group.wrap": "Verschl\u00fcsseln und senden",
+    "group.noPublicKey":
+      "Noch kein \u00f6ffentlicher Schl\u00fcssel -- dieses Mitglied muss zuerst die Verschl\u00fcsselung einrichten.",
+    "group.plainFolder":
+      "Dieser Ordner enth\u00e4lt noch keine verschl\u00fcsselten Dateien -- \u00f6ffne ihn und speichere zuerst eine verschl\u00fcsselte Datei.",
+    "group.needUnlock":
+      "Entsperre die Dateiverschl\u00fcsselung, um Ordner-Schl\u00fcssel zu verteilen.",
     "reset.title": "Tempor\u00e4res Passwort",
     "reset.user": "F\u00fcr {user}:",
     "reset.hint":
@@ -798,6 +834,42 @@
     "admin.resetPw": "Reset password",
     "admin.quotaBad":
       "Quota must be a non-negative number of MiB.",
+
+    // group folders: the admin dialog's section, the member's bootstrap,
+    // and the manager's key distribution (concepts/groups.md sections 4-6)
+    "admin.groups": "Group folders",
+    "group.empty": "No group folders yet.",
+    "group.newName": "New group name",
+    "group.newQuota": "Quota in MiB",
+    "group.create": "Create group",
+    "group.created": "Group \"{name}\" is ready.",
+    "group.delete": "Delete group",
+    "group.deleteConfirm":
+      "Delete the group \"{name}\"? It has to be empty first: no members, no folders.",
+    "group.rename": "Rename group",
+    "group.members": "Members",
+    "group.addMember": "Add member",
+    "group.addUsername": "Username",
+    "group.makeManager": "Make manager",
+    "group.makeMember": "Make member",
+    "group.manager": "Manager",
+    "group.member": "Member",
+    "group.newFolder": "New group folder",
+    "group.pick": "Group",
+    "group.folderName": "Folder name",
+    "group.bootstrap": "Create folder",
+    "group.noGroups": "You do not belong to a group folder yet.",
+    "group.badge": "Group folder",
+    "group.distribute": "Distribute folder keys",
+    "group.distributeFolder": "Folder: {name}",
+    "group.allSet": "Every member holds a key for this folder.",
+    "group.wrap": "Wrap and send",
+    "group.noPublicKey":
+      "No public key yet - this member has to set up file encryption first.",
+    "group.plainFolder":
+      "This folder holds no encrypted content yet - open it and save an encrypted file first.",
+    "group.needUnlock":
+      "Unlock file encryption to wrap folder keys for members.",
     "reset.title": "Temporary password",
     "reset.user": "For {user}:",
     "reset.hint":
@@ -1250,6 +1322,42 @@
     "admin.resetPw": "mu'mu' yIchoH",
     "admin.quotaBad":
       "nI' MiB ram - yIqawbe'.",
+
+    // group folders: the admin dialog's section, the member's bootstrap,
+    // and the manager's key distribution (concepts/groups.md sections 4-6)
+    "admin.groups": "ghom bIQroq",
+    "group.empty": "ghach ghom bIQroq.",
+    "group.newName": "ghom chu' pong",
+    "group.newQuota": "nI' MiB",
+    "group.create": "ghom yIchen",
+    "group.created": "ghom \"{name}\" chu'.",
+    "group.delete": "ghom yIqaw",
+    "group.deleteConfirm":
+      "ghom \"{name}\" yIqaw? chunoblu' neH: ghom puq, bIQroq je.",
+    "group.rename": "ghom pong yIchoH",
+    "group.members": "ghom puq",
+    "group.addMember": "puq yItlh",
+    "group.addUsername": "lo'wI' pong",
+    "group.makeManager": "ghomwI' yIchoH",
+    "group.makeMember": "puq yIchoH",
+    "group.manager": "ghomwI'",
+    "group.member": "puq",
+    "group.newFolder": "ghom bIQroq chu'",
+    "group.pick": "ghom",
+    "group.folderName": "bIQroq pong",
+    "group.bootstrap": "bIQroq yIchen",
+    "group.noGroups": "SoH ghom bIQroq ghach.",
+    "group.badge": "ghom bIQroq",
+    "group.distribute": "bIQroq pon yIpevn",
+    "group.distributeFolder": "bIQroq: {name}",
+    "group.allSet": "ghom puq bIQroq pon law'.",
+    "group.wrap": "pon yIchegh",
+    "group.noPublicKey":
+      "pon ghach -- quj chenmoH lo'wI' neH.",
+    "group.plainFolder":
+      "bIQroq 'ay' pon ghach -- quj chu' yIchen.",
+    "group.needUnlock":
+      "quj yIchen -- bIQroq pon yIpevmeH.",
     "reset.title": "mu'mu' chu'",
     "reset.user": "{user}:",
     "reset.hint":
