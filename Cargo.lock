@@ -618,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "fxcloud"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "argon2",
