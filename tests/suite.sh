@@ -1065,6 +1065,41 @@ echo "status=$RC body=$(cat "$ROOT/quota.json")"
   && ok "oversized save -> 507 with the quota message" || bad "expected 507, got $RC"
 sqlite3 "$DATA/fxcloud.db" "UPDATE users SET quota_bytes = 1073741824 WHERE username='alice';"
 
+# ---- editor: unsaved-changes dialog (save / discard / cancel) ----
+# The old guard was a native confirm(): two buttons, no way to say "save
+# first", and a reflex click threw the edit away - which is exactly how
+# users kept losing text. The dialog replaces it; Save carries the focus.
+note "the editor close asks with a three-button dialog, Save as the default"
+UI2="$REPO/frontend/assets/app.js"
+IDX2="$REPO/frontend/index.html"
+grep -q 'id="discard-modal"' "$IDX2" \
+  && ok "the unsaved-changes dialog exists in index.html" \
+  || bad "index.html has no discard-modal"
+grep -q 'id="discard-save-btn"' "$IDX2" && grep -q 'id="discard-discard-btn"' "$IDX2" \
+  && grep -q 'id="discard-cancel-btn"' "$IDX2" \
+  && ok "the dialog offers save, discard and cancel" \
+  || bad "the discard dialog lacks one of its three buttons"
+grep -q 'discardSaveBtn\.focus()' "$UI2" \
+  && ok "Save is the focused default button" \
+  || bad "the dialog does not focus its Save button"
+grep -q 'confirm(t("confirm.discard"))' "$UI2" \
+  && bad "the editor still pops the two-button confirm()" \
+  || ok "no native confirm() stands between the editor and its close"
+grep -q 'async function confirmUnsaved' "$UI2" && grep -c 'await confirmUnsaved()' "$UI2" | grep -q '^2$' \
+  && ok "Close and the gallery arrows share one unsaved-changes gate" \
+  || bad "confirmUnsaved is not the shared gate for both close paths"
+grep -q 'if (choice === "save") return saveEditor();' "$UI2" \
+  && ok "the dialog's Save awaits the save before closing" \
+  || bad "the Save answer does not await saveEditor()"
+grep -q 'return Promise\.resolve(false);' "$UI2" \
+  && ok "saveEditor answers a promise the close flow can wait on" \
+  || bad "saveEditor does not report success/failure"
+for DKEY in act.discard editor.unsaved.title editor.unsaved.body; do
+  ND=$(grep -c "\"$DKEY\":" "$REPO/frontend/assets/i18n.js")
+  [ "$ND" = "3" ] && ok "$DKEY ships in all three dictionaries" \
+    || bad "$DKEY appears $ND times in i18n.js, expected 3"
+done
+
 # ---- create new text files ----
 note "POST /api/files/file creates an empty editable file"
 OUT=$(req POST /api/files/file "$JA" "{\"parent_id\":$DOC,\"name\":\"fresh.md\"}")
@@ -2504,7 +2539,7 @@ grep -q 'mime\.startsWith("text/")' "$UI" \
 # much further down, as "decryption failed for chunk 0".
 SAVE_BODY=$(awk '/^  function saveEditor\(\)/,/^  }$/' "$UI")
 REFRESH=$(printf '%s\n' "$SAVE_BODY" | grep -n 'openFolder(currentParent);' | cut -d: -f1 | head -1)
-SAVE_GUARD=$(printf '%s\n' "$SAVE_BODY" | grep -n 'if (editorEntry !== entry) return;' | cut -d: -f1 | head -1)
+SAVE_GUARD=$(printf '%s\n' "$SAVE_BODY" | grep -n 'if (editorEntry !== entry) return true;' | cut -d: -f1 | head -1)
 [ -n "$REFRESH" ] && [ -n "$SAVE_GUARD" ] && [ "$REFRESH" -lt "$SAVE_GUARD" ] \
   && ok "a save refreshes the folder before it drops the response" \
   || bad "saveEditor() refreshes the listing only while that file is still open"
@@ -2662,9 +2697,9 @@ grep -q 'getElementById("preview-next-btn").addEventListener("click"' "$UI" \
 grep -q 'function buildGallery' "$UI" && grep -q 'currentEntries\.filter' "$UI" \
   && ok "the gallery is the listing on screen, in display order" \
   || bad "app.js does not build the gallery from currentEntries"
-grep -q 'function stepPreview' "$UI" && grep -q 'editorEntry && editorDirty() && !confirm(t("confirm.discard"))' "$UI" \
+grep -q 'function stepPreview' "$UI" && grep -q 'await confirmUnsaved()' "$UI" \
   && ok "stepping away from a dirty editor asks first (same rule as Close)" \
-  || bad "stepPreview has no dirty-editor guard"
+  || bad "stepPreview has no unsaved-changes gate"
 grep -q 'e\.key === "ArrowLeft"' "$UI" && grep -q 'e\.key === "ArrowRight"' "$UI" \
   && ok "arrow keys walk the gallery next to the buttons" \
   || bad "no ArrowLeft/ArrowRight handling for the lightbox"

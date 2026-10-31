@@ -384,6 +384,22 @@
     </div>
   </div>
 
+  <!-- Unsaved editor changes: the three-way gate every close path uses
+       (closePreview, stepPreview). Save carries the focus, so Enter saves -
+       losing an edit to a reflex click on the old two-button confirm() is
+       the failure this dialog exists to prevent. -->
+  <div class="modal-backdrop" id="discard-modal" style="display:none">
+    <div class="modal">
+      <h3 data-i18n="editor.unsaved.title">Unsaved changes</h3>
+      <p class="hint" id="discard-body"></p>
+      <div class="modal-footer">
+        <button class="btn secondary" id="discard-cancel-btn" type="button" data-i18n="act.cancel">Cancel</button>
+        <button class="btn secondary" id="discard-discard-btn" type="button" data-i18n="act.discard">Discard</button>
+        <button class="btn" id="discard-save-btn" type="button" data-i18n="act.save">Save</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Client-side encryption: setup, unlock, recovery key (ENCRYPTION.md 7) -->
   <div class="modal-backdrop" id="enc-modal" style="display:none">
     <div class="modal enc-modal">

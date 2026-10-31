@@ -90,6 +90,7 @@
     "act.close": "Schlie\u00dfen",
     "act.cancel": "Abbrechen",
     "act.save": "Speichern",
+    "act.discard": "Verwerfen",
     "act.remove": "Entfernen",
     "act.restore": "Wiederherstellen",
     "act.items": "{n} Eintr\u00e4ge",
@@ -203,7 +204,6 @@
     "confirm.moveFolder":
       "Ordner \"{name}\" und alles darin in den Papierkorb verschieben?",
     "confirm.moveFile": "Datei \"{name}\" in den Papierkorb verschieben?",
-    "confirm.discard": "Ungespeicherte \u00c4nderungen verwerfen?",
     "confirm.bulkDelete":
       "{n} von {m} ausgew\u00e4hlten Eintr\u00e4gen in den Papierkorb verschieben?",
     "batch.files": "{k} Datei(en) \u00b7 {size}",
@@ -234,6 +234,8 @@
     "editor.loadFailed": "Laden fehlgeschlagen: {msg}",
     "editor.saveFailed": "Speichern fehlgeschlagen: {msg}",
     "editor.unsaved": "* ungespeichert",
+    "editor.unsaved.title": "Ungespeicherte \u00c4nderungen",
+    "editor.unsaved.body": "In \"{name}\" gibt es ungespeicherte \u00c4nderungen.",
     "editor.meta": "{lines} Zeilen, {chars} Zeichen",
     "editor.markdown": "Markdown",
 
@@ -591,6 +593,7 @@
     "act.close": "Close",
     "act.cancel": "Cancel",
     "act.save": "Save",
+    "act.discard": "Discard",
     "act.remove": "Remove",
     "act.restore": "Restore",
     "act.items": "{n} items",
@@ -707,7 +710,6 @@
     "confirm.moveFolder":
       "Move folder \"{name}\" and everything inside it to the trash?",
     "confirm.moveFile": "Move file \"{name}\" to the trash?",
-    "confirm.discard": "Discard unsaved changes?",
     "confirm.bulkDelete":
       "Move {n} of {m} selected item(s) to the trash?",
     "batch.files": "{k} file(s) \u00b7 {size}",
@@ -739,6 +741,8 @@
     "editor.loadFailed": "load failed: {msg}",
     "editor.saveFailed": "save failed: {msg}",
     "editor.unsaved": "* unsaved",
+    "editor.unsaved.title": "Unsaved changes",
+    "editor.unsaved.body": "\"{name}\" has unsaved changes.",
     "editor.meta": "{lines} lines, {chars} chars",
     "editor.markdown": "Markdown",
 
@@ -1098,6 +1102,7 @@
     "act.close": "rap",
     "act.cancel": "taHbe'",
     "act.save": "qan",
+    "act.discard": "mej",
     "act.remove": "yu'",
     "act.restore": "qa'",
     "act.items": "{n} nat",
@@ -1202,7 +1207,6 @@
     "confirm.moveFolder":
       "bIQroq \"{name}\" Hoch bIQtIq ghoS?",
     "confirm.moveFile": "che' \"{name}\" bIQtIq ghoS?",
-    "confirm.discard": "choH chIm?",
     "confirm.bulkDelete":
       "wIvpu' {m} nat chIm {n} bIQtIq ghoS?",
     "batch.files": "{k} che' \u00b7 {size}",
@@ -1233,6 +1237,8 @@
     "editor.loadFailed": "laDlaHbe': {msg}",
     "editor.saveFailed": "qanlaHbe': {msg}",
     "editor.unsaved": "* qanbe'",
+    "editor.unsaved.title": "chIm qanbe'",
+    "editor.unsaved.body": "\"{name}\" chIm qanbe'.",
     "editor.meta": "{lines} gram, {chars} nat",
     "editor.markdown": "Markdown",
 

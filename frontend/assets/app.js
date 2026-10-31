@@ -1260,12 +1260,12 @@
     next.hidden = previewIndex < 0 || previewIndex + 1 >= previewGallery.length;
   }
 
-  // One step through the gallery; the same dirty-editor guard Close uses,
+  // One step through the gallery; the same unsaved-changes gate Close uses,
   // so arrowing away from unsaved text still asks first.
   async function stepPreview(delta) {
     const target = previewGallery[previewIndex + delta];
     if (!target) return;
-    if (editorEntry && editorDirty() && !confirm(t("confirm.discard"))) return;
+    if (!(await confirmUnsaved())) return;
     await openPreview(target);
   }
 
@@ -1338,9 +1338,10 @@
     previewModal.style.display = "flex";
   }
 
-  function closePreview() {
-    // An edited file keeps its changes until the user says otherwise.
-    if (editorEntry && editorDirty() && !confirm(t("confirm.discard"))) return;
+  // Close the lightbox. An edited file keeps its changes until the user
+  // picks save/discard in the dialog - never behind a reflex click.
+  async function closePreview() {
+    if (!(await confirmUnsaved())) return;
     previewModal.style.display = "none";
     previewEntry = null;
     releasePreviewUrl();
@@ -1428,8 +1429,11 @@
     setEditorStatus("");
   }
 
+  // Returns a promise: true when the bytes are on the server, false when the
+  // save failed (status line keeps the error). The close flow awaits it, so
+  // a failed save never closes the lightbox over unsaved text.
   function saveEditor() {
-    if (!editorEntry) return;
+    if (!editorEntry) return Promise.resolve(false);
     const entry = editorEntry;
     const content = editorText.value;
     setEditorStatus(t("editor.saving"));
@@ -1441,7 +1445,7 @@
             headers: { "Content-Type": "text/plain; charset=utf-8" },
             body: content,
           }).then((r) => r.json());
-    save
+    return save
       .then((res) => {
         // The row changed on the server, whatever the editor does next - so
         // this runs before the "still this file?" check below. An encrypted
@@ -1459,15 +1463,72 @@
           if (res.entry.enc_key) entry.enc_key = res.entry.enc_key;
           openFolder(currentParent);
         }
-        if (editorEntry !== entry) return; // another file opened meanwhile
+        if (editorEntry !== entry) return true; // another file opened meanwhile
         editorBaseline = content;
         setEditorStatus(t("editor.saved"));
         window.setTimeout(() => {
           if (editorStatus.textContent === t("editor.saved")) setEditorStatus("");
         }, 2000);
         updateEditorMeta();
+        return true;
       })
-      .catch((e) => setEditorStatus(t("editor.saveFailed", { msg: e.message })));
+      .catch((e) => {
+        setEditorStatus(t("editor.saveFailed", { msg: e.message }));
+        return false;
+      });
+  }
+
+  // ---------- unsaved-changes dialog (save / discard / cancel) ----------
+  const discardModal = document.getElementById("discard-modal");
+  const discardBody = document.getElementById("discard-body");
+  const discardSaveBtn = document.getElementById("discard-save-btn");
+  const discardDiscardBtn = document.getElementById("discard-discard-btn");
+  const discardCancelBtn = document.getElementById("discard-cancel-btn");
+  let discardChoice = null; // resolve of the question currently on screen
+
+  function endDiscard(choice) {
+    discardModal.style.display = "none";
+    const resolve = discardChoice;
+    discardChoice = null;
+    if (resolve) resolve(choice);
+  }
+
+  // Three answers instead of the old confirm(): Save carries the focus, so
+  // Enter saves - a reflex click that used to throw the edit away now keeps
+  // it. Discard throws it away, Cancel stays where the user is.
+  function askDiscard(name) {
+    discardBody.textContent = t("editor.unsaved.body", { name });
+    discardModal.style.display = "flex";
+    discardSaveBtn.focus();
+    return new Promise((resolve) => {
+      discardChoice = resolve;
+    });
+  }
+
+  discardSaveBtn.addEventListener("click", () => endDiscard("save"));
+  discardDiscardBtn.addEventListener("click", () => endDiscard("discard"));
+  discardCancelBtn.addEventListener("click", () => endDiscard("cancel"));
+  discardModal.addEventListener("click", (e) => {
+    if (e.target === discardModal) endDiscard("cancel");
+  });
+  // Escape answers the question - on document, so it works whatever the
+  // focus sits on (the dialog has no focus trap). The lightbox handler sees
+  // the same event first, finds the dialog up in confirmUnsaved() and stays
+  // put; there is nothing left for it to close.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && discardChoice) endDiscard("cancel");
+  });
+
+  // True when the editor may be left: nothing pending, the user discarded,
+  // or the save they asked for landed. A failed save keeps the lightbox open
+  // with the error in the status line - that text is the last copy and does
+  // not get closed over.
+  async function confirmUnsaved() {
+    if (!(editorEntry && editorDirty())) return true;
+    if (discardChoice) return false; // dialog already up (re-entrant close)
+    const choice = await askDiscard(editorEntry.name);
+    if (choice === "save") return saveEditor();
+    return choice !== "cancel";
   }
 
   // Mini Markdown renderer for the preview pane. Everything is HTML-escaped

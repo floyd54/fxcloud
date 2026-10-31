@@ -101,6 +101,11 @@ The file explorer works like a desktop file manager, in the browser:
   is remembered in your browser.
 - Click a file to preview it: images, video, audio, PDF, HTML and text
   open in a lightbox; text files open in the editor.
+- Closing the editor with unsaved changes - or stepping to another file
+  with the gallery arrows - asks first, with **Save** as the focused
+  default (Enter), **Discard** and **Cancel**. If the save fails the
+  lightbox stays open and the status line carries the error, so the text
+  is never closed over.
 - Selection checkboxes (Shift+click extends over a range) give you the
   bulk bar: **Download** (the whole selection as one ZIP), **Move to...**,
   **Copy to...**, **Share**, **Delete** and **Clear**.
