@@ -579,6 +579,57 @@ pub struct CreateShareRequest {
     pub envelope: Option<String>,
 }
 
+/// One public link the owner created (concepts/public_links.md).
+///
+/// The token itself is **never** in this struct: it is shown exactly once
+/// at creation and only its sha256 hash is stored, so the overview can
+/// list every link without ever being able to re-echo a working one.
+#[derive(Debug, Clone, Serialize)]
+pub struct PublicLink {
+    pub id: i64,
+    pub source_id: i64,
+    /// The account that minted the link; every owner-scoped operation
+    /// (download-as-owner, trash, blob open) runs as this user.
+    pub owner_id: i64,
+    pub source_name: String,
+    pub is_dir: bool,
+    pub permissions: i64,
+    pub label: String,
+    /// `"rolling"` (dies after N days *without use*), `"fixed"` (hard
+    /// deadline from creation), or `"never"`.
+    pub expiry_mode: String,
+    /// The rolling window or the fixed lifetime, in days. `None` for
+    /// `"never"`.
+    pub expires_in_days: Option<i64>,
+    /// The **effective** deadline: for a rolling link this slides forward
+    /// on every successful visitor call, so it is "expires at unless
+    /// unused until". `None` = never expires.
+    pub expires_at: Option<DateTime<Utc>>,
+    pub last_access_at: Option<DateTime<Utc>>,
+    pub download_count: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Payload to mint a public link.
+#[derive(Debug, Deserialize)]
+pub struct CreatePublicLinkRequest {
+    pub file_id: i64,
+    /// Which preset the link carries, as its permission mask: `1` (read),
+    /// `4` (add), `15` (full). The server refuses anything else, so a
+    /// caller cannot smuggle in `PERM_SHARE`.
+    pub permissions: i64,
+    /// `"rolling"` (the default), `"fixed"`, or `"never"`.
+    #[serde(default)]
+    pub expiry_mode: Option<String>,
+    /// Days for the rolling window or the fixed lifetime. Defaults to 30;
+    /// ignored (and stored as NULL) when the mode is `"never"`.
+    #[serde(default)]
+    pub expires_in_days: Option<i64>,
+    /// Owner's note, shown in their overview only.
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
 /// Payload to move or copy an entry into another folder.
 ///
 /// `dest_parent: null` means the requester's own root. The entry keeps its

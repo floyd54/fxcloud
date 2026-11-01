@@ -1,6 +1,7 @@
 pub mod file;
 pub mod group;
 pub mod keys;
+pub mod link;
 pub mod passkey;
 pub mod session;
 pub mod share;
@@ -206,6 +207,13 @@ impl Db {
                     "SELECT COUNT(*) FROM pragma_table_info('files')
                      WHERE name = 'owner_group_id'",
                 ),
+            ),
+            // Public links: one table, `CREATE ... IF NOT EXISTS` idempotent
+            // on every startup, no column guard needed.
+            (
+                "018_public_links",
+                include_str!("../../migrations/018_public_links.sql"),
+                None,
             ),
         ];
         let conn = self.pool.get()?;

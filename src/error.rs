@@ -18,6 +18,14 @@ pub enum AppError {
     #[error("not found")]
     NotFound,
 
+    /// A public link exists but its effective deadline has passed (410).
+    ///
+    /// Deliberately distinct from `NotFound`: a friendly answer for a
+    /// visitor who followed a link that has lapsed, and meaningless as an
+    /// oracle because it is only ever reachable by holding the token.
+    #[error("this link has expired")]
+    Gone,
+
     #[error("unauthorized")]
     Unauthorized,
 
@@ -90,6 +98,7 @@ impl AppError {
                 "internal"
             }
             AppError::NotFound => "not_found",
+            AppError::Gone => "gone",
             AppError::Unauthorized => "unauthorized",
             AppError::Forbidden | AppError::ForbiddenDetail(_) => "forbidden",
             AppError::InactiveAccount => "inactive_account",
@@ -107,6 +116,7 @@ impl AppError {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
             AppError::NotFound => StatusCode::NOT_FOUND,
+            AppError::Gone => StatusCode::GONE,
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
             AppError::Forbidden | AppError::ForbiddenDetail(_) | AppError::InactiveAccount => {
                 StatusCode::FORBIDDEN

@@ -148,6 +148,14 @@ async fn main() -> anyhow::Result<()> {
                     Ok(_) => {}
                     Err(e) => tracing::warn!(error = %e, "version age sweep failed"),
                 }
+                // Public links whose effective deadline passed (rolling links
+                // that went unused, fixed ones that ran out) are dropped on
+                // the same cadence (concepts/public_links.md section 3). The
+                // lazy per-access check answers 410 in the meantime; this
+                // sweep removes the ones nobody visits again.
+                if let Err(e) = state.db.sweep_expired_links().await {
+                    tracing::warn!(error = %e, "public link sweep failed");
+                }
             }
         });
     }

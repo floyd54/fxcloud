@@ -1615,6 +1615,378 @@ for GKEY in admin.groups group.newFolder group.distribute; do
   [ "$NGK" = "3" ] && ok "$GKEY translated en/de/tlh" || bad "$GKEY appears $NGK times, expected 3"
 done
 
+# ---- public links (concepts/public_links.md) ------------------------------
+# A bearer-token share outside every session: mint, visit, download, drop a
+# file in, take one out, revoke. The expiry model (rolling slides on use,
+# fixed never moves, never has no deadline), the three presets, the
+# plaintext-only rule, the subtree a token may reach, and the per-IP budgets
+# that keep one leaked URL from turning into a load.
+note "public links: minting hands out the token exactly once"
+
+# The fixture: pub/ holds pl.txt and sub/ (holding deep.txt); outside.txt
+# sits at alice's root, deliberately outside every link minted below.
+PLR=$(req POST /api/files/folder "$JA" '{"name":"pub"}')
+PUB=$(jget "$PLR" entry.id)
+printf 'PUBLICDATA' > "$ROOT/src/pl.txt"
+up "$JA" "$PUB" pl.txt >/dev/null
+PSR=$(req POST /api/files/folder "$JA" "{\"name\":\"sub\",\"parent_id\":$PUB}")
+PSUB=$(jget "$PSR" entry.id)
+printf 'DEEPDATA!!' > "$ROOT/src/deep.txt"
+up "$JA" "$PSUB" deep.txt >/dev/null
+printf 'OUTSIDE!!!' > "$ROOT/src/outside.txt"
+up "$JA" "" outside.txt >/dev/null
+OUT=$(idof "$(req GET /api/files "$JA")" outside.txt)
+PUBL=$(req GET "/api/files?parent=$PUB" "$JA")
+PL=$(idof "$PUBL" pl.txt)
+[ -n "$PUB" ] && [ -n "$PSUB" ] && [ -n "$PL" ] && [ -n "$OUT" ] \
+  && ok "fixture: pub/ with pl.txt, sub/deep.txt and an outside file" \
+  || bad "fixture failed (pub=$PUB sub=$PSUB pl=$PL out=$OUT)"
+
+MINT=$(req POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":1,\"label\":\"holiday photos\"}")
+echo "$MINT"
+TOKEN=$(jget "$MINT" token)
+LID=$(jget "$MINT" link.id)
+[ -n "$LID" ] && [ "${#TOKEN}" = "43" ] && echo "$TOKEN" | grep -Eq '^[A-Za-z0-9_-]{43}$' \
+  && ok "the token is 43 base64url characters (256 random bits)" \
+  || bad "mint: $MINT"
+[ "$(jget "$MINT" url)" = "/s/$TOKEN" ] \
+  && ok "the response pairs the token with its visitor URL" || bad "url: $(jget "$MINT" url)"
+[ "$(jget "$MINT" link.permissions)" = "1" ] \
+  && [ "$(jget "$MINT" link.expiry_mode)" = "rolling" ] \
+  && [ "$(jget "$MINT" link.expires_in_days)" = "30" ] \
+  && [ -n "$(jget "$MINT" link.expires_at)" ] \
+  && ok "defaults: read preset, rolling, 30 days, a deadline" || bad "defaults: $MINT"
+[ "$(jget "$MINT" link.download_count)" = "0" ] \
+  && [ "$(jget "$MINT" link.label)" = "holiday photos" ] \
+  && ok "a fresh link counts no downloads and keeps the label" || bad "record: $MINT"
+
+# Only the sha256 ever touches the disk: the raw token exists in this one
+# response and nowhere else, so a database dump yields no working link.
+TH=$(sqlite3 "$DATA/fxcloud.db" "SELECT token_hash FROM public_links WHERE id=$LID;")
+[ "$TH" = "$(printf '%s' "$TOKEN" | sha256sum | awk '{print $1}')" ] \
+  && ok "the stored token_hash is sha256(token)" || bad "hash mismatch: $TH"
+[ "$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM public_links WHERE instr(token_hash,'$TOKEN')>0;")" = "0" ] \
+  && ok "the raw token appears nowhere in the database" || bad "raw token stored"
+
+note "public links: the overview never carries a usable token"
+OVER=$(req GET /api/links "$JA")
+echo "$OVER" | grep -q "\"id\":$LID" && echo "$OVER" | grep -q '"label":"holiday photos"' \
+  && ok "the overview lists the link with its label" || bad "overview: $OVER"
+echo "$OVER" | grep -q '"token"' \
+  && bad "the overview echoes a token" \
+  || ok "the overview carries the record only, never a token"
+[ "$(jget "$OVER" default_expiry_days)" = "30" ] \
+  && ok "the overview advertises the default window" || bad "default_expiry_days: $OVER"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/links")" = "401" ] \
+  && ok "the overview requires a session (401)" || bad "sessionless overview"
+
+# A link on a single file, expiring never: the second source for the
+# file_id filter below, and the token the revoke step will kill first.
+FRESP=$(req POST /api/links "$JA" "{\"file_id\":$PL,\"permissions\":1,\"expiry_mode\":\"never\"}")
+FTOKEN=$(jget "$FRESP" token)
+FLID=$(jget "$FRESP" link.id)
+[ -n "$FLID" ] && ok "a link may point at a single file" || bad "file link: $FRESP"
+[ "$(jget "$FRESP" link.expiry_mode)" = "never" ] && [ -z "$(jget "$FRESP" link.expires_at)" ] \
+  && ok "'never' stores no deadline at all" || bad "never: $FRESP"
+FILT=$(req GET "/api/links?file_id=$PL" "$JA")
+echo "$FILT" | grep -q "\"id\":$FLID" && ! echo "$FILT" | grep -q "\"id\":$LID" \
+  && ok "file_id filters the overview to one source" || bad "filter: $FILT"
+
+note "public links: what the server refuses"
+[ "$(reqcode POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":2}")" = "400" ] \
+  && ok "a mask outside the presets is refused (400)" || bad "mask=2 accepted"
+[ "$(reqcode POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":31}")" = "400" ] \
+  && ok "a mask carrying PERM_SHARE is refused (400)" || bad "mask=31 accepted"
+[ "$(reqcode POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":5}")" = "400" ] \
+  && ok "read|create (5) is not a preset - only 1, 4 and 15 are" \
+  || bad "mask=5 accepted"
+[ "$(reqcode POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":1,\"expiry_mode\":\"sometimes\"}")" = "400" ] \
+  && ok "an unknown expiry_mode is refused (400)" || bad "expiry_mode accepted"
+[ "$(reqcode POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":1,\"expires_in_days\":0}")" = "400" ] \
+  && [ "$(reqcode POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":1,\"expires_in_days\":4000}")" = "400" ] \
+  && ok "expires_in_days is bounded to 1..3650 (400 outside)" || bad "day bounds not enforced"
+LONG=$(perl -e 'print "x" x 201')
+[ "$(reqcode POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":1,\"label\":\"$LONG\"}")" = "400" ] \
+  && ok "a label over 200 characters is refused (400)" || bad "long label accepted"
+[ "$(reqcode POST /api/links "$JB" "{\"file_id\":$PUB,\"permissions\":1}")" = "404" ] \
+  && ok "minting on someone else's folder is a 404" || bad "bob minted a link"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d "{\"file_id\":$PUB,\"permissions\":1}" "$BASE/api/links")
+[ "$RC" = "401" ] && ok "minting without a session is a 401" || bad "sessionless mint: $RC"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$(perl -e 'print "A" x 43')/meta")" = "404" ] \
+  && ok "an unknown token answers 404" || bad "unknown token"
+
+note "public links: the visitor page and its meta"
+PVH="$ROOT/pv-h.txt"
+curl -sD "$PVH" -o "$ROOT/pv-page.html" "$BASE/s/$TOKEN"
+grep -qi '^referrer-policy: no-referrer' "$PVH" \
+  && grep -qi '^cache-control: no-store' "$PVH" \
+  && grep -qi '^x-robots-tag: noindex' "$PVH" \
+  && ok "the visitor page carries no-referrer, no-store and noindex" \
+  || bad "visitor headers: $(grep -iE 'referrer-policy|cache-control|x-robots-tag' "$PVH" | tr -d '\r' | tr '\n' ' ')"
+grep -q 'data-i18n' "$ROOT/pv-page.html" \
+  && ok "the embedded shell ships with its i18n marks" || bad "visitor.html lost its data-i18n marks"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/s/$(perl -e 'print "Z" x 43')")" = "200" ] \
+  && ok "the shell answers 200 for any token - the API is where truth lives" \
+  || bad "visitor shell for a garbage token"
+META=$(curl -s "$BASE/api/public/$TOKEN/meta")
+echo "$META" | grep -q "\"id\":$PUB" && echo "$META" | grep -q '"name":"pub"' \
+  && echo "$META" | grep -q '"is_dir":true' \
+  && ok "meta names the shared folder for the visitor" || bad "meta: $META"
+echo "$META" | grep -q '"can_read":true' && echo "$META" | grep -q '"can_create":false' \
+  && echo "$META" | grep -q '"can_delete":false' \
+  && echo "$META" | grep -q '"permission_names":\["read"\]' \
+  && ok "a read link may look and download, nothing else" || bad "permissions: $META"
+echo "$META" | grep -q '"label":"holiday photos"' \
+  && ok "the owner's label rides along for context" || bad "label: $META"
+
+note "public links: the listing walks only the linked subtree"
+LIST=$(curl -s "$BASE/api/public/$TOKEN/list?id=$PUB")
+echo "$LIST" | grep -q "\"id\":$PUB" && echo "$LIST" | grep -q '"name":"pl.txt"' \
+  && echo "$LIST" | grep -q '"name":"sub"' \
+  && ok "the listing shows the folder's children" || bad "list: $LIST"
+echo "$LIST" | grep -q '"name":"deep.txt"' \
+  && bad "a grandchild leaks into its parent's listing" \
+  || ok "children are listed one level at a time"
+SUBL=$(curl -s "$BASE/api/public/$TOKEN/list?id=$PSUB")
+echo "$SUBL" | grep -q '"name":"deep.txt"' \
+  && ok "a subfolder inside the subtree is listable" || bad "sub list: $SUBL"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$TOKEN/list?id=$PL")" = "400" ] \
+  && ok "listing a file answers 400, not a crash" || bad "list file"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$TOKEN/list?id=$OUT")" = "404" ] \
+  && ok "ids outside the subtree answer 404" || bad "outside list"
+
+note "public links: downloads are attachment-only and counted"
+DLH="$ROOT/pv-dl.h"
+RC=$(curl -sD "$DLH" -o "$ROOT/pv-dl.bin" -w '%{http_code}' "$BASE/api/public/$TOKEN/download?id=$PL")
+[ "$RC" = "200" ] && [ "$(cat "$ROOT/pv-dl.bin")" = "PUBLICDATA" ] \
+  && ok "the file's bytes come back intact" || bad "download rc=$RC"
+grep -qi '^content-disposition: attachment' "$DLH" \
+  && ok "downloads are attachments, never inline" \
+  || bad "disposition: $(grep -i '^content-disposition' "$DLH" | tr -d '\r')"
+grep -qi '^referrer-policy: no-referrer' "$DLH" && grep -qi '^cache-control: no-store' "$DLH" \
+  && ok "visitor headers ride the download too" || bad "download headers"
+[ "$(jget "$(req GET "/api/links?file_id=$PUB" "$JA")" links.0.download_count)" = "1" ] \
+  && ok "a successful download is counted on the record" || bad "download_count not bumped"
+# No byte ranges on the public surface (v1): a Range ask gets the whole file.
+RC=$(curl -s -o "$ROOT/pv-r.bin" -w '%{http_code}' -H 'Range: bytes=0-3' \
+  "$BASE/api/public/$TOKEN/download?id=$PL")
+[ "$RC" = "200" ] && [ "$(wc -c < "$ROOT/pv-r.bin")" = "10" ] \
+  && ok "a Range request is answered whole (200, not 206)" \
+  || bad "range: rc=$RC size=$(wc -c < "$ROOT/pv-r.bin")"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$TOKEN/download?id=$PUB")" = "400" ] \
+  && ok "a folder is not downloadable (400)" || bad "folder download"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$TOKEN/download?id=$OUT")" = "404" ] \
+  && ok "bytes outside the subtree stay closed (404)" || bad "outside download"
+[ "$(curl -s "$BASE/api/public/$FTOKEN/download?id=$PL")" = "PUBLICDATA" ] \
+  && ok "the file link serves its file directly" || bad "file link download"
+
+note "public links: a rolling deadline slides on use, never backwards"
+# Push the deadline close to now: the next visit must restore the full
+# window - that is what "rolling" means.
+sqlite3 "$DATA/fxcloud.db" "UPDATE public_links SET expires_at='$(perl -e 'my @t=gmtime(time()+7200); printf "%04d-%02d-%02dT%02d:%02d:%02d+00:00",$t[5]+1900,$t[4]+1,$t[3],$t[2],$t[1],$t[0]')' WHERE id=$LID;" >/dev/null
+OLDX=$(sqlite3 "$DATA/fxcloud.db" "SELECT julianday(expires_at) FROM public_links WHERE id=$LID;")
+curl -s -o /dev/null "$BASE/api/public/$TOKEN/meta"
+NEWX=$(sqlite3 "$DATA/fxcloud.db" "SELECT julianday(expires_at) FROM public_links WHERE id=$LID;")
+awk -v a="$OLDX" -v b="$NEWX" 'BEGIN{exit !(b-a>28)}' \
+  && ok "a visit slides a rolling deadline a full window forward" \
+  || bad "slide: $OLDX -> $NEWX"
+
+# The owner's own operations never touch a link - only visitor calls do.
+NEV=$(req POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":1,\"expiry_mode\":\"never\",\"label\":\"permanent\"}")
+NTOKEN=$(jget "$NEV" token)
+NLID=$(jget "$NEV" link.id)
+[ -n "$NLID" ] && [ -n "$NTOKEN" ] || bad "never link mint failed: $NEV"
+OEX=$(sqlite3 "$DATA/fxcloud.db" "SELECT IFNULL(expires_at,'')||'|'||IFNULL(last_access_at,'') FROM public_links WHERE id=$LID;")
+req GET /api/links "$JA" >/dev/null
+req GET "/api/links?file_id=$PUB" "$JA" >/dev/null
+NEX=$(sqlite3 "$DATA/fxcloud.db" "SELECT IFNULL(expires_at,'')||'|'||IFNULL(last_access_at,'') FROM public_links WHERE id=$LID;")
+[ -n "$OEX" ] && [ "$OEX" = "$NEX" ] \
+  && ok "owner operations never touch a link's deadline or access time" \
+  || bad "owner touch: $OEX -> $NEX"
+
+note "public links: expiry answers 410, the sweep turns it into 404"
+# The sweep runs every 2 seconds in this suite and would delete the very
+# row the 410 check is about; park it (3600s) for the lazy-answer checks,
+# then restart with the normal cadence to prove the deletion itself.
+kill "$(cat "$ROOT/server.pid")" 2>/dev/null
+wait 2>/dev/null
+FXCLOUD_DATA="$DATA" FXCLOUD_PORT=$PORT FXCLOUD_TRASH_DAYS=30 FXCLOUD_TRASH_SWEEP_SECS=3600 \
+  "$BIN" >>"$ROOT/server.log" 2>&1 &
+echo $! > "$ROOT/server.pid"
+for _ in $(seq 1 100); do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/me")" != "000" ] && break
+  sleep 0.2
+done
+sqlite3 "$DATA/fxcloud.db" \
+  "UPDATE public_links SET expires_at='2020-01-01T00:00:00+00:00' WHERE id=$LID;" >/dev/null
+RC=$(curl -s -o "$ROOT/pv-gone.json" -w '%{http_code}' "$BASE/api/public/$TOKEN/meta")
+[ "$RC" = "410" ] && grep -q '"code":"gone"' "$ROOT/pv-gone.json" \
+  && ok "an expired link answers 410 Gone with its own code" \
+  || bad "expired: rc=$RC body=$(cat "$ROOT/pv-gone.json")"
+[ "$(sqlite3 "$DATA/fxcloud.db" "SELECT expires_at FROM public_links WHERE id=$LID;")" = "2020-01-01T00:00:00+00:00" ] \
+  && ok "the dead link was never reanimated by the visit" || bad "touch revived it"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$TOKEN/meta")" = "410" ] \
+  && ok "still 410 on the second visit" || bad "second visit"
+restart_server || { bad "server did not restart for the sweep"; exit 1; }
+GONE=""
+for _ in 1 2 3 4 5 6 7 8; do
+  sleep 1
+  [ "$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM public_links WHERE id=$LID;")" = "0" ] && { GONE=1; break; }
+done
+[ -n "$GONE" ] && ok "the sweep removes the expired row" || bad "expired row survived the sweep"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$TOKEN/meta")" = "404" ] \
+  && ok "once swept, the same token answers 404 (not 410)" || bad "post-sweep answer"
+[ "$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM public_links WHERE id=$NLID;")" = "1" ] \
+  && ok "a 'never' link outlives the sweep (NULL is not expired)" || bad "never link swept"
+[ -z "$(jget "$(curl -s "$BASE/api/public/$NTOKEN/meta")" expires_at)" ] \
+  && ok "its meta reports no deadline either" || bad "never meta"
+
+note "public links: a fixed deadline never moves"
+FIX=$(req POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":1,\"expiry_mode\":\"fixed\",\"expires_in_days\":2,\"label\":\"conference\"}")
+FIXT=$(jget "$FIX" token)
+FIXID=$(jget "$FIX" link.id)
+[ "$(jget "$FIX" link.expiry_mode)" = "fixed" ] && [ "$(jget "$FIX" link.expires_in_days)" = "2" ] \
+  && ok "a fixed link records its mode and lifetime" || bad "fixed: $FIX"
+FDIFF=$(sqlite3 "$DATA/fxcloud.db" \
+  "SELECT CAST(ROUND((julianday(expires_at)-julianday(created_at))*86400) AS INTEGER) FROM public_links WHERE id=$FIXID;")
+awk -v d="$FDIFF" 'BEGIN{exit !(d>=172799 && d<=172801)}' \
+  && ok "its deadline is exactly the lifetime away from creation" \
+  || bad "fixed lifetime: $FDIFF seconds"
+FBEFORE=$(sqlite3 "$DATA/fxcloud.db" "SELECT expires_at FROM public_links WHERE id=$FIXID;")
+curl -s -o /dev/null "$BASE/api/public/$FIXT/meta"
+FAFTER=$(sqlite3 "$DATA/fxcloud.db" "SELECT expires_at FROM public_links WHERE id=$FIXID;")
+[ "$FBEFORE" = "$FAFTER" ] && ok "a visit leaves a fixed deadline byte-identical" \
+  || bad "fixed slid: $FBEFORE -> $FAFTER"
+
+note "public links: the three presets and what each one may do"
+ADD=$(req POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":4,\"label\":\"drop box\"}")
+ADDT=$(jget "$ADD" token)
+AMETA=$(curl -s "$BASE/api/public/$ADDT/meta")
+echo "$AMETA" | grep -q '"can_read":false' && echo "$AMETA" | grep -q '"can_create":true' \
+  && echo "$AMETA" | grep -q '"can_delete":false' \
+  && ok "the add preset may write but not look around" || bad "add meta: $AMETA"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$ADDT/list?id=$PUB")" = "403" ] \
+  && ok "an add-only visitor cannot list (403)" || bad "add list"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$ADDT/download?id=$PL")" = "403" ] \
+  && ok "an add-only visitor cannot download (403)" || bad "add download"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE/api/public/$ADDT/entry?id=$PL")" = "403" ] \
+  && ok "an add-only visitor cannot delete (403)" || bad "add delete"
+
+printf 'FROMVISITOR' > "$ROOT/src/vis.txt"
+RC=$(curl -s -o "$ROOT/pv-up.json" -w '%{http_code}' -F "file=@$ROOT/src/vis.txt" \
+  "$BASE/api/public/$ADDT/upload")
+[ "$RC" = "200" ] && grep -q '"ok":true' "$ROOT/pv-up.json" \
+  && ok "an add-only visitor may drop a file in (200)" \
+  || bad "upload: rc=$RC $(cat "$ROOT/pv-up.json")"
+VID=$(idof "$(req GET "/api/files?parent=$PUB" "$JA")" vis.txt)
+[ -n "$VID" ] && [ "$(curl -s -b "$JA" "$BASE/api/files/download?id=$VID")" = "FROMVISITOR" ] \
+  && ok "the drop lands in the owner's folder with its bytes intact" \
+  || bad "owner cannot fetch the upload (vid=$VID)"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -F "parent=$PSUB" -F "file=@$ROOT/src/vis.txt" \
+  "$BASE/api/public/$ADDT/upload")" = "403" ] \
+  && ok "an add-only visitor cannot aim its upload deeper (403)" \
+  || bad "pinned upload"
+
+FULL=$(req POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":15,\"label\":\"full\"}")
+FULLT=$(jget "$FULL" token)
+FMETA=$(curl -s "$BASE/api/public/$FULLT/meta")
+echo "$FMETA" | grep -q '"can_read":true' && echo "$FMETA" | grep -q '"can_create":true' \
+  && echo "$FMETA" | grep -q '"can_delete":true' \
+  && ok "the full preset may read, write and delete" || bad "full meta: $FMETA"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -F "parent=$PSUB" -F "file=@$ROOT/src/vis.txt" \
+  "$BASE/api/public/$FULLT/upload")" = "200" ] \
+  && ok "a full visitor may upload into a subfolder" || bad "deep upload"
+# Containment hands back the row that was asked for: a file id as the
+# destination is a file, never the shared folder behind it.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -F "parent=$PL" -F "file=@$ROOT/src/vis.txt" \
+  "$BASE/api/public/$FULLT/upload")" = "400" ] \
+  && ok "an upload aimed at a file id is refused (400)" || bad "file-parent upload"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE/api/public/$FULLT/entry?id=$VID")" = "200" ] \
+  && ok "a full visitor may delete (200)" || bad "full delete"
+echo "$(req GET /api/files/trash "$JA")" | grep -q '"name":"vis.txt"' \
+  && ok "the deleted file lands in the owner's trash, not in limbo" \
+  || bad "owner trash lacks vis.txt"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE/api/public/$FULLT/entry?id=$PUB")" = "400" ] \
+  && ok "the shared folder itself cannot be trashed through its own link (400)" \
+  || bad "root delete"
+
+note "public links: plaintext only (public_links.md section 5)"
+printf 'CIPHERTEXT!' > "$ROOT/src/cipher.txt"
+RC=$(curl -s -o "$ROOT/pv-enc.json" -w '%{http_code}' -b "$JA" \
+  -F "parent=$PUB" -F "enc_version=1" -F "enc_key=R3JvdXBLZXkx" \
+  -F "file=@$ROOT/src/cipher.txt" "$BASE/api/files/upload")
+CIPHER=$(idof "$(req GET "/api/files?parent=$PUB" "$JA")" cipher.txt)
+[ "$RC" = "200" ] && [ -n "$CIPHER" ] \
+  && [ "$(field "$(req GET "/api/files?parent=$PUB" "$JA")" cipher.txt enc_version)" = "1" ] \
+  && ok "an encrypted row joins the folder (real enc_version=1)" \
+  || bad "encrypted upload: rc=$RC id=$CIPHER"
+[ "$(reqcode POST /api/links "$JA" "{\"file_id\":$CIPHER,\"permissions\":1}")" = "409" ] \
+  && ok "an encrypted source refuses a link (409)" || bad "encrypted mint"
+FLIST=$(curl -s "$BASE/api/public/$FULLT/list?id=$PUB")
+echo "$FLIST" | grep -q '"name":"pl.txt"' && ! echo "$FLIST" | grep -q '"name":"cipher.txt"' \
+  && ok "the encrypted child never appears in a public listing" \
+  || bad "listing leaked: $FLIST"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$FULLT/download?id=$CIPHER")" = "404" ] \
+  && ok "an encrypted child answers 404, not 403 (existence stays secret)" \
+  || bad "encrypted download"
+
+note "public links: a group folder cannot back one (403)"
+G2=$(req POST /api/admin/groups "$JA" '{"name":"LinkGuard","quota_bytes":1048576}')
+G2ID=$(jget "$G2" id)
+[ -n "$G2ID" ] && [ "$(reqcode POST "/api/admin/groups/$G2ID/members" "$JA" '{"username":"bob","role":0}')" = "200" ] \
+  || bad "guard group setup: $G2"
+G2R=$(req POST /api/files/folder "$JB" "{\"parent_id\":null,\"group\":$G2ID,\"name\":\"GuardRoot\"}")
+G2ROOT=$(jget "$G2R" entry.id)
+[ "$(reqcode POST /api/links "$JB" "{\"file_id\":$G2ROOT,\"permissions\":1}")" = "403" ] \
+  && ok "a group folder refuses a public link (403)" || bad "group mint: $G2R"
+# Leave no trace: the group goes away the way the section above removed it.
+[ "$(reqcode POST /api/files/delete "$JB" "{\"id\":$G2ROOT}")" = "200" ] \
+  && [ "$(reqcode POST /api/files/trash/purge "$JB" "{\"id\":$G2ROOT}")" = "200" ] \
+  && [ "$(reqcode DELETE "/api/admin/groups/$G2ID/members/$BOBID" "$JA")" = "200" ] \
+  && [ "$(reqcode DELETE "/api/admin/groups/$G2ID/members/$ALICEID" "$JA")" = "200" ] \
+  && [ "$(reqcode DELETE "/api/admin/groups/$G2ID" "$JA")" = "200" ] \
+  && ok "the guard group deletes cleanly again" || bad "group cleanup"
+
+note "public links: revocation is owner-only and immediate"
+[ "$(reqcode DELETE "/api/links/$FLID" "$JB")" = "404" ] \
+  && ok "another account cannot revoke it (404)" || bad "bob revoked"
+[ "$(reqcode DELETE "/api/links/$FLID" "$JA")" = "200" ] \
+  && ok "the owner revokes their link (200)" || bad "alice revoke"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$FTOKEN/meta")" = "404" ] \
+  && ok "the revoked token is dead immediately" || bad "revoked token still live"
+[ -z "$(jget "$(req GET "/api/links?file_id=$PL" "$JA")" links.0.id)" ] \
+  && ok "the overview no longer lists it" || bad "revoked link still listed"
+
+note "public links: the per-IP budgets (public_links.md section 8.3)"
+# The budgets live in memory (state.rs), so a restart starts an empty
+# ledger: exactly 20 unknown tokens fit into one window, and the 21st
+# request is refused *before* the lookup - even carrying a valid token.
+restart_server || { bad "server did not restart before the budget test"; exit 1; }
+GHOST=$(perl -e 'print "A" x 43')
+i=0
+RC=000
+while [ "$i" -lt 20 ]; do
+  RC=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$GHOST/meta")
+  i=$((i + 1))
+done
+[ "$RC" = "404" ] && ok "20 unknown tokens each answer 404 inside the budget" \
+  || bad "budget run ended with rc=$RC"
+RC=$(curl -sD "$ROOT/pv-429.h" -o "$ROOT/pv-429.json" -w '%{http_code}' \
+  "$BASE/api/public/$NTOKEN/meta")
+[ "$RC" = "429" ] && grep -qi '^retry-after:' "$ROOT/pv-429.h" \
+  && ok "the 21st request is refused with 429 + Retry-After, even on a live link" \
+  || bad "gate: rc=$RC $(cat "$ROOT/pv-429.json")"
+grep -q '"code":"rate_limited"' "$ROOT/pv-429.json" \
+  && ok "the refusal carries the machine-readable code" \
+  || bad "429 body: $(cat "$ROOT/pv-429.json")"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$NTOKEN/meta")" = "429" ] \
+  && ok "the budget does not refill within its window" || bad "budget refilled"
+restart_server || { bad "server did not restart after the budget test"; exit 1; }
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/public/$NTOKEN/meta")" = "200" ] \
+  && ok "a restart clears the counters (memory-only, like the auth limiter)" \
+  || bad "still blocked after a restart"
+
 # ---- client-side encryption (ENCRYPTION.md) -------------------------------
 # The server stores wrapped blobs it cannot open. What it must not do is leak
 # them, believe a client that says "this is encrypted" without looking, or let
@@ -2435,7 +2807,7 @@ if "$NODE" -e '
     }
   }
   const have = (k) => codes.every((c) => k in I.dict(c));
-  for (const f of ["app", "fxenc", "login"]) {
+  for (const f of ["app", "fxenc", "login", "visitor"]) {
     const src = fs.readFileSync(process.argv[2] + "/assets/" + f + ".js", "utf8");
     for (const m of src.matchAll(/\bt\("([a-z][a-zA-Z0-9_.]*)"\)/g)) {
       if (!have(m[1])) {
@@ -2444,7 +2816,7 @@ if "$NODE" -e '
       }
     }
   }
-  for (const h of ["index.html", "login.html"]) {
+  for (const h of ["index.html", "login.html", "visitor.html"]) {
     const src = fs.readFileSync(process.argv[2] + "/" + h, "utf8");
     for (const m of src.matchAll(/data-i18n(?:-title|-aria|-ph)?="([^"]+)"/g)) {
       if (!have(m[1])) {

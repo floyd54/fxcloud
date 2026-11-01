@@ -355,7 +355,7 @@ async fn upload_parts(
 /// the whole memory story of an upload (a 4 GiB body costs 64 KiB), the byte
 /// count doubles as the per-file size limit, and the leading bytes are kept
 /// for the MIME sniff. Every failure removes the temp file before returning.
-async fn stream_field_to_temp(
+pub(crate) async fn stream_field_to_temp(
     state: &SharedState,
     field: &mut axum::extract::multipart::Field<'_>,
 ) -> Result<(PathBuf, i64, Vec<u8>), AppError> {

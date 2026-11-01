@@ -2,8 +2,10 @@
 
 All `/api/*` routes require the session cookie set by `POST /api/login`
 (HttpOnly). Missing or invalid session -> `401`; authenticated but not
-allowed -> `403`. Only `register`, `login` and the two `passkeys/login/*`
-ceremony endpoints are public.
+allowed -> `403`. Only `register`, `login`, the two `passkeys/login/*`
+ceremony endpoints and the public-link visitor surface (`/s/:token` and
+`/api/public/:token/*`, where the bearer token *is* the credential) are
+public.
 
 ## Endpoints
 
@@ -62,6 +64,15 @@ ceremony endpoints are public.
 | DELETE | `/api/shares/:id`       | -                                  | Revoke share (owner/grantee)|
 | GET    | `/api/shares/outgoing`  | `?file_id=<id>` (optional filter)  | Shares I created            |
 | GET    | `/api/shares/incoming`  | -                                  | Shares given to me          |
+| POST   | `/api/links`           | `{file_id, permissions, expiry_mode?, expires_in_days?, label?}` | Mint a public link -> `{link, token, url}`; the `token` (43 base64url chars) is shown exactly once and only its sha256 is stored. `permissions` must be a preset - `1` read, `4` add, `15` full (anything else, including a share bit, = 400); `expiry_mode` `rolling` (default), `fixed` or `never`, `expires_in_days` 1..3650 (default 30, ignored for `never`), `label` up to 200 chars. Plaintext sources only (409 for an encrypted row), your own entries only (404 for another account's, 403 for a group folder); `401` without a session |
+| GET    | `/api/links`           | `?file_id=<id>` (optional filter)  | Your links, newest first: `id`, `file_id`, `source_name`, `is_dir`, `permissions`, `permission_names`, `can_read`, `can_create`, `label`, `expiry_mode`, `expires_in_days`, `expires_at`, `last_access_at`, `download_count`, `created_at` - never a token; plus `default_expiry_days` (30) |
+| DELETE | `/api/links/:id`       | -                                  | Revoke one of your own links -> `{ok: true}`; `404` for an unknown or foreign id (no hint that it exists), the token answers `404` from the next request on |
+| GET    | `/s/:token`            | -                                  | **Public.** The visitor page: a static shell that resolves the link through the API below (the token is not validated on this route) |
+| GET    | `/api/public/:token/meta` | -                                | **Public.** Resolve the link: `id` (the source's entry id), `name`, `is_dir`, `can_read`, `can_create`, `can_delete`, `permission_names`, `label`, `expiry_mode`, `expires_at`. `404` unknown/revoked/swept token, `410` expired, `429` over the per-IP miss budget |
+| GET    | `/api/public/:token/list` | `?id=<entryId>`                   | **Public.** List one folder of the link's subtree - children only, one level at a time (`400` for a file id, `404` for an id outside the subtree; encrypted children never appear) |
+| GET    | `/api/public/:token/download` | `?id=<fileId>`                  | **Public.** Download one file of the subtree as an attachment; no byte ranges on this surface (a `Range` request gets the whole file). `400` for a folder, `404` outside the subtree or for an encrypted row; increments `download_count` |
+| POST   | `/api/public/:token/upload` | multipart: `file`, `parent?`     | **Public.** Drop a file in. `403` without the `create` preset; the `add` preset is pinned to the link's own source folder (a deeper `parent` = `403`); `429` over the upload budget |
+| DELETE | `/api/public/:token/entry` | `?id=<entryId>`                  | **Public.** Delete one entry of the subtree. `403` without the `delete` preset, `400` for the shared root itself, `404` outside the subtree; the entry lands in the **owner's** trash, never in limbo |
 | GET    | `/api/groups`           | -                                  | The caller's groups: raw array `[{id, name, role, quota_bytes, used_bytes}]` (`role` 1 = manager, 0 = member; empty for a non-member - the one listing not wrapped in `entries`) |
 | GET    | `/api/groups/keys`      | -                                  | Key envelopes sealed to me: `[{file_id, group_id, group_name, envelope, created_at}]` (empty for a member who has not been handed a key yet) |
 | GET    | `/api/groups/:id/keys/pending` | -                          | **Manager only (403 for a member, 404 for a non-member).** One pair per member without an envelope - including the manager's own: `[{file_id, folder_name, user_id, username, display_name, has_public_key}]` |
@@ -233,6 +244,54 @@ as a badge, so a personal folder of the same name stays tellable apart.
 - **Delete.** A group disappears only when it is empty - no members, no
   rows attributed to it, trashed rows counting. The admin empties it
   first; the refusal is a 409, never a silent cascade.
+
+## Public links
+
+A public link is a bearer-token share that lives outside every session:
+whoever holds the URL is whoever asks. The server generates 32 random
+bytes per link, hands them out base64url-encoded (43 characters) in the
+`POST /api/links` response **once**, and stores only `sha256(token)` -
+an overview, a later request or a database dump never yields a working
+link. The visitor surface (`/s/:token` plus `/api/public/:token/*`)
+takes no cookie and answers every response with `Referrer-Policy:
+no-referrer`, `Cache-Control: no-store` and `X-Robots-Tag: noindex`.
+
+**What a link may reach.** Only the subtree rooted at the minted entry,
+checked per request (a walk, not a path string): ids outside it answer
+`404` without confirming they exist. The three presets fix the verbs -
+`read` (1): meta, list, download; `add` (4): upload into the link's own
+source folder, nothing else; `full` (15): all of it, including deleting
+entries (they go to the *owner's* trash; the shared root itself is
+protected with `400`). The server refuses any other mask, so no link can
+carry a share bit.
+
+**Expiry** is `rolling` by default: the link dies only after
+`expires_in_days` (default 30, 1..3650) days *without* use, and every
+successful visitor call slides the deadline forward to a full window -
+never backwards. `fixed` pins an absolute deadline from creation that
+use never moves; `never` stores no deadline at all. The expiry check
+runs **before** the touch, so visiting an already-dead link can never
+revive it: while the row exists it answers `410 Gone` (code `gone`),
+and once the background sweep (same cadence as the trash) has dropped
+it, the same token answers `404` - `410` means "this existed and
+expired", `404` means "there is no such link". Owner operations (list,
+mint, revoke) never touch a link's deadline or access time.
+
+**Plaintext only (v1).** Minting on an encrypted row is refused with
+`409`, and encrypted children of a linked folder stay invisible: they
+never appear in a public listing and their ids answer `404`, so a
+visitor cannot even learn that they exist. Links over E2EE material are
+a later phase.
+
+**Budgets.** Because the token is the only credential, every visitor
+request is metered per source address: unknown tokens cost from a
+miss budget (20 per minute, checked *before* the lookup), successful
+resolutions from a hit budget (600 per minute) and uploads from their
+own (100 per hour). Spending them yields `429` with a `Retry-After`
+header; the counters live in memory, so a restart forgives them the
+way it forgives ceremonies. Requests arrive from the socket address -
+`X-Forwarded-For` is never trusted, so real deployments put the proxy
+in front and keep fxcloud on a private interface.
 
 ## Batch operations
 

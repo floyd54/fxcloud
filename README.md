@@ -54,6 +54,13 @@ with sharing, quotas and WebDAV. New to fxcloud? The
   grantee's public key - their fingerprint is shown for out-of-band
   comparison - so they can unlock and actually open what is inside.
   Details: [API.md](API.md#permissions).
+- **Public links** - hand a folder or a single file to anyone with the URL:
+  no account, no sign-in. Three presets (read / add / full), a rolling or
+  fixed expiry or none at all; the token is shown exactly once and only its
+  hash is stored, so a database dump yields no working link. Visitors get a
+  plain page with no referrers and no indexing, reach only the linked
+  subtree, and every request is metered per source address. Details:
+  [API.md](API.md#public-links).
 - **Group folders** - a folder that belongs to a *group* instead of one
   person: a shared workspace with its own quota, managed membership with
   manager/member roles (administrators create groups in the user
@@ -326,7 +333,7 @@ Two layers, both runnable straight after a checkout:
 ```bash
 cargo test          # unit tests: permissions, quota, group roles, KDF floor,
                     # filename and RFC 5987 encoding, session-cookie parsing
-./tests/suite.sh    # integration: 673 checks against a throwaway instance
+./tests/suite.sh    # integration: 755 checks against a throwaway instance
 ```
 
 `tests/suite.sh` starts its own fxcloud on a loopback port with a temporary

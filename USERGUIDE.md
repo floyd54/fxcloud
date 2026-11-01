@@ -162,6 +162,54 @@ carries a key envelope sealed to the other person's public key - their
 key fingerprint is shown in the dialog so you can compare it out of band
 before trusting the exchange.
 
+### Public links
+
+A public link hands a folder or a single file to anyone who has the URL -
+no account, no sign-in. It lives in its own **Public link** section of
+the [Share](#5-sharing) dialog:
+
+1. Pick what visitors may do: **Read - view and download**, **Add -
+   upload only** or **Full - upload, download and delete**.
+2. Pick how the link expires: **30/90 days after last use** (rolling, the
+   default), **30/90 days after creation** (fixed) or **Never**.
+3. Optionally type a **Label** so you can tell your links apart later.
+4. Press **Create link**. The URL is shown once, with a **Copy link**
+   button - copy it now. The server keeps only a hash of the token and
+   can never show the URL again.
+
+Anyone opening the link sees a plain page with the folder's contents
+(folders one level at a time, downloads as attachments) - no sign-in, no
+referrers, no search-engine indexing. The link reaches exactly the item
+it was minted on and everything below it; nothing else in your account
+is exposed.
+
+The section also lists every link you created: label, preset, deadline,
+last visit and download count, with **Remove** to revoke one. Revoking
+takes effect immediately - the URL answers *not found* from the next
+request on.
+
+Things worth knowing:
+
+- **Rolling vs fixed:** a rolling link dies only after the chosen number
+  of days *without* a visit, and every visit pushes the deadline out to
+  a full window again. A fixed link expires exactly N days after you
+  created it, no matter how often it is opened. An expired link answers
+  "gone" at first and disappears for good shortly after - it is never
+  brought back by someone opening it again.
+- **Add and Full are writeable inbox links:** everyone with the URL can
+  put files into *your* tree (they count against *your* quota). An
+  **Add** visitor gets the upload box and nothing else - they can
+  neither list nor download what is inside, not even the file names.
+  With **Full** they can also browse and delete inside the shared
+  folder - deletions land in *your* trash, and the shared folder itself
+  can never be deleted through its own link. Use **Read** when you only
+  want to hand something out.
+- **Plaintext only:** an encrypted file or folder cannot be linked (the
+  section explains this on the spot), and encrypted files inside a
+  linked folder stay invisible to visitors.
+- **Group folders cannot be linked** - membership is what grants access
+  there.
+
 ## 6. Group folders
 
 A group folder belongs to a *group*, not to one person: a shared

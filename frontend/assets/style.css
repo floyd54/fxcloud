@@ -480,6 +480,11 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
   width: min(440px, calc(100vw - 32px));
   padding: 20px;
+  /* A dialog whose content outgrows the screen must scroll *inside* rather
+     than push its footer (the close button) below the fold - the share and
+     user-admin dialogs both stack enough rows to need it. */
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
 }
 .modal h3 { margin: 0 0 12px; font-size: 17px; }
 .modal-footer { margin-top: 14px; display: flex; justify-content: flex-end; }
@@ -651,6 +656,144 @@ tr.previewable { cursor: pointer; }
    into the warning it is. */
 .share-fp { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
 .share-fp.fp-warn { color: var(--danger); }
+
+/* ---------- Public links (concepts/public_links.md section 7) ---------- */
+.share-section {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.share-section h4 {
+  margin: 0 0 3px;
+  font-size: 14px;
+}
+.share-section .share-sub {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.public-form { display: flex; flex-direction: column; gap: 9px; }
+.public-form select,
+.public-form input[type="text"] {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+}
+.public-form .public-actions { display: flex; gap: 8px; align-items: center; }
+.public-warn { color: var(--danger); font-size: 12px; }
+.public-hidden-note { color: var(--muted); font-size: 12px; }
+
+/* The one-time token box: shown the moment a link is minted, and it is the
+   only place the raw token ever appears (the server stores only its hash). */
+.public-created {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+  padding: 9px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.public-created input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+.public-once {
+  color: var(--danger);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+/* ---------- Public-link visitor page ---------- */
+.visitor-wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+.visitor-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.visitor-head h1 {
+  font-size: 20px;
+  margin: 0;
+  word-break: break-word;
+}
+.visitor-label {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.visitor-crumb {
+  font-size: 13px;
+  margin-bottom: 12px;
+  color: var(--muted);
+}
+.visitor-crumb a { color: var(--accent); cursor: pointer; text-decoration: none; }
+.visitor-crumb a:hover { text-decoration: underline; }
+.visitor-crumb .sep { margin: 0 6px; }
+.visitor-crumb .current { color: var(--text); font-weight: 600; }
+.visitor-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.visitor-toolbar .grow { flex: 1; }
+.visitor-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.visitor-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.visitor-row:last-child { border-bottom: none; }
+.visitor-row .v-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.visitor-row .v-name:hover { text-decoration: underline; }
+.visitor-row .v-size {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.visitor-row .v-icon { flex-shrink: 0; }
+.visitor-status {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  font-size: 14px;
+}
+.visitor-status.error { color: var(--danger); }
+.visitor-hidden { display: none; }
+.visitor-foot {
+  margin-top: 22px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
 
 /* ---------- Move/Copy destination picker ---------- */
 .pick-modal { width: min(500px, calc(100vw - 32px)); }

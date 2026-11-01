@@ -110,6 +110,42 @@
         </div>
         <button class="btn" id="share-add-btn" type="button" data-i18n="share.add">Share</button>
       </div>
+
+      <!-- Public links (concepts/public_links.md): a bearer-token link to the
+           same entry, minted right here. Plaintext-only in v1, so the whole
+           section is disabled for an encrypted entry with an explanation. -->
+      <div class="share-section" id="public-section">
+        <h4 data-i18n="share.public.title">Public link</h4>
+        <div class="share-sub" data-i18n="share.public.sub">Anyone with the link can open it - no account needed.</div>
+        <div class="public-hidden-note visitor-hidden" id="public-encrypted" data-i18n="share.public.encrypted"></div>
+        <div class="public-form" id="public-form">
+          <select id="public-preset" data-i18n-aria="share.public.title">
+            <option value="1" data-i18n="share.public.presetRead">Read - view and download</option>
+            <option value="4" data-i18n="share.public.presetAdd">Add - upload only</option>
+            <option value="15" data-i18n="share.public.presetFull">Full - upload, download and delete</option>
+          </select>
+          <select id="public-expiry" data-i18n-aria="share.public.expiry">
+            <option value="rolling:30" data-i18n="share.public.rolling30">30 days after last use</option>
+            <option value="rolling:90" data-i18n="share.public.rolling90">90 days after last use</option>
+            <option value="fixed:30" data-i18n="share.public.fixed30">30 days after creation</option>
+            <option value="fixed:90" data-i18n="share.public.fixed90">90 days after creation</option>
+            <option value="never" data-i18n="share.public.never">Never</option>
+          </select>
+          <input type="text" id="public-label" maxlength="200"
+                 data-i18n-ph="share.public.label" placeholder="Label (optional)" />
+          <div class="public-actions">
+            <button class="btn" id="public-create-btn" type="button" data-i18n="share.public.create">Create link</button>
+          </div>
+        </div>
+        <!-- The raw token appears here exactly once, right after minting. -->
+        <div class="public-created visitor-hidden" id="public-created">
+          <input type="text" id="public-url" readonly data-i18n-aria="share.public.linkLabel" />
+          <button class="btn secondary" id="public-copy-btn" type="button" data-i18n="share.public.copy">Copy link</button>
+        </div>
+        <div class="public-once visitor-hidden" id="public-once" data-i18n="share.public.once"></div>
+        <div id="public-link-list"></div>
+      </div>
+
       <div class="modal-footer">
         <button class="btn" id="share-close-btn" type="button" data-i18n="act.close">Close</button>
       </div>

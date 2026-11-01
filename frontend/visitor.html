@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Bearer links must never be indexed or referrer-leaked; the server also
+       sends these as headers (public.rs visitor_headers), belt and braces. -->
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Shared</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <main class="visitor-wrap" id="visitor-root">
+    <div class="visitor-head">
+      <h1 id="v-title" data-i18n="visitor.root">Shared</h1>
+    </div>
+    <div class="visitor-label" id="v-label"></div>
+
+    <!-- Status: loading, an unknown/expired link, or an error. Starts
+         visible; the script replaces it once the link resolves. -->
+    <div class="visitor-status" id="v-status" data-i18n="visitor.loading">Loading...</div>
+
+    <div class="visitor-hidden" id="v-body">
+      <div class="visitor-crumb" id="v-crumb"></div>
+      <div class="visitor-toolbar">
+        <button class="btn secondary" id="v-up" type="button" data-i18n="visitor.up">Up</button>
+        <span class="grow"></span>
+        <button class="btn" id="v-upload-btn" type="button" data-i18n="visitor.upload">Upload</button>
+        <input type="file" id="v-file" class="visitor-hidden" />
+      </div>
+      <div class="visitor-list" id="v-list"></div>
+    </div>
+
+    <div class="visitor-foot" id="v-foot"></div>
+  </main>
+
+  <script src="/assets/i18n.js"></script>
+  <script src="/assets/visitor.js"></script>
+</body>
+</html>

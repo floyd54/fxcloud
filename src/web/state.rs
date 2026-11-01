@@ -98,6 +98,34 @@ const MAX_CEREMONIES: usize = 256;
 const MAX_AUTH_ACCOUNTS: usize = 4096;
 const MAX_AUTH_SOURCES: usize = 4096;
 
+// ---- public-visitor rate gates (concepts/public_links.md section 8.3) ----
+
+/// Failed token resolutions one source may spend per minute. This is the
+/// token-guessing budget: every unknown or expired token costs one indexed
+/// lookup, and a stranger guessing 43-char bearer tokens exhausts this long
+/// before a hit is plausible. Checked *before* the lookup so a spent budget
+/// never reaches the database.
+const PUBLIC_MISS_BUDGET: u32 = 20;
+const PUBLIC_MISS_WINDOW_SECS: i64 = 60;
+
+/// Successful resolutions one source may spend per minute. A live link's
+/// holder is welcome, but even they cannot turn one URL into a request flood
+/// (a crawler following it, a scripted scraper): the expensive steps - disk
+/// reads for a download, a directory walk for a list - sit behind this.
+const PUBLIC_HIT_BUDGET: u32 = 600;
+const PUBLIC_HIT_WINDOW_SECS: i64 = 60;
+
+/// Upload attempts one source may spend per hour. Writes are the costliest
+/// public operation and the easiest to aim at a quota, so they get their own
+///, slower budget rather than sharing the per-minute hit line.
+const PUBLIC_UPLOAD_BUDGET: u32 = 100;
+const PUBLIC_UPLOAD_WINDOW_SECS: i64 = 3600;
+
+/// Source addresses remembered across the three public budgets at once; every
+/// use prunes, so this is only a line against a flood of spoofed-looking
+/// peers between prunes (the peer is the socket address, never a header).
+const MAX_PUBLIC_SOURCES: usize = 4096;
+
 /// One account's failed sign-in bookkeeping (F1): counts failures into a
 /// backoff window, then remembers the count after the window lapses so
 /// the next lock is longer than the last. Keyed by the name itself, an
@@ -128,6 +156,17 @@ struct AuthLimiter {
     registers: HashMap<String, SourceSpend>,
 }
 
+/// In-memory accounting for the public-visitor endpoints (section 8.3).
+///
+/// Three budgets share one pruning pass, keyed by the socket peer so a
+/// reverse proxy's collapse of clients is the deployment's problem to solve
+/// (as with sign-in), never an excuse to trust `X-Forwarded-For`.
+struct PublicLimiter {
+    misses: HashMap<String, SourceSpend>,
+    hits: HashMap<String, SourceSpend>,
+    uploads: HashMap<String, SourceSpend>,
+}
+
 /// Shared application state available to every handler.
 pub struct AppState {
     pub db: Db,
@@ -139,6 +178,8 @@ pub struct AppState {
     ceremonies: Mutex<HashMap<String, Ceremony>>,
     /// Failed sign-ins, per-source spends and challenge caps (F1).
     auth: Mutex<AuthLimiter>,
+    /// Public-visitor miss/hit/upload budgets (public_links.md section 8.3).
+    public: Mutex<PublicLimiter>,
 }
 
 impl AppState {
@@ -154,6 +195,11 @@ impl AppState {
                 accounts: HashMap::new(),
                 login_fails: HashMap::new(),
                 registers: HashMap::new(),
+            }),
+            public: Mutex::new(PublicLimiter {
+                misses: HashMap::new(),
+                hits: HashMap::new(),
+                uploads: HashMap::new(),
             }),
         }
     }
@@ -372,6 +418,76 @@ impl AppState {
         }
         Ok(())
     }
+
+    // ---- public-visitor rate gates (concepts/public_links.md section 8.3) ----
+
+    /// Check the miss budget **before** resolving a visitor token.
+    ///
+    /// An unknown or expired token is a guess; this refuses the guess before
+    /// it reaches the database once the source has spent
+    /// [`PUBLIC_MISS_BUDGET`] this window. The spend is counted separately by
+    /// [`Self::public_missed`], so a live link never accrues misses.
+    pub fn public_miss_gate(&self, source: &str) -> Result<(), AppError> {
+        let now = Utc::now();
+        let mut publim = self.public.lock().unwrap_or_else(|p| p.into_inner());
+        prune_public(&mut publim, now);
+        if let Some(spend) = publim.misses.get(source) {
+            if spend.spent >= PUBLIC_MISS_BUDGET {
+                let secs = remaining_secs(spend.window_start + public_miss_window(), now);
+                return Err(rate_limited(
+                    format!(
+                        "too many invalid links tried from this address, retry in {secs} seconds"
+                    ),
+                    secs,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Count one failed resolution (unknown, revoked or expired token)
+    /// against the source. Never blocks on its own - the check already ran
+    /// in [`Self::public_miss_gate`] - it only arms the next refusal.
+    pub fn public_missed(&self, source: &str) {
+        let now = Utc::now();
+        let mut publim = self.public.lock().unwrap_or_else(|p| p.into_inner());
+        prune_public(&mut publim, now);
+        spend_from(&mut publim.misses, source, now, MAX_PUBLIC_SOURCES);
+    }
+
+    /// Check and charge the hit budget on a **live** link's operation.
+    ///
+    /// Runs after a successful resolution, before the expensive step, so a
+    /// bearer token - however it leaked - cannot drive unbounded reads. The
+    /// window is generous for any real visitor and a hard line for a scraper.
+    pub fn public_hit_gate(&self, source: &str) -> Result<(), AppError> {
+        let now = Utc::now();
+        let mut publim = self.public.lock().unwrap_or_else(|p| p.into_inner());
+        prune_public(&mut publim, now);
+        charge_or_refuse(
+            &mut publim.hits,
+            source,
+            now,
+            PUBLIC_HIT_BUDGET,
+            public_hit_window(),
+        )
+    }
+
+    /// Check and charge the upload budget: writes get their own, slower
+    /// window (100/hour) because they are the costliest public operation and
+    /// the easiest to aim at a quota.
+    pub fn public_upload_gate(&self, source: &str) -> Result<(), AppError> {
+        let now = Utc::now();
+        let mut publim = self.public.lock().unwrap_or_else(|p| p.into_inner());
+        prune_public(&mut publim, now);
+        charge_or_refuse(
+            &mut publim.uploads,
+            source,
+            now,
+            PUBLIC_UPLOAD_BUDGET,
+            public_upload_window(),
+        )
+    }
 }
 
 pub type SharedState = Arc<AppState>;
@@ -408,6 +524,89 @@ fn login_window() -> Duration {
 /// The registration window as a duration (F1).
 fn register_window() -> Duration {
     Duration::seconds(REGISTER_WINDOW_SECS)
+}
+
+/// The public-miss window as a duration (section 8.3).
+fn public_miss_window() -> Duration {
+    Duration::seconds(PUBLIC_MISS_WINDOW_SECS)
+}
+
+/// The public-hit window as a duration (section 8.3).
+fn public_hit_window() -> Duration {
+    Duration::seconds(PUBLIC_HIT_WINDOW_SECS)
+}
+
+/// The public-upload window as a duration (section 8.3).
+fn public_upload_window() -> Duration {
+    Duration::seconds(PUBLIC_UPLOAD_WINDOW_SECS)
+}
+
+/// Drop every public budget whose window has lapsed (8.3) - called on every
+/// use, like [`prune_auth`], so the maps only ever hold live windows.
+fn prune_public(lim: &mut PublicLimiter, now: DateTime<Utc>) {
+    lim.misses
+        .retain(|_, s| now - s.window_start < public_miss_window());
+    lim.hits
+        .retain(|_, s| now - s.window_start < public_hit_window());
+    lim.uploads
+        .retain(|_, s| now - s.window_start < public_upload_window());
+}
+
+/// Add one to a source's spend, starting its window if fresh, and evict the
+/// oldest entry once the map is over `cap` (the same discipline as the auth
+/// limiter, so a flood of peer addresses cannot grow the map without bound).
+fn spend_from(
+    map: &mut HashMap<String, SourceSpend>,
+    source: &str,
+    now: DateTime<Utc>,
+    cap: usize,
+) {
+    let spend = map
+        .entry(source.to_string())
+        .or_insert_with(|| SourceSpend {
+            window_start: now,
+            spent: 0,
+        });
+    spend.spent = spend.spent.saturating_add(1);
+    if map.len() > cap {
+        let oldest = map
+            .iter()
+            .min_by_key(|(_, s)| s.window_start)
+            .map(|(k, _)| k.clone());
+        if let Some(key) = oldest {
+            map.remove(&key);
+        }
+    }
+}
+
+/// Charge one use against a budget, refusing with 429 once it is spent (8.3).
+///
+/// The window starts with the first spend and never slides, so a steady
+/// trickle is bounded at the budget's own rate. Counted before the check, so
+/// the refusal that trips is always the one *past* the budget - and carries
+/// a concrete Retry-After.
+fn charge_or_refuse(
+    map: &mut HashMap<String, SourceSpend>,
+    source: &str,
+    now: DateTime<Utc>,
+    budget: u32,
+    window: Duration,
+) -> Result<(), AppError> {
+    let spend = map
+        .entry(source.to_string())
+        .or_insert_with(|| SourceSpend {
+            window_start: now,
+            spent: 0,
+        });
+    if spend.spent >= budget {
+        let secs = remaining_secs(spend.window_start + window, now);
+        return Err(rate_limited(
+            format!("too many requests from this address, retry in {secs} seconds"),
+            secs,
+        ));
+    }
+    spend.spent = spend.spent.saturating_add(1);
+    Ok(())
 }
 
 /// Drop every authentication counter whose window or memory has lapsed

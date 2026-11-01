@@ -2176,9 +2176,15 @@
     if (entries.length === 1) {
       // Existing shares only make sense item by item.
       loadShareList().catch((e) => alert(e.message));
+      // Public links too: one entry, one set of links.
+      openPublicSection(entries[0]);
     } else {
       document.getElementById("share-list").innerHTML =
         '<div class="empty-small">' + t("share.everySelected") + "</div>";
+      // No public section for a bulk selection: a link mints against one
+      // entry, so the control is hidden rather than silently taking the
+      // first selected item.
+      document.getElementById("public-section").classList.add("visitor-hidden");
     }
   }
 
@@ -2222,6 +2228,144 @@
       row.appendChild(rm);
       listEl.appendChild(row);
     }
+  }
+
+  // ---------- public links (concepts/public_links.md) ----------
+  let publicEntry = null; // the single entry whose links are shown
+
+  /**
+   * Show the public-link section for one entry: enable it for a plaintext
+   * source, or explain why an encrypted one cannot back a link yet (v1 is
+   * plaintext-only - the server refuses on top of this, but the control is
+   * disabled so the refusal is never a surprise).
+   */
+  function openPublicSection(entry) {
+    publicEntry = entry;
+    document.getElementById("public-section").classList.remove("visitor-hidden");
+    const encrypted = entry.enc_version > 0;
+    document.getElementById("public-encrypted").classList.toggle("visitor-hidden", !encrypted);
+    document.getElementById("public-form").classList.toggle("visitor-hidden", encrypted);
+    // The one-time box and the list are rebuilt on every open.
+    document.getElementById("public-created").classList.add("visitor-hidden");
+    document.getElementById("public-once").classList.add("visitor-hidden");
+    document.getElementById("public-link-list").innerHTML = "";
+    if (!encrypted) loadPublicLinks().catch((e) => alert(e.message));
+  }
+
+  async function loadPublicLinks() {
+    if (!publicEntry) return;
+    const res = await api(`/api/links?file_id=${publicEntry.id}`).then((r) => r.json());
+    const listEl = document.getElementById("public-link-list");
+    listEl.innerHTML = "";
+    if (res.links.length === 0) {
+      listEl.innerHTML = '<div class="empty-small">' + t("share.public.none") + "</div>";
+      return;
+    }
+    for (const l of res.links) {
+      const row = document.createElement("div");
+      row.className = "share-row";
+      const info = document.createElement("div");
+      info.className = "share-info";
+      const label = l.label ? escapeHtml(l.label) + " · " : "";
+      const perms = escapeHtml(l.permission_names.map((p) => t("perm." + p)).join(", "));
+      let when = "";
+      if (l.expiry_mode === "never") {
+        when = t("share.public.never");
+      } else if (l.expires_at) {
+        when = t("share.public.expires", { when: formatDateSafe(l.expires_at) });
+      }
+      const used = l.last_access_at
+        ? t("share.public.used", { when: formatDateSafe(l.last_access_at) })
+        : t("share.public.usedNever");
+      const dl = t("share.public.downloads", { n: l.download_count });
+      info.innerHTML =
+        '<span class="share-user">' + label + perms + "</span>" +
+        '<span class="share-perms">' + escapeHtml([when, used, dl].filter(Boolean).join(" · ")) + "</span>";
+      row.appendChild(info);
+      const rm = document.createElement("button");
+      rm.className = "danger";
+      rm.textContent = t("share.public.revoke");
+      rm.addEventListener("click", async () => {
+        try {
+          await api(`/api/links/${l.id}`, { method: "DELETE" });
+          await loadPublicLinks();
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+      row.appendChild(rm);
+      listEl.appendChild(row);
+    }
+  }
+
+  /** Date formatting that does not depend on app.js's dateLocale closure. */
+  function formatDateSafe(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return "";
+    const loc = globalThis.I18N ? globalThis.I18N.dateLocale() : undefined;
+    return d.toLocaleString(loc, {
+      year: "numeric", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+  }
+
+  /**
+   * Mint a public link. The preset select carries the mask (1/4/15) and the
+   * expiry select carries `mode:days` - the server validates both, so a
+   * tampered value is a 400, never a link with permissions it did not allow.
+   * The response's raw token is shown exactly once, here.
+   */
+  async function createPublicLink() {
+    if (!publicEntry) return;
+    const perms = Number(document.getElementById("public-preset").value);
+    const expiry = document.getElementById("public-expiry").value;
+    const label = document.getElementById("public-label").value.trim();
+    let expiry_mode = null;
+    let expires_in_days = null;
+    if (expiry !== "never") {
+      const [mode, days] = expiry.split(":");
+      expiry_mode = mode;
+      expires_in_days = Number(days);
+    } else {
+      expiry_mode = "never";
+    }
+    try {
+      const res = await api("/api/links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_id: publicEntry.id,
+          permissions: perms,
+          expiry_mode,
+          expires_in_days,
+          label: label || undefined,
+        }),
+      });
+      const out = await res.json();
+      // One-time display: fill the box, reveal it, and never again.
+      const url = location.origin + out.url;
+      const box = document.getElementById("public-created");
+      document.getElementById("public-url").value = url;
+      box.classList.remove("visitor-hidden");
+      document.getElementById("public-once").classList.remove("visitor-hidden");
+      await loadPublicLinks();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function copyPublicUrl() {
+    const input = document.getElementById("public-url");
+    try {
+      await navigator.clipboard.writeText(input.value);
+    } catch (_) {
+      input.select();
+      document.execCommand && document.execCommand("copy");
+    }
+    const btn = document.getElementById("public-copy-btn");
+    const original = btn.textContent;
+    btn.textContent = t("share.public.copied");
+    setTimeout(() => { btn.textContent = original; }, 1400);
   }
 
   // Fill the grantee dropdown from the account list: sharing must not depend
@@ -3582,6 +3726,8 @@
   // Share dialog.
   document.getElementById("share-add-btn").addEventListener("click", shareAdd);
   document.getElementById("share-close-btn").addEventListener("click", closeShareDialog);
+  document.getElementById("public-create-btn").addEventListener("click", createPublicLink);
+  document.getElementById("public-copy-btn").addEventListener("click", copyPublicUrl);
   document.getElementById("share-username").addEventListener("keydown", (e) => {
     if (e.key === "Enter") shareAdd();
   });

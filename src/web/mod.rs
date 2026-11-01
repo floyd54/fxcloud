@@ -202,6 +202,29 @@ pub fn build_router(state: SharedState) -> Router {
             axum::routing::delete(routes::shares::revoke),
         );
 
+    // Public links, owner side (concepts/public_links.md section 7): mint,
+    // overview, revoke. Every handler takes `AuthUser`, so these are the
+    // *owner's* links only - the visitor surface lives under /api/public.
+    let api = api
+        .route("/links", post(routes::links::create).get(routes::links::list))
+        .route(
+            "/links/{id}",
+            axum::routing::delete(routes::links::revoke),
+        );
+
+    // Public links, visitor side (section 7): no session, no cookie - the
+    // bearer token *is* the credential, so `AuthUser` never appears here.
+    // The per-IP miss/hit/upload budgets in state.rs gate every one of them.
+    let api = api
+        .route("/public/{token}/meta", get(routes::public::meta))
+        .route("/public/{token}/list", get(routes::public::list))
+        .route("/public/{token}/download", get(routes::public::download))
+        .route("/public/{token}/upload", post(routes::public::upload))
+        .route(
+            "/public/{token}/entry",
+            axum::routing::delete(routes::public::delete_entry),
+        );
+
     // Client-side encryption key material (ENCRYPTION.md section 6).
     // `/keys/me` is static, so it wins over `/keys/{username}` on that one
     // path; every other username falls through to the parameterised route.
@@ -292,6 +315,9 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/", get(ui::index))
         .route("/login", get(ui::login_page))
         .route("/assets/{*path}", get(ui::asset))
+        // Public-link visitor page: the embedded shell (public.rs) that the
+        // /api/public/* routes then fill in. No session, no redirect.
+        .route("/s/{token}", get(routes::public::visitor_page))
         // WebDAV endpoint (all methods; dispatched by HTTP verb inside)
         .route("/dav", any(crate::webdav::dispatch))
         .route("/dav/", any(crate::webdav::dispatch))

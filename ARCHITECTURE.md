@@ -22,6 +22,7 @@ src/
 |   |                #   subtree sizes, quota gates
 |   |-- passkey.rs   # webauthn_credentials rows (public keys, counters)
 |   |-- group.rs     # groups, membership roles, group key envelopes
+|   |-- link.rs      # public-link records: mint, resolve, sweep, subtree walk
 |   \-- share.rs     # share records: covering shares, mount names
 |-- sharing.rs       # permission bitmask (PERM_*) and helpers
 |-- files/           # FileService: DB metadata + on-disk blob storage
@@ -37,7 +38,9 @@ src/
         |-- files.rs # /api/files/* (listing, upload, preview, editor, zip)
         |-- groups.rs# /api/groups/* own groups + folder key distribution
         |-- keys.rs  # /api/keys/* key records and the public-key lookup
+        |-- links.rs # /api/links/* owner side of public links
         |-- passkeys.rs # /api/passkeys/* ceremonies + /api/me/passkeys
+        |-- public.rs # /api/public/:token/* + /s/:token visitor surface
         \-- shares.rs# /api/shares/*
 frontend/            # static UI (plain JS, no framework), embedded at build time
 migrations/          # SQL schema, idempotent, applied at startup
