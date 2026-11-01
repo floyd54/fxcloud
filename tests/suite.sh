@@ -3137,6 +3137,17 @@ grep -q 'id="user-admin-btn"' "$IDX" \
 grep -q 'id="admin-modal"' "$IDX" \
   && ok "the user-administration dialog exists" \
   || bad "no #admin-modal in index.html"
+# The admin dialog took the settings dialog's nav-plus-panes shape in
+# v0.1.6: a few accounts *and* groups stacked past the viewport and the
+# close button slipped below the fold.
+grep -q 'data-admin-tab' "$IDX" \
+  && grep -q 'data-admin-panel' "$IDX" \
+  && ok "the admin dialog is a nav plus panes, not one long column" \
+  || bad "the admin dialog has no tab structure"
+grep -q 'activateAdminTab' "$UI" \
+  && grep -q 'activateAdminTab("users")' "$UI" \
+  && ok "the admin nav switches panes and the dialog reopens on Users" \
+  || bad "the admin nav is not wired in app.js"
 grep -q 'id="reset-modal"' "$IDX" \
   && ok "the temporary-password dialog exists" \
   || bad "no #reset-modal in index.html"

@@ -2592,12 +2592,13 @@
 
   // One settings pane at a time: the nav picks, the content column swaps.
   // Keeps the dialog short enough for any screen however many sessions or
-  // passkeys the account holds.
+  // passkeys the account holds. Scoped to this modal: the admin dialog
+  // borrows the same nav classes for its own tabs.
   function activateSettingsTab(name) {
-    document.querySelectorAll(".settings-nav-btn").forEach((btn) => {
+    settingsModal.querySelectorAll(".settings-nav-btn").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.settingsTab === name);
     });
-    document.querySelectorAll("[data-settings-panel]").forEach((pane) => {
+    settingsModal.querySelectorAll("[data-settings-panel]").forEach((pane) => {
       pane.hidden = pane.dataset.settingsPanel !== name;
     });
   }
@@ -3019,9 +3020,23 @@
     el.className = isError ? "settings-status error" : "settings-status";
   }
 
+  // The admin dialog mirrors the settings dialog's nav-plus-panes shape
+  // (v0.1.6): accounts and groups used to stack into one tall column that
+  // pushed Close below the fold. Scoped to this modal - the settings nav
+  // carries the same classes.
+  function activateAdminTab(name) {
+    adminModal.querySelectorAll(".settings-nav-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.adminTab === name);
+    });
+    adminModal.querySelectorAll("[data-admin-panel]").forEach((pane) => {
+      pane.hidden = pane.dataset.adminPanel !== name;
+    });
+  }
+
   function openAdmin() {
     setUserMenu(false);
     setAdminStatus("");
+    activateAdminTab("users");
     adminModal.style.display = "flex";
     loadAdminUsers();
     loadAdminGroups();
@@ -3710,6 +3725,12 @@
   document.getElementById("admin-close-btn").addEventListener("click", closeAdmin);
   adminModal.addEventListener("click", (e) => {
     if (e.target === adminModal) closeAdmin();
+  });
+  // The nav column picks the pane (event delegation, as in the settings
+  // dialog above).
+  adminModal.addEventListener("click", (e) => {
+    const navBtn = e.target.closest(".settings-nav-btn");
+    if (navBtn) activateAdminTab(navBtn.dataset.adminTab);
   });
   document.getElementById("reset-close-btn").addEventListener("click", closeResetModal);
   // Group folder bootstrap + key distribution dialogs.

@@ -286,36 +286,54 @@
     <div class="modal admin-modal">
       <h3 data-i18n="admin.title">User administration</h3>
 
-      <div class="admin-table-wrap">
-        <table class="admin-table">
-          <thead>
-            <tr>
-              <th data-i18n="admin.user">User</th>
-              <th data-i18n="admin.status">Status</th>
-              <th data-i18n="admin.role">Role</th>
-              <th data-i18n="admin.quota">Quota</th>
-              <th class="admin-actions-col"></th>
-            </tr>
-          </thead>
-          <tbody id="admin-rows"></tbody>
-        </table>
-      </div>
+      <!-- The settings dialog's nav-plus-panes shape (v0.1.6): a handful of
+           accounts *and* groups stacked into one column that outgrew the
+           viewport, pushing Close below the fold. One pane at a time keeps
+           the dialog at screen height however many rows either tab holds. -->
+      <div class="settings-layout">
+        <nav class="settings-nav">
+          <button type="button" class="settings-nav-btn active" data-admin-tab="users"
+                  data-i18n="admin.tabUsers">Users</button>
+          <button type="button" class="settings-nav-btn" data-admin-tab="groups"
+                  data-i18n="admin.groups">Group folders</button>
+        </nav>
 
-      <p class="settings-status" id="admin-status"></p>
+        <div class="settings-content">
+          <section class="settings-panel" data-admin-panel="users">
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="admin.user">User</th>
+                    <th data-i18n="admin.status">Status</th>
+                    <th data-i18n="admin.role">Role</th>
+                    <th data-i18n="admin.quota">Quota</th>
+                    <th class="admin-actions-col"></th>
+                  </tr>
+                </thead>
+                <tbody id="admin-rows"></tbody>
+              </table>
+            </div>
 
-      <!-- Group folders (concepts/groups.md section 6): same dialog, second
-           section - identity and quota against consumption, the member list
-           with roles, and the create row underneath. A group must be emptied
-           (no members, no folders) before the delete button goes through,
-           and the server says so when it is not. -->
-      <h4 class="admin-subhead" data-i18n="admin.groups">Group folders</h4>
-      <div class="group-list" id="group-rows"></div>
-      <div class="group-new">
-        <input type="text" id="group-new-name" data-i18n-ph="group.newName"
-               placeholder="New group name" />
-        <input type="number" id="group-new-quota" min="0" step="1" class="admin-quota-input"
-               data-i18n-ph="group.newQuota" placeholder="Quota in MiB" />
-        <button class="btn" id="group-new-btn" type="button" data-i18n="group.create">Create group</button>
+            <p class="settings-status" id="admin-status"></p>
+          </section>
+
+          <!-- Group folders (concepts/groups.md section 6): identity and quota
+               against consumption, the member list with roles, and the create
+               row underneath. A group must be emptied (no members, no folders)
+               before the delete button goes through, and the server says so
+               when it is not. -->
+          <section class="settings-panel" data-admin-panel="groups">
+            <div class="group-list" id="group-rows"></div>
+            <div class="group-new">
+              <input type="text" id="group-new-name" data-i18n-ph="group.newName"
+                     placeholder="New group name" />
+              <input type="number" id="group-new-quota" min="0" step="1" class="admin-quota-input"
+                     data-i18n-ph="group.newQuota" placeholder="Quota in MiB" />
+              <button class="btn" id="group-new-btn" type="button" data-i18n="group.create">Create group</button>
+            </div>
+          </section>
+        </div>
       </div>
 
       <div class="modal-footer">

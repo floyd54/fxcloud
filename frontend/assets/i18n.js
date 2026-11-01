@@ -333,6 +333,7 @@
     // group folders: the admin dialog's section, the member's bootstrap,
     // and the manager's key distribution (concepts/groups.md sections 4-6)
     "admin.groups": "Gruppenordner",
+    "admin.tabUsers": "Benutzer",
     "group.empty": "Noch keine Gruppenordner.",
     "group.newName": "Name der neuen Gruppe",
     "group.newQuota": "Kontingent in MiB",
@@ -881,6 +882,7 @@
     // group folders: the admin dialog's section, the member's bootstrap,
     // and the manager's key distribution (concepts/groups.md sections 4-6)
     "admin.groups": "Group folders",
+    "admin.tabUsers": "Users",
     "group.empty": "No group folders yet.",
     "group.newName": "New group name",
     "group.newQuota": "Quota in MiB",
@@ -1410,6 +1412,7 @@
     // group folders: the admin dialog's section, the member's bootstrap,
     // and the manager's key distribution (concepts/groups.md sections 4-6)
     "admin.groups": "ghom bIQroq",
+    "admin.tabUsers": "lo'wI'pu'",
     "group.empty": "ghach ghom bIQroq.",
     "group.newName": "ghom chu' pong",
     "group.newQuota": "nI' MiB",

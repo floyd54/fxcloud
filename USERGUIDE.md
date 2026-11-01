@@ -270,7 +270,9 @@ error in the web UI and in WebDAV; your current usage is shown in
 ## 9. User administration
 
 Administrators get a **User administration** entry in the menu behind
-their name in the top bar. There they can:
+their name in the top bar. The dialog opens on a **Users** tab; the
+**Group folders** tab beside it holds the group administration of
+[section 6](#6-group-folders). On the Users tab they can:
 
 - **activate / deactivate** accounts (takes effect instantly: sessions and
   WebDAV included; an administrator cannot deactivate themselves),

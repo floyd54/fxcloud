@@ -1229,7 +1229,13 @@ textarea#enc-rcv-key:focus {
 .version-actions button.danger { color: var(--danger); border-color: var(--danger); }
 
 /* ---------- user administration ---------- */
-.admin-modal { width: min(760px, 94vw); }
+.admin-modal {
+  width: min(760px, 94vw);
+  /* Same column flex the settings dialog has: the nav-plus-panes layout
+     fills the space and the footer (Close) stays pinned at the bottom. */
+  display: flex;
+  flex-direction: column;
+}
 .admin-table-wrap { max-height: 55vh; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); }
 .admin-table th, .admin-table td { padding: 10px 12px; font-size: 13.5px; }
 /* Rows here are not clickable (unlike the file list), so the generic
@@ -1280,7 +1286,6 @@ textarea#enc-rcv-key:focus {
   vertical-align: middle;
   white-space: nowrap;
 }
-.admin-subhead { margin: 16px 0 8px; font-size: 14px; font-weight: 600; }
 .group-list {
   max-height: 40vh;
   overflow: auto;
