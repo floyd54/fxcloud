@@ -121,7 +121,7 @@ or `read_blob` anywhere, temp sweep present. Functional: `curl -r` -> 206 with c
 `Content-Range` on download **and** preview; 416 outside the file; an
 ~16 MiB upload + ranged download roundtrip (the suite runs its own
 instance); temp cleanup after a failed upload; existing ZIP and DAV
-pins stay green; counts bump in README/ENCRYPTION/Audit.
+pins stay green; counts bump in ARCHITECTURE/ENCRYPTION/Audit.
 
 ## 8. Size: **S1 = M**, **S2 = M** (separately releasable)
 

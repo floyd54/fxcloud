@@ -1,8 +1,8 @@
 name: release
 
 # Attach a prebuilt, fully static Linux x86_64 binary to every v* release.
-# One build on purpose: it matches the development architecture (see README,
-# "Prebuilt binaries").
+# One build on purpose: it matches the development architecture (see
+# INSTALL.md, "Prebuilt binary").
 on:
   push:
     tags:

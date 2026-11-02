@@ -342,7 +342,7 @@ Supported methods: `OPTIONS`, `PROPFIND` (Depth 0 / 1 / infinity), `GET`,
 - WebDAV shares the quota, permission and activation paths with the web UI:
   a full quota yields `507`, a deactivated account `403`.
 - Uploads go through your reverse proxy - its body-size limit must allow
-  your file sizes (see the deployment section of the README).
+  your file sizes (see INSTALL.md, "Behind a reverse proxy").
 
 Example:
 

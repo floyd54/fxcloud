@@ -7,7 +7,8 @@ care about (HTTPS behind a reverse proxy with `FXCLOUD_ORIGIN`).
 
 Developer-facing documents:
 
-- [README.md](README.md) - install, configuration table, systemd unit
+- [README.md](README.md) - the feature list and the map of this documentation
+- [INSTALL.md](INSTALL.md) - install, configuration table, systemd unit
 - [API.md](API.md) - HTTP endpoints and protocol details
 - [ENCRYPTION.md](ENCRYPTION.md) - the cryptographic design in full
 - [ARCHITECTURE.md](ARCHITECTURE.md) - code layout, storage, quotas
@@ -60,10 +61,10 @@ cargo build --release
 
 Open <http://127.0.0.1:8080>. To run it as a service on Linux, use the
 hardened unit from [`deploy/fxcloud.service`](deploy/fxcloud.service) -
-the [README](README.md#deployment) has the step-by-step. All settings are
+the [INSTALL.md](INSTALL.md#deployment) has the step-by-step. All settings are
 environment variables (bind address, port, data directory, quota-related
 limits, ...); the full table is in
-[README.md](README.md#configuration).
+[INSTALL.md](INSTALL.md#configuration).
 
 ## 2. The first account
 
@@ -86,7 +87,8 @@ The sign-in page has three tabs:
   biometrics (see [Passkeys](#12-passkeys)).
 - **Create account** - registration, as above.
 
-Sessions last 30 days by default (`FXCLOUD_SESSION_TTL`).
+Sessions last 7 days by default (`FXCLOUD_SESSION_TTL`, sliding while
+in use).
 
 ## 4. Your files
 
@@ -286,6 +288,27 @@ Deactivated accounts can neither sign in nor use WebDAV and get a 403
 with a hint to contact the administrator. Display name, theme and password
 are *not* on this list: every user changes those themselves in
 **Settings**.
+
+The same switches are still available directly in the database (no restart
+required). On a systemd deployment the file is
+`/home/fxcloud/data/fxcloud.db`, in development `./data/fxcloud.db`:
+
+```bash
+DB=/home/fxcloud/data/fxcloud.db
+
+# overview
+sqlite3 "$DB" "SELECT id, username, is_active, is_admin, quota_bytes FROM users ORDER BY id;"
+
+# activate / deactivate (takes effect instantly: sessions + WebDAV included)
+sqlite3 "$DB" "UPDATE users SET is_active = 1 WHERE username = 'max';"
+sqlite3 "$DB" "UPDATE users SET is_active = 0 WHERE username = 'max';"
+
+# administrator role
+sqlite3 "$DB" "UPDATE users SET is_admin = 1 WHERE username = 'max';"
+
+# quota (bytes; 1073741824 = 1 GiB, the default for every account)
+sqlite3 "$DB" "UPDATE users SET quota_bytes = 2147483648 WHERE username = 'alice';"
+```
 
 ## 10. Your account settings
 

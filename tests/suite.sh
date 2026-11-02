@@ -3869,8 +3869,9 @@ grep -q 'fxcloud-$TAG-x86_64-unknown-linux-musl' "$INSTALL" \
   || bad "install.sh and release.yml disagree on the asset name or the checksums"
 grep -q 'curl -fsSL https://raw.githubusercontent.com/.*/install.sh | sh' "$README" \
   && grep -q 'raw.githubusercontent.com/.*/install.sh | sh' "$REPO/USERGUIDE.md" \
-  && ok "README and USERGUIDE carry the install one-liner" \
-  || bad "the one-liner is missing from README or USERGUIDE"
+  && grep -q 'raw.githubusercontent.com/.*/install.sh | sh' "$REPO/INSTALL.md" \
+  && ok "README, USERGUIDE and INSTALL.md carry the install one-liner" \
+  || bad "the one-liner is missing from README, USERGUIDE or INSTALL.md"
 grep -q '$BIN.bak' "$INSTALL" \
   && ok "an update keeps the previous binary as a .bak" \
   || bad "install.sh does not back up the running binary"
@@ -3954,10 +3955,20 @@ grep -q '^USER fxcloud' "$DOCKERFILE" \
 grep -q '^target' "$REPO/.dockerignore" \
   && ok ".dockerignore keeps the host build out of the context" \
   || bad ".dockerignore does not exclude target/"
-grep -q 'docker build -t fxcloud' "$README" \
-  && grep -q 'docker run -d --name fxcloud' "$README" \
-  && ok "the README shows how to build and run the container" \
-  || bad "README lacks the docker build/run lines"
+grep -q 'docker build -t fxcloud' "$REPO/INSTALL.md" \
+  && grep -q 'docker run -d --name fxcloud' "$REPO/INSTALL.md" \
+  && ok "INSTALL.md shows how to build and run the container" \
+  || bad "INSTALL.md lacks the docker build/run lines"
+# The README is the map of the docs: install lives in INSTALL.md and
+# every feature has its own concept document linked from the README.
+README_MAP=1
+grep -q '](INSTALL.md)' "$README" || README_MAP=0
+for C in "$REPO"/concepts/*.md; do
+  grep -q "concepts/${C##*/}" "$README" || README_MAP=0
+done
+[ "$README_MAP" = "1" ] \
+  && ok "the README links to INSTALL.md and every concept document" \
+  || bad "the README misses a link to INSTALL.md or a concepts/ document"
 grep -q 'docker build' "$REPO/.github/workflows/test.yml" \
   && ok "CI builds the image so the instructions stay honest" \
   || bad "test.yml does not build the Dockerfile"

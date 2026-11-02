@@ -355,7 +355,7 @@ pub async fn revoke_session(
 ///
 /// Returns only what a grantee picker needs: `username`, `display_name` and
 /// `is_active` (inactive accounts are still shareable — the share simply
-/// becomes visible once the account is activated, see README).
+/// becomes visible once the account is activated, see concepts/accounts.md).
 pub async fn list_users(
     State(state): State<SharedState>,
     user: AuthUser,

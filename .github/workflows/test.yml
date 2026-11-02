@@ -50,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The Dockerfile is what the README tells users to build; a red job
+      # The Dockerfile is what INSTALL.md tells users to build; a red job
       # here means those published instructions stopped working.
       - name: Build the image
         run: docker build -t fxcloud:ci .

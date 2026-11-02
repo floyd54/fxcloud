@@ -19,7 +19,7 @@ use crate::db::Db;
 use crate::web::state::AppState;
 
 /// Text of `fxcloud --help`: the flags plus the environment knobs, kept in
-/// step with `Config::from_env` and the README's configuration table.
+/// step with `Config::from_env` and INSTALL.md's configuration table.
 const HELP: &str = "\
 fxcloud - a personal cloud in a single binary
 

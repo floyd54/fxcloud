@@ -120,9 +120,10 @@ the disk really holds it.
 ## Sessions & activation
 
 Sessions are server-side rows behind an HttpOnly cookie with a TTL
-(default 30 days) and a background cleanup task. Every request checks the
-account's `is_active` flag, so deactivating a user cuts off web sessions
-and WebDAV access immediately without a restart.
+(default 7 days, sliding while in use) and a background cleanup task.
+Every request checks the account's `is_active` flag, so deactivating a
+user cuts off web sessions and WebDAV access immediately without a
+restart.
 
 ## Frontend & preview safety
 
@@ -136,3 +137,25 @@ HTML/SVG cannot touch the session cookie of the app origin. Content types
 come from an extension allowlist; byte ranges are supported so media
 seeking works. The built-in Markdown preview escapes everything up front
 and filters link targets, so a note cannot run script.
+
+## Tests
+
+Two layers, both runnable straight after a checkout:
+
+```bash
+cargo test          # unit tests: permissions, quota, group roles, KDF floor,
+                    # filename and RFC 5987 encoding, session-cookie parsing
+./tests/suite.sh    # integration: 758 checks against a throwaway instance
+```
+
+`tests/suite.sh` starts its own fxcloud on a loopback port with a temporary
+data directory, drives it over HTTP, WebDAV and the encryption endpoints, and
+tears it down again - including on an early exit. It runs `cargo build` first,
+because it asserts that the served version badge matches `Cargo.toml`, and a
+stale binary would otherwise be a red check rather than a quiet pass. It needs
+`curl`, `perl`, `sqlite3` and `node`; the JavaScript syntax checks use `qjsc`
+when it is installed and `node --check` otherwise. It never reads your own
+configuration or data.
+
+CI runs both layers on every push and pull request
+(`.github/workflows/test.yml`).

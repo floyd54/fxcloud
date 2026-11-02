@@ -380,7 +380,7 @@ names the bind address and the consequence - the passkey origin
 follows the `Host` header and breaks silently behind a rewriting
 proxy. The loopback dev server stays quiet (the INFO line for the
 derived origin remains for it), and a configured origin silences the
-warning at any bind. The README's reverse-proxy section now says the
+warning at any bind. The reverse-proxy section of INSTALL.md now says the
 same in one sentence. Three suite pins: the warning's presence, a
 sidecar server started on `0.0.0.0` without the knob whose journal
 must carry it, and the negative - the suite's own loopback server must
