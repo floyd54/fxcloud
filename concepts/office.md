@@ -2,7 +2,9 @@
 
 Status: **decided** 2026-11-02 - WOPI host confirmed, engine left to the
 operator at deploy time, feature gated behind `FXCLOUD_OFFICE_URL`.
-Nothing is implemented yet; section 14 holds what is still open.
+Phase 0 spike run on the 32 GB instance: Collabora roundtrip proven
+(section 11). Nothing is implemented yet; section 14 holds what is
+still open.
 
 ## 1. Goal and non-goals
 
@@ -103,7 +105,11 @@ GET  /api/office/start?id=<fileId>  -> {url}   mints the iframe URL and
                                                never reaches the browser
 GET  /wopi/files/<id>               -> CheckFileInfo JSON
 GET  /wopi/files/<id>/content       -> streamed bytes (open_blob)
+GET  /wopi/files/<id>/contents      -> same bytes (Collabora's spelling,
+                                       spike finding - answer both)
 POST /wopi/files/<id>               -> PutFile: body -> standard save
+POST /wopi/files/<id>/contents      -> PutFile too (Collabora posts the
+                                       body here, spike finding)
 ```
 
 - **Token**: HMAC-SHA256 over (file id, user id, permissions, opened-at,
@@ -115,7 +121,9 @@ POST /wopi/files/<id>               -> PutFile: body -> standard save
   re-fetches after any WebDAV or built-in-editor write),
   LastModifiedTime, UserId, UserFriendlyName, `UserCanWrite` =
   PERM_UPDATE (a read-only share opens the viewer), `SupportsLocks:
-  false` in v1 (spike item).
+  false` in v1 (spike item). **These two time/version fields must stay
+  byte-stable between real writes** - a value that drifts per read makes
+  the engine discard local edits (observed in the spike, section 11).
 - **PutFile** re-runs the permission check, the quota gate (507 travels
   back as a failed save), the trash and encryption checks (404/409), then
   the standard save sequence. The body streams through
@@ -230,14 +238,44 @@ the engine's language parameter.
 
 ## 11. Phases
 
-- **Phase 0 - spike (about half a day, throwaway):** run the Collabora
-  image and the OnlyOffice image against a 50-line WOPI stub; confirm
-  embedding, save round-trip, `SupportsLocks: false`,
-  websocket-through-proxy, and whether the Euro-Office image behaves
-  identically. This decides the engine question with facts instead of
-  opinions. **Needs a Docker-capable host** - the fxcloud development
-  machine has no Docker, so the spike runs on the 32 GB instance (or any
-  box with the containers), not here.
+- **Phase 0 - spike: DONE 2026-11-02 (on the 32 GB LXC, Docker was
+  installed for it).** Results:
+  - **Collabora CODE 26.04: full roundtrip proven.** A headless
+    Chromium (CDP) opened the editor against a 100-line WOPI stub:
+    CheckFileInfo + GetFile on open, the document rendered, typing
+    changed the char count (33 -> 38), Ctrl+S produced **PutFile
+    (5099 bytes)**, and the saved file contained the typed text
+    (`...WPI spikeSPIKE`) - verified by unpacking the returned docx.
+  - **Three integration findings that bind the fxcloud host design:**
+    1. GetFile path: Collabora requests **`/contents`** (with s), the
+       MS spec says `/content` - the host must answer both.
+    2. PutFile arrives as **POST to `/contents`** with the body, not
+       only `PUT /wopi/files/<id>` per spec.
+    3. **`LastModifiedTime`/`Version` in CheckFileInfo must stay stable
+       until a real write happens.** A value that changes on every read
+       made Collabora believe the file changed underneath it and it
+       *discarded the typed text* (observed: counter snapped back to 33).
+       fxcloud's `modified_at`-backed Version is correct by design -
+       this pins the rule for the implementation.
+  - **OnlyOffice (documentserver:latest, 10.0.0): host side works,
+    editor entry point open.** `WOPI_ENABLED=true` +
+    `ALLOW_PRIVATE_IP_ADDRESS=true` (the *full* env name - `ALLOW_PRIVATE_IP`
+    is silently ignored) enables WOPI and lifts the private-IP block
+    that otherwise rejects `host.docker.internal`; CheckFileInfo and
+    ConvertService roundtrips against the stub succeeded. But the
+    discovery-advertised editor URL `/hosting/wopi/word/edit?wopisrc=...`
+    answers 404 in this image - the browser entry point goes through the
+    example app (`/example/wopi-action/<id>`) instead, which needs its
+    own setup. Re-test with the exact engine version at integration
+    time; the WOPI *host* contract fxcloud implements is already proven.
+  - **Euro-Office image exists** (`nextcloud/aio-eurooffice`, 2.6 GB,
+    tags dated 2026-10): same codebase as OnlyOffice, so same entry
+    point question; not yet run.
+  - **Tooling learned:** `--add-host host.docker.internal:host-gateway`
+    reaches the host from containers; editing `local.json` in the
+    container needs `chown ds:ds` afterwards (the docservice exits with
+    EACCES otherwise); headless Chromium + CDP drives all three engines
+    and is the basis for fxcloud's own integration tests later.
 - **Phase 1 (v1):** the WOPI host of section 5, plaintext single-file
   editing, overlay UI, i18n, suite section, docs (README bullet,
   INSTALL.md section, API.md, USERGUIDE).
@@ -264,12 +302,16 @@ Protocol module + config-built CSP + overlay UI + i18n x3 + suite section
 | 7 | Locks (v1) | `SupportsLocks: false`; in-memory locks are a phase-2 item |
 | 8 | Public links | out of scope for v1 |
 | 9 | RAM / who gets it | **+4 GB budget for the engine** (all three fit); a 32 GB box runs it unnoticed, a 1-2 GB VPS runs **without** Office - WebDAV mount + native tools is the supported answer there, not a missing feature - section 8 |
+| 10 | First engine | **Collabora CODE** for the first integration - the only engine with a proven browser roundtrip in the spike (section 11); OnlyOffice/Euro-Office stay a config swap once their editor entry point is confirmed for the pinned version |
 
 ## 14. Open questions (for the operator)
 
 1. Engine preference now, or decide after the phase-0 spike? The spike
-   is cheap and makes this a config value either way. (RAM is settled:
-   budget +4 GB, section 8 / decision 9.)
+   is done (section 11): Collabora has a proven roundtrip and is the
+   recommended first engine; OnlyOffice/Euro-Office need their editor
+   entry point re-tested for the pinned version before they are offered
+   as the swap target. (RAM is settled: budget +4 GB, section 8 /
+   decision 9.)
 2. Is read-only *preview* in the browser (for sharees, viewer mode)
    wanted in v1? Same machinery, half the UX work.
 3. Version rule (a) or (b) in section 6 - (b) is the recommendation.
