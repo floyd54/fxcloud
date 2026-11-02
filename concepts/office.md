@@ -1,8 +1,8 @@
 # Concept: in-browser office documents (OnlyOffice / Euro-Office / Collabora)
 
-Status: **proposal** 2026-11-02 - written to size the impact before anyone
-decides; nothing here is implemented. Section 14 lists the choices the
-operator still has to make.
+Status: **decided** 2026-11-02 - WOPI host confirmed, engine left to the
+operator at deploy time, feature gated behind `FXCLOUD_OFFICE_URL`.
+Nothing is implemented yet; section 14 holds what is still open.
 
 ## 1. Goal and non-goals
 
@@ -89,6 +89,9 @@ differs per engine - both are spike items (section 11).
 Provisional decision: **WOPI host** as the fxcloud surface; the Docs API
 only if the spike shows a hard blocker.
 
+*Confirmed by the operator 2026-11-02: the WOPI path is the one to
+build. The engine choice stays a deploy-time URL (section 13, #2).*
+
 ## 5. Proposed architecture (WOPI host)
 
 New routes, all token-authenticated, all absent when `FXCLOUD_OFFICE_URL`
@@ -174,12 +177,30 @@ count, just fewer of them.
 
 | | today | with office editing |
 |---|---|---|
-| Processes | one binary | +1 container (Collabora ~1.3 GB RAM idle; OnlyOffice-class 2-4 GB) |
+| Processes | one binary | +1 container (engine sizing below) |
 | Disk | a few MB | image ~2 GB + engine cache (OnlyOffice guidance: 40 GB class) |
 | Proxy | plain reverse proxy | + websocket upgrade, bigger body limit |
 | fxcloud env | - | +2..3 variables, off by default |
 | Schema | - | none (stateless tokens, no migration) |
 | Single-binary claim | unchanged | unchanged *for fxcloud itself*; README gains one honest sentence that office editing needs an optional sidecar |
+
+**The sizing rule to publish (README / INSTALL.md):**
+
+- **Office editing needs about 4 GB of RAM for the engine container** on
+  top of fxcloud itself: Collabora CODE idles around 1.3 GB (plus ~100 MB
+  per concurrent user); the OnlyOffice-class engines are sized 4 GB RAM /
+  40 GB disk by their vendor guidance. Budget **+4 GB** and all three
+  engines fit.
+- **A 32 GB instance runs this without noticing** - the engine is a
+  rounding error there, and fxcloud's own footprint stays the single
+  small binary it is today.
+- **A 1-2 GB VPS runs without Office, and that is a supported
+  configuration, not a missing feature.** The documented answer for that
+  box is the WebDAV mount: `rclone`, a Windows network drive or the
+  Finder connects the same tree to LibreOffice/Word, and editing office
+  files over WebDAV works today with full fidelity (concepts/files.md,
+  USERGUIDE section 14). Office integration is an *addition* for
+  instances with RAM to spare, never a requirement.
 
 None of this exists unless `FXCLOUD_OFFICE_URL` is set: no routes, no CSP
 change, no UI change, no cost.
@@ -214,7 +235,9 @@ the engine's language parameter.
   embedding, save round-trip, `SupportsLocks: false`,
   websocket-through-proxy, and whether the Euro-Office image behaves
   identically. This decides the engine question with facts instead of
-  opinions.
+  opinions. **Needs a Docker-capable host** - the fxcloud development
+  machine has no Docker, so the spike runs on the 32 GB instance (or any
+  box with the containers), not here.
 - **Phase 1 (v1):** the WOPI host of section 5, plaintext single-file
   editing, overlay UI, i18n, suite section, docs (README bullet,
   INSTALL.md section, API.md, USERGUIDE).
@@ -240,14 +263,13 @@ Protocol module + config-built CSP + overlay UI + i18n x3 + suite section
 | 6 | Version volume | pin per session (b), not per autosave - section 6 |
 | 7 | Locks (v1) | `SupportsLocks: false`; in-memory locks are a phase-2 item |
 | 8 | Public links | out of scope for v1 |
+| 9 | RAM / who gets it | **+4 GB budget for the engine** (all three fit); a 32 GB box runs it unnoticed, a 1-2 GB VPS runs **without** Office - WebDAV mount + native tools is the supported answer there, not a missing feature - section 8 |
 
 ## 14. Open questions (for the operator)
 
-1. RAM budget on the target box - a 1-2 GB VPS may rule out the
-   OnlyOffice class and leave Collabora, or nothing at all (WebDAV +
-   desktop apps already edit these files).
-2. Engine preference now, or decide after the phase-0 spike? The spike
-   is cheap and makes this a config value either way.
-3. Is read-only *preview* in the browser (for sharees, viewer mode)
+1. Engine preference now, or decide after the phase-0 spike? The spike
+   is cheap and makes this a config value either way. (RAM is settled:
+   budget +4 GB, section 8 / decision 9.)
+2. Is read-only *preview* in the browser (for sharees, viewer mode)
    wanted in v1? Same machinery, half the UX work.
-4. Version rule (a) or (b) in section 6 - (b) is the recommendation.
+3. Version rule (a) or (b) in section 6 - (b) is the recommendation.
