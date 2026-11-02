@@ -77,7 +77,8 @@ systemd, Docker and the reverse-proxy setup - lives in
 - [concepts/](concepts/) - one design note per feature: accounts,
   passkeys, files, preview, versioning, sharing, public links, groups,
   quotas, trash, and [streaming](concepts/streaming.md), the memory
-  profile every content path shares
+  profile every content path shares. One of them is a proposal, not yet
+  implemented: [office documents](concepts/office.md).
 - [TRANSLATING.md](TRANSLATING.md) - adding a language to the UI
 
 ## License
