@@ -153,9 +153,10 @@ through `version_keep_n = 20`. Two rules:
   writes (WebDAV, built-in editor) always land in history;
   intra-session intermediates do not.
 
-Recommendation: **(b)**, falling back to (a) if the engine turns out to
-hide its session boundaries. Quota is unaffected either way - versions
-count, just fewer of them.
+Recommendation: **(b)** - confirmed by the operator 2026-11-02 -
+falling back to (a) if the engine turns out to hide its session
+boundaries. Quota is unaffected either way - versions count, just fewer
+of them.
 
 ## 7. Security
 
@@ -278,6 +279,61 @@ one host - shared network, `FXCLOUD_OFFICE_WOPI_BASE=http://fxcloud:8080`;
 (c) split hosts - `FXCLOUD_OFFICE_WOPI_BASE` points at fxcloud's
 internal address.
 
+**Reverse proxy: the WOPI URL does *not* need to be served by it.**
+
+```text
+                    +---- reverse proxy (TLS) ----+
+                    |                             |
+browser --- HTTPS --> fxcloud          engine (UI, websocket)
+   |                    |                             |
+   |                    +-----------------------------+
+   +-- editor iframe + websocket ---> FXCLOUD_OFFICE_URL
+                                       (public origin)
+
+engine -- WOPI, internal network, bypassing the proxy --> fxcloud
+            (FXCLOUD_OFFICE_WOPI_BASE)
+```
+
+- **WOPI is server-to-server.** The engine container calls
+  CheckFileInfo/GetFile/PutFile itself; point
+  `FXCLOUD_OFFICE_WOPI_BASE` at an address the container reaches
+  directly (docker network name, host gateway, internal IP) and the
+  traffic never touches the proxy: no hairpin NAT, no token-bearing
+  requests in the public access log, no proxy load. The WOPISrc value
+  *appears* in the browser-visible editor URL, so whoever opens a file
+  sees that internal address - authenticated users only; pick a neutral
+  hostname if that bothers you.
+- **The editor UI does go through the proxy**, because the browser
+  loads it: a second hostname (`office.example.com`) is the robust
+  shape, a dedicated port (`https://example.com:8443`) works without
+  extra DNS; a path prefix (`/office/`) is **not** reliable - both
+  engines assume a root deployment.
+- **HTTPS**: the engine origin must be https the moment fxcloud is
+  https (mixed content forbids an http iframe on an https page). A
+  pure-LAN http deployment needs no TLS at all.
+- **Websockets**: the engine location needs `Upgrade`/`Connection`
+  headers; the fxcloud location does not.
+- **Body limit**: PutFile travels engine -> fxcloud. In the default
+  shape it bypasses the proxy entirely; in the split-network shape
+  (proxying `/wopi/*`, see below) it lands on the fxcloud location -
+  whose `client_max_body_size` already has to cover
+  `FXCLOUD_MAX_UPLOAD_MB` for browser uploads, so one setting covers
+  both. The engine location only sees GETs, small form POSTs and
+  websockets.
+- **Engine public origin**: the engine must emit its own asset and
+  redirect URLs under `FXCLOUD_OFFICE_URL` - pass `Host` /
+  `X-Forwarded-*`, and pin the per-engine origin setting during
+  implementation.
+- **Log hygiene**: Collabora carries `WOPISrc` *and* `access_token` in
+  the editor iframe's query string; Euro-Office/OnlyOffice carry
+  `wopisrc` in the query and the token in the POST body. Keep tokens
+  short-lived and consider not logging query strings on the engine
+  location.
+- **Split-network exception**: only when the engine cannot reach
+  fxcloud directly (separate machines or firewalls) proxy the
+  `/wopi/*` prefix as a plain reverse-proxy block - no websockets
+  needed there, and keep it on a private network or VPN if possible.
+
 None of this exists unless `FXCLOUD_OFFICE_URL` is set: no routes, no CSP
 change, no UI change, no cost.
 
@@ -364,10 +420,11 @@ the engine's language parameter.
 - **Phase 1 (v1):** the WOPI host of section 5, plaintext single-file
   editing, overlay UI, i18n, suite section, docs (README bullet,
   INSTALL.md section, API.md, USERGUIDE).
-- **Phase 2:** locks and co-editing etiquette, read-only preview for
-  sharees, install.sh optionally configuring the sidecar.
-- **Phase 3 (maybe):** public-link editing, encrypted-copy editing,
-  engine-side conversion for preview-only rendering.
+- **Phase 2:** locks and co-editing etiquette, install.sh optionally
+  configuring the sidecar.
+- **Phase 3 (maybe):** read-only preview for sharees (operator: not in
+  v1), public-link editing, encrypted-copy editing, engine-side
+  conversion for preview-only rendering.
 
 ## 12. Size: **L**
 
@@ -388,13 +445,15 @@ Protocol module + config-built CSP + overlay UI + i18n x3 + suite section
 | 8 | Public links | out of scope for v1 |
 | 9 | RAM / who gets it | **+4 GB budget for the engine** (all three fit); a 32 GB box runs it unnoticed, a 1-2 GB VPS runs **without** Office - WebDAV mount + native tools is the supported answer there, not a missing feature - section 8 |
 | 10 | First engine | spike proves **both Collabora and Euro-Office** (section 11); the operator favours **Euro-Office** - keep the host engine-agnostic so the choice stays a URL, with Collabora as the documented fallback |
+| 11 | Read-only view for sharees | **not in v1** (operator, 2026-11-02) - viewer mode moved to phase 3; read-only shares keep today's download/preview path |
+| 12 | Version volume | **(b) pin per session** confirmed (operator, 2026-11-02) - section 6 |
 
 ## 14. Open questions (for the operator)
 
-1. ~~Engine preference~~ **settled by the spike (section 11):**
-   Euro-Office is the favourite and has a proven roundtrip; Collabora
-   stays the documented fallback and the host binds only a URL
-   (decision 10). (RAM: budget +4 GB, section 8 / decision 9.)
-2. Is read-only *preview* in the browser (for sharees, viewer mode)
-   wanted in v1? Same machinery, half the UX work.
-3. Version rule (a) or (b) in section 6 - (b) is the recommendation.
+All three settled 2026-11-02 - nothing open:
+
+1. Engine preference -> **Euro-Office** (the operator's favourite, roundtrip
+   proven in the spike); Collabora stays the documented fallback and the
+   host binds only a URL (decision 10).
+2. Read-only preview for sharees -> **not in v1** (decision 11).
+3. Version rule -> **(b) pin per session** (decision 12, section 6).
