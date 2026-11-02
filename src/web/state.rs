@@ -180,6 +180,12 @@ pub struct AppState {
     auth: Mutex<AuthLimiter>,
     /// Public-visitor miss/hit/upload budgets (public_links.md section 8.3).
     public: Mutex<PublicLimiter>,
+    /// What each office session wrote last (concepts/office.md section 6,
+    /// decision 12): `(file_id, opened_at) -> modified_at of our own save`.
+    /// A save pins the outgoing content unless *this* session produced it -
+    /// pre-session state and foreign writes (WebDAV, built-in editor) land
+    /// in history, the session's own autosaves do not accumulate.
+    office_writes: Mutex<HashMap<(i64, i64), DateTime<Utc>>>,
 }
 
 impl AppState {
@@ -201,7 +207,43 @@ impl AppState {
                 hits: HashMap::new(),
                 uploads: HashMap::new(),
             }),
+            office_writes: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Whether an office save of `file_id` in session `opened_at` must pin
+    /// the outgoing content (concepts/office.md section 6, decision 12).
+    ///
+    /// Pin unless *this* session wrote the current bytes: no record yet, or
+    /// someone else wrote since (the current `modified_at` differs from what
+    /// we stored) - both mean the outgoing content exists nowhere else. This
+    /// session's own previous autosave means it does not.
+    pub fn office_pin_needed(&self, file_id: i64, opened_at: i64, current: DateTime<Utc>) -> bool {
+        let mut writes = self.office_writes.lock().unwrap_or_else(|p| p.into_inner());
+        // Entries older than the token's 10 h lifetime are meaningless;
+        // pruning on access is the pattern the other maps use.
+        let cutoff = current - Duration::hours(12);
+        writes.retain(|_, at| *at > cutoff);
+        writes.get(&(file_id, opened_at)).copied() != Some(current)
+    }
+
+    /// Remember what this office session just saved (the fresh row's
+    /// `modified_at`), so its next save can skip the pin.
+    pub fn office_record_write(
+        &self,
+        file_id: i64,
+        opened_at: i64,
+        modified_at: DateTime<Utc>,
+    ) {
+        let mut writes = self.office_writes.lock().unwrap_or_else(|p| p.into_inner());
+        if writes.len() >= 4096 {
+            // Anti-flood line (the caps in `AuthLimiter` have the same
+            // shape): a burst of sessions falls out wholesale. The map only
+            // steers version pinning - a lost entry costs one extra version
+            // row, never a missing one.
+            writes.clear();
+        }
+        writes.insert((file_id, opened_at), modified_at);
     }
 
     /// Register a ZIP download and return its single-use token.
@@ -658,6 +700,11 @@ mod tests {
             trash_days: 30,
             trash_sweep_secs: 3600,
             webauthn_origin: None,
+            office_url: None,
+            office_origin: None,
+            office_secret: None,
+            office_wopi_base: None,
+            office_embed: crate::config::OfficeEmbed::Form,
         };
         AppState::new(db, config)
     }

@@ -627,6 +627,7 @@ dependencies = [
  "chrono",
  "ciborium",
  "futures-util",
+ "hmac",
  "infer",
  "mime_guess",
  "p256",

@@ -89,6 +89,35 @@
   const PERM_READ = 1, PERM_UPDATE = 2, PERM_CREATE = 4, PERM_DELETE = 8,
         PERM_SHARE = 16, PERM_ALL = 31;
 
+  // Office editing (concepts/office.md): the server parks the engine's base
+  // URL in a data attribute at page render, so this is one attribute read
+  // instead of a round trip - and with the feature unconfigured it is the
+  // empty string, which turns every office affordance off (decision 3).
+  const OFFICE_URL = document.documentElement.getAttribute("data-office") || "";
+  // Extensions the engines can open (the server maps them to word/cell/
+  // slide; csv stays in the built-in text editor on purpose).
+  const OFFICE_EXT = ["doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "ppt", "pptx", "odp"];
+
+  /** An office file this instance could open (type fits, not a folder). */
+  function officeFile(entry) {
+    if (!OFFICE_URL || entry.is_dir) return false;
+    const dot = entry.name.lastIndexOf(".");
+    if (dot < 0) return false;
+    return OFFICE_EXT.indexOf(entry.name.slice(dot + 1).toLowerCase()) >= 0;
+  }
+
+  /** Offer the office editor only where the server would accept the mint:
+   *  an engine configured, a plaintext row (the engine never sees
+   *  ciphertext - written as a negation, the legacy row-click refusal has
+   *  its own suite pin), and UPDATE (no viewer mode in v1 - decision 11). */
+  function canOffice(entry, perms) {
+    return (
+      officeFile(entry) &&
+      !(entry.enc_version > 0) &&
+      (perms & PERM_UPDATE) !== 0
+    );
+  }
+
   // ---------- helpers ----------
   // Shorthand for the dictionary in i18n.js (loaded before this file). A
   // function declaration on purpose: call sites pass one or two args.
@@ -396,6 +425,12 @@
         // render stay inert on click; Download decrypts them to disk.
         tr.classList.add("previewable");
         tr.addEventListener("click", () => openPreview(entry));
+      } else if (!trashView && canOffice(entry, perms)) {
+        // Office files open in the engine's editor overlay; without an
+        // engine configured `canOffice` is always false and the row stays
+        // inert exactly as before (concepts/office.md decision 3).
+        tr.classList.add("previewable");
+        tr.addEventListener("click", () => openOffice(entry));
       }
 
       rowsEl.appendChild(tr);
@@ -555,6 +590,11 @@
         items.push([t("act.open"), () => openFolder(entry.id, perms)]);
       }
       if (!entry.is_dir && (perms & PERM_READ)) {
+        if (canOffice(entry, perms)) {
+          // First item on purpose: for an office file this *is* the edit
+          // action (concepts/office.md section 5).
+          items.push([t("office.open"), () => openOffice(entry)]);
+        }
         const entryKind = previewKind(entry.name, entry.mime);
         // Every renderable kind previews, encrypted rows included: the tab
         // decrypts one into a blob URL (phase 2, ENCRYPTION.md 12), so the
@@ -1139,6 +1179,106 @@
   // src/web/routes/files.rs. The server stays the authority on the actual
   // Content-Type; this list only decides what a click opens.
   //
+  // ---------- office editor overlay (concepts/office.md) ----------
+  // One POST mints the session; the response carries everything the overlay
+  // needs (target URL, token, expiry, embed flow). Every failure - no
+  // engine, no UPDATE, encrypted row, vanished file, dead session - lands on
+  // the same line, and the menu/row only offer the entry when the server
+  // could accept the mint anyway.
+  async function openOffice(entry) {
+    let res = null;
+    try {
+      res = await fetch("/api/office/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ id: entry.id }),
+      });
+    } catch (e) {
+      res = null;
+    }
+    if (!res || !res.ok) {
+      alert(t("office.failed"));
+      return;
+    }
+    const cfg = await res.json();
+    buildOfficeOverlay(entry.name, cfg);
+  }
+
+  // Full-bleed overlay: a thin toolbar over the engine's frame, so the
+  // editor owns the viewport like its own tab. Two embed flows, chosen
+  // server-side (concepts/office.md section 5): `form` posts the token into
+  // the frame (the official WOPI host page - the OnlyOffice/Euro-Office
+  // route), `iframe` carries it in the URL (Collabora's route). Closing
+  // drops the frame - the engine flushes its document on unload - and
+  // refreshes the listing so size and mtime show the save.
+  function buildOfficeOverlay(name, cfg) {
+    const overlay = document.createElement("div");
+    overlay.className = "office-overlay";
+
+    const bar = document.createElement("div");
+    bar.className = "office-toolbar";
+    const title = document.createElement("span");
+    title.className = "office-title";
+    title.textContent = name;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "btn office-close";
+    close.textContent = t("office.close");
+    bar.append(title, close);
+
+    const frame = document.createElement("iframe");
+    frame.name = "office_frame";
+    frame.title = t("office.open");
+    frame.className = "office-frame";
+    // The official WOPI host page's sandbox list: the engine gets its
+    // scripts, downloads and modals, nothing more (concepts/office.md 7).
+    frame.setAttribute(
+      "sandbox",
+      "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals",
+    );
+    frame.setAttribute("allow", "autoplay camera microphone display-capture");
+
+    let form = null;
+    if (cfg.mode === "form") {
+      form = document.createElement("form");
+      form.id = "office_form";
+      form.target = "office_frame";
+      form.method = "post";
+      form.action = cfg.url;
+      form.style.display = "none";
+      const tok = document.createElement("input");
+      tok.type = "hidden";
+      tok.name = "access_token";
+      tok.value = cfg.access_token;
+      const ttl = document.createElement("input");
+      ttl.type = "hidden";
+      ttl.name = "access_token_ttl";
+      ttl.value = String(cfg.access_token_ttl);
+      form.append(tok, ttl);
+      document.body.appendChild(form);
+    }
+
+    overlay.append(bar, frame);
+    document.body.appendChild(overlay);
+
+    const shutdown = () => {
+      if (form) form.remove();
+      overlay.remove();
+      // The save lands on close; reload so the row shows it.
+      loadFiles(currentParent).catch((e) => alert(e.message));
+    };
+    close.addEventListener("click", shutdown);
+
+    if (cfg.mode === "form") {
+      form.submit();
+    } else {
+      // iframe flow: the token travels in the query string of the URL the
+      // server minted.
+      frame.src = cfg.url;
+    }
+  }
+
   // The extension is the first answer and the sniffed MIME type the fallback:
   // a file uploaded without one carries the type the server read from its
   // bytes (POST /api/files/upload sniffs them - `resolve_mime` in

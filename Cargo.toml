@@ -46,6 +46,11 @@ zip = { version = "9", default-features = false, features = ["deflate", "chrono"
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
 
+# WOPI access tokens (concepts/office.md): HMAC-SHA256 over the payload.
+# Already in the lock tree via rfc6979 (digest 0.11 - the same generation
+# our sha2 uses), so this pins an existing crate instead of adding one.
+hmac = "0.13"
+
 # Errors & logging
 thiserror = "2"
 anyhow = "1"

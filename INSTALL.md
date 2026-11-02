@@ -195,3 +195,163 @@ location / {
     proxy_buffering off;
 }
 ```
+
+## Office integration (optional)
+
+Office documents (docx, xlsx, pptx, odt, ods, odp) can be opened and
+edited in the browser through an office engine - **Euro-Office**,
+**OnlyOffice** or **Collabora CODE** - that fxcloud drives over the WOPI
+protocol ([concepts/office.md](concepts/office.md) has the design, the
+spike results and the implementation notes).
+
+This is an **addition, never a requirement**. Unless `FXCLOUD_OFFICE_URL`
+is set, none of it exists: no routes, no CSP change, no UI, no cost -
+and everything else on this page keeps working exactly as before.
+
+### What it costs
+
+| Where you run | What to budget |
+|---|---|
+| **32 GB instance** | Runs it without noticing - the engine is a rounding error next to fxcloud. |
+| **Any box with RAM to spare** | **+4 GB RAM** for the engine container covers all three engines: Collabora CODE idles around 1.3 GB (+~100 MB per concurrent user); the OnlyOffice-class engines are sized **4 GB RAM / 40 GB disk** by their vendor guidance. Plus ~2 GB of image and engine cache. |
+| **1-2 GB VPS** | Runs **without Office - that is a supported configuration, not a missing feature.** The documented answer is the WebDAV mount ([USERGUIDE](USERGUIDE.md#14-webdav)): `rclone`, a Windows network drive or the Finder open the same tree in LibreOffice/Word with full fidelity. Office editing is for instances with RAM to spare, never a requirement. |
+
+### The three connections
+
+```text
+Browser -- session, files -----------------------> fxcloud
+   |
+   +-- editor iframe + websocket ----------------> office engine
+   |                                                (public origin,
+   |                                                 TLS + websockets)
+   +-- (mints editor URL + token via POST /api/office/start)
+
+office engine -- WOPI (server-side) -------------> fxcloud
+              CheckFileInfo / GetFile / PutFile
+              (internal address - bypasses the proxy)
+```
+
+1. **Browser -> fxcloud**: unchanged. The only new endpoint is
+   `POST /api/office/start`, which mints the editor URL and a short-lived
+   WOPI access token (HMAC, fxcloud-side secret).
+2. **Browser -> office engine**: the editor runs in an iframe on an
+   fxcloud page, but its UI assets and websocket come from the engine.
+   That origin must be **HTTPS** once fxcloud itself is HTTPS (mixed
+   content forbids an http iframe on an https page), and the proxy must
+   pass **websocket upgrades**.
+3. **Office engine -> fxcloud**: the WOPI calls happen server-side
+   inside the engine container. It needs an address for fxcloud the
+   *container* can reach - usually not the public URL.
+
+### Configure fxcloud
+
+```bash
+# one shared secret, minted once, pasted into the fxcloud unit
+FXCLOUD_OFFICE_SECRET=$(openssl rand -hex 32)
+```
+
+| Variable | Meaning |
+|---|---|
+| `FXCLOUD_OFFICE_URL` | engine base URL **as the browser sees it** (the iframe source). Unset = feature off. |
+| `FXCLOUD_OFFICE_SECRET` | HMAC key for the WOPI access tokens. Required with the URL; fxcloud refuses to start without it. |
+| `FXCLOUD_OFFICE_WOPI_BASE` | fxcloud URL **as the engine container sees it** (default: `FXCLOUD_ORIGIN`). This is the WOPI leg - it should *not* go through the proxy. |
+| `FXCLOUD_OFFICE_EMBED` | `form` (default - the official host-page POST, the OnlyOffice/Euro-Office flow) or `iframe` (Collabora's query-string flow). |
+
+```ini
+# /etc/systemd/system/fxcloud.service, [Service] section
+Environment=FXCLOUD_OFFICE_URL=https://office.example.com
+Environment=FXCLOUD_OFFICE_SECRET=...the generated value...
+Environment=FXCLOUD_OFFICE_WOPI_BASE=http://172.17.0.1:8080
+```
+
+### Run the engine
+
+```bash
+# Collabora CODE - no JWT, the alias group is the host allow list
+docker run -d --name fxcloud-office --restart unless-stopped \
+  -p 9980:9980 \
+  -e aliasgroup1="http://fxcloud.example.com:8080" collabora/code
+
+# Euro-Office / OnlyOffice - WOPI on, private addresses allowed for the
+# internal WOPI base, an explicit allow rule for the fxcloud host
+docker run -d --name fxcloud-office --restart unless-stopped \
+  -p 8010:80 \
+  -e WOPI_ENABLED=true -e ALLOW_PRIVATE_IP_ADDRESS=true \
+  -e IP_FILTER_RULES="allow fxcloud.example.com; deny all" \
+  nextcloud/aio-eurooffice:20261029_171813
+```
+
+(The OnlyOffice-class engines block private addresses and wildcard-only
+IP rules by default - `ALLOW_PRIVATE_IP_ADDRESS=true` lifts the private
+address block, and WOPI needs a rule that *names* your fxcloud host. Set
+`FXCLOUD_OFFICE_WOPI_BASE` to the address the engine container can
+reach: a Docker network name, `host.docker.internal`, or an internal IP.)
+
+`--restart unless-stopped` matters: without it a reboot leaves the engine
+stopped while fxcloud comes back up, and every office button fails until
+you notice.
+
+### Reverse proxy
+
+The WOPI leg does **not** need to be served by the proxy - point
+`FXCLOUD_OFFICE_WOPI_BASE` at an internal address and the token-bearing
+traffic never touches the public path (no hairpin NAT, nothing in the
+public access log). Only the editor UI goes through the proxy:
+
+- a **second hostname** (`office.example.com`) is the robust shape, a
+  dedicated port (`https://example.com:8443`) works without extra DNS; a
+  path prefix (`/office/`) is **not** reliable - the engines assume a
+  root deployment;
+- **websocket upgrade headers** (`Upgrade`/`Connection`) on the engine
+  location; the fxcloud location needs none of that;
+- **body limit**: PutFile travels engine -> fxcloud. In the default
+  shape it bypasses the proxy entirely; if you split networks and proxy
+  `/wopi/*` (below), it lands on the fxcloud location - whose
+  `client_max_body_size` already covers `FXCLOUD_MAX_UPLOAD_MB`, so one
+  setting handles browser uploads and PutFile alike;
+- **`Host` / `X-Forwarded-*`** pass-through so the engine emits its own
+  asset URLs under `FXCLOUD_OFFICE_URL`;
+- **log hygiene**: Collabora carries `WOPISrc` *and* `access_token` in
+  the editor iframe's query string - keep tokens short-lived (10 h by
+  default) and consider not logging query strings on the engine location.
+
+**Split-network exception**: only when the engine cannot reach fxcloud
+directly (separate machines or firewalls) proxy `/wopi/*` as a plain
+reverse-proxy block - no websockets needed there, and keep it on a
+private network or VPN if possible.
+
+### Verify the setup
+
+1. `journalctl -u fxcloud -f` - the unit must start with no
+   `FXCLOUD_OFFICE_SECRET is required` refusal.
+2. Open any `.docx` in the file list - the row now opens the editor
+   overlay instead of staying inert.
+3. Type, close the editor, refresh: the size and "modified at" of the
+   row changed, and **Settings > Version history** (or the row menu)
+   shows one new version - that is the save round trip through WOPI.
+4. `journalctl -u fxcloud -f` again: no404 from the engine's WOPI calls.
+
+### Troubleshooting
+
+- **`failed to start container process: ... ip_unprivileged_port_start:
+  permission denied`** - seen on LXC containers: `-p` port publishing
+  triggers a sysctl write the nested environment refuses. Use
+  `--network host` for the engine container instead (and put the engine's
+  port into `FXCLOUD_OFFICE_URL`).
+- **`DNS lookup ... is not allowed. Because, It is private IP address`**
+  (in the engine's log): the engine refuses the internal WOPI base -
+  `-e ALLOW_PRIVATE_IP_ADDRESS=true` plus an `IP_FILTER_RULES` rule that
+  names your fxcloud host.
+- **The editor iframe stays blank / " refused to connect"**: mixed
+  content (the page is https, the engine http) or the proxy lacks the
+  websocket upgrade headers.
+- **`cannot derive the WOPI base URL`** at mint time: set
+  `FXCLOUD_OFFICE_WOPI_BASE` (or `FXCLOUD_ORIGIN`) so the engine's
+  server-side calls have a reachable address.
+- **After an engine upgrade the `iframe` embed stops** (Collabora's
+  `cool.html` lives behind a build-hashed path in discovery): re-copy the
+  current path into `FXCLOUD_OFFICE_URL`, or use `FXCLOUD_OFFICE_EMBED=form`.
+- **Every office button says "Could not open the office editor"**: the
+  engine is down (`docker ps`), the URL/secret mismatch between the two
+  sides, or the file is encrypted (office editing works on plaintext -
+  the built-in editor handles encrypted files).

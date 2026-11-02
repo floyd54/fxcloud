@@ -1416,3 +1416,40 @@ textarea#enc-rcv-key:focus {
 [data-theme="dark"] .preview-body iframe { background: var(--panel); }
 [data-theme="dark"] .editor-md { background: var(--panel); color: var(--text); }
 [data-theme="dark"] .icon.folder { background: #4a3d13; }
+
+/* ---------- office editor overlay (concepts/office.md) ----------
+   Full-bleed frame under a thin toolbar: the engine owns the viewport, the
+   chrome above it is fxcloud's. Theme variables keep the toolbar in step
+   with light/dark; the frame itself is always paper-white (an office
+   document is paper, same call the preview pane makes in reverse). */
+.office-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+}
+.office-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.office-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.office-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}

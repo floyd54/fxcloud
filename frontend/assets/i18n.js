@@ -88,6 +88,10 @@
     "act.preview": "Vorschau",
     "act.rename": "Umbenennen",
     "act.close": "Schlie\u00dfen",
+    // office editor overlay (concepts/office.md)
+    "office.open": "Im Office-Editor \u00f6ffnen",
+    "office.close": "Editor schlie\u00dfen",
+    "office.failed": "Office-Editor konnte nicht ge\u00f6ffnet werden",
     "act.cancel": "Abbrechen",
     "act.save": "Speichern",
     "act.discard": "Verwerfen",
@@ -631,6 +635,10 @@
     "act.preview": "Preview",
     "act.rename": "Rename",
     "act.close": "Close",
+    // office editor overlay (concepts/office.md)
+    "office.open": "Open in office editor",
+    "office.close": "Close editor",
+    "office.failed": "Could not open the office editor",
     "act.cancel": "Cancel",
     "act.save": "Save",
     "act.discard": "Discard",
@@ -1180,6 +1188,10 @@
     "act.preview": "legh",
     "act.rename": "pong chu'",
     "act.close": "rap",
+    // office editor overlay (concepts/office.md)
+    "office.open": "poS",
+    "office.close": "rap",
+    "office.failed": "poS vItlhbe'.",
     "act.cancel": "taHbe'",
     "act.save": "qan",
     "act.discard": "mej",

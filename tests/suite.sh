@@ -3461,7 +3461,7 @@ grep -qi '^x-content-type-options: nosniff' "$ROOT/hd.txt" \
   && ok "the API answers carry the headers too" \
   || bad "API responses lack the security headers"
 # or_insert, not insert: a route's own CSP (the preview sandbox) wins.
-grep -q 'or_insert(CSP.clone())' "$REPO/src/web/mod.rs" \
+grep -q 'or_insert(csp_for(&state.config))' "$REPO/src/web/mod.rs" \
   && ok "the header layer never overwrites a route's own CSP (preview sandbox)" \
   || bad "the security-header layer force-overwrites route headers"
 grep -q 'STRICT_TRANSPORT_SECURITY' "$REPO/src/web/mod.rs" \
@@ -3832,6 +3832,229 @@ grep -q 'LOGIN_FAIL_BUDGET' "$REPO/src/web/state.rs" \
   && grep -q 'spend.spent >= LOGIN_FAIL_BUDGET' "$REPO/src/web/state.rs" \
   && ok "the source-address budget refuses the failure after the budget is gone" \
   || bad "the source login-failure budget is gone from the gate"
+
+# ---- office integration (concepts/office.md) ----
+# The engine is curl: everything WOPI-shaped is plain REST, so the contract
+# (mint, CheckFileInfo, both GetFile spellings, PutFile + decision 12) is
+# pinned without Docker in CI. The real-engine smoke test lives in INSTALL.md.
+note "office editing: routes absent while unconfigured"
+
+# Feature off first (decision 3): none of the office paths exist at all.
+RC=$(reqcode POST /api/office/start "$JA" '{"id":1}')
+[ "$RC" = "404" ] \
+  && ok "office start route does not exist while unconfigured" \
+  || bad "office start answered $RC while unconfigured"
+RC=$(reqcode GET "/wopi/files/1?access_token=x" "$JA")
+[ "$RC" = "404" ] \
+  && ok "CheckFileInfo route does not exist while unconfigured" \
+  || bad "wopi info answered $RC while unconfigured"
+RC=$(reqcode GET "/wopi/files/1/contents?access_token=x" "$JA")
+[ "$RC" = "404" ] \
+  && ok "GetFile route does not exist while unconfigured" \
+  || bad "wopi content answered $RC while unconfigured"
+RC=$(reqcode POST "/wopi/files/1/contents?access_token=x" "$JA" '{"x":1}')
+[ "$RC" = "404" ] \
+  && ok "PutFile route does not exist while unconfigured" \
+  || bad "wopi put answered $RC while unconfigured"
+
+# The knobs and the gates live in the source (the behavioural halves are
+# below, once a server is running with them set).
+grep -q 'FXCLOUD_OFFICE_URL' "$REPO/src/config.rs" \
+  && grep -q 'FXCLOUD_OFFICE_SECRET' "$REPO/src/config.rs" \
+  && grep -q 'FXCLOUD_OFFICE_WOPI_BASE' "$REPO/src/config.rs" \
+  && ok "the three office knobs are configurable" \
+  || bad "office env knobs missing from config.rs"
+grep -q 'enc_version > 0' "$REPO/src/web/routes/office.rs" \
+  && ok "the mint refuses encrypted rows (plaintext only, section 7)" \
+  || bad "no encryption gate in office.rs"
+grep -q 'require_update' "$REPO/src/web/routes/office.rs" \
+  && ok "every office call re-checks the UPDATE grant live (decision 11)" \
+  || bad "office.rs does not check UPDATE"
+grep -q '/wopi/files/{id}/contents' "$REPO/src/web/mod.rs" \
+  && grep -q '/wopi/files/{id}/content"' "$REPO/src/web/mod.rs" \
+  && ok "GetFile answers both content spellings (MS spec and Collabora)" \
+  || bad "one of the two content spellings is missing from the router"
+grep -q 'buildOfficeOverlay' "$REPO/frontend/assets/app.js" \
+  && grep -q 'data-office' "$REPO/frontend/index.html" \
+  && ok "the frontend carries the overlay and the server-side engine slot" \
+  || bad "office overlay wiring missing from the frontend"
+
+note "office editing: mint, WOPI host and the pin rule"
+# Fresh sign-in: the session-management section above ended every other
+# alice session on purpose ("sign out everywhere else"), so inheriting $JA
+# here would upload into a 401. Re-login writes the new cookie into the
+# same jar, and everything below rides on it.
+req POST /api/login "$JA" '{"username":"alice","password":"correct-horse"}' >/dev/null
+printf 'ORIGINALEINZEILE' > "$ROOT/src/brief.docx"
+up "$JA" "$DOC" brief.docx >/dev/null
+BRIEF=$(idof "$(req GET "/api/files?parent=$DOC" "$JA")" brief.docx)
+[ -n "$BRIEF" ] && ok "office fixture uploaded" || { bad "office fixture upload"; exit 1; }
+
+# Restart with the office config - the same one-shot pattern the HSTS test
+# uses; restart_server afterwards returns the suite to plain mode.
+kill "$(cat "$ROOT/server.pid")" 2>/dev/null
+wait 2>/dev/null
+FXCLOUD_DATA="$DATA" FXCLOUD_PORT=$PORT FXCLOUD_TRASH_DAYS=30 FXCLOUD_TRASH_SWEEP_SECS=2 \
+  FXCLOUD_OFFICE_URL=http://office.example:9980 \
+  FXCLOUD_OFFICE_SECRET=unit-secret-0123456789 \
+  FXCLOUD_OFFICE_WOPI_BASE=http://127.0.0.1:$PORT \
+  "$BIN" >>"$ROOT/server.log" 2>&1 &
+echo $! > "$ROOT/server.pid"
+for _ in $(seq 1 100); do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/me")" != "000" ] && break
+  sleep 0.2
+done
+
+# The app shell learns the engine URL at render time (no extra round trip).
+curl -s -b "$JA" "$BASE/" | grep -q 'data-office="http://office.example:9980"' \
+  && ok "the app shell carries the configured engine URL" \
+  || bad "index.html does not expose the engine URL"
+
+# CSP: exactly two directives gain the engine origin (section 7).
+curl -sD "$ROOT/hd.txt" -o /dev/null "$BASE/login"
+grep -q "frame-src 'self' blob: http://office.example:9980" "$ROOT/hd.txt" \
+  && grep -q "form-action 'self' http://office.example:9980" "$ROOT/hd.txt" \
+  && ok "CSP widens frame-src and form-action for the engine" \
+  || bad "office CSP missing: $(grep -i '^content-security-policy' "$ROOT/hd.txt")"
+
+# The mint: session-gated, file-scoped, secret-free.
+: > "$ROOT/nojar"
+RC=$(reqcode POST /api/office/start "$ROOT/nojar" "{\"id\":$BRIEF}")
+[ "$RC" = "401" ] \
+  && ok "the mint needs a signed-in account" \
+  || bad "unauthenticated mint answered $RC"
+START=$(req POST /api/office/start "$JA" "{\"id\":$BRIEF}")
+MODE=$(jget "$START" mode)
+TOK=$(jget "$START" access_token)
+TTL=$(jget "$START" access_token_ttl)
+URL=$(jget "$START" url)
+[ "$MODE" = "form" ] \
+  && ok "the default embed flow is the official form POST" \
+  || bad "mode=$MODE, expected form"
+echo "$START" | grep -q 'unit-secret' \
+  && bad "the WOPI secret leaked into the mint response: $START" \
+  || ok "the HMAC secret never reaches the browser"
+echo "$URL" | grep -q "/hosting/wopi/word/edit?wopisrc=" \
+  && ok "the target URL is the OnlyOffice-family host page for docx" \
+  || bad "url=$URL"
+echo "$URL" | grep -q "wopisrc=http%3A%2F%2F127%2E0%2E0%2E1%3A${PORT}%2Fwopi%2Ffiles%2F${BRIEF}" \
+  && ok "WOPISrc uses the configured base and names exactly this file" \
+  || bad "wopisrc wrong: $URL"
+[ -n "$TOK" ] && [ "${TTL:-0}" -gt 0 ] 2>/dev/null \
+  && ok "a token with a future expiry is minted" \
+  || bad "token=$TOK ttl=$TTL"
+
+RC=$(reqcode POST /api/office/start "$JA" "{\"id\":$DOC}")
+[ "$RC" = "400" ] \
+  && ok "folders have no office editor" \
+  || bad "folder mint answered $RC"
+RC=$(reqcode POST /api/office/start "$JA" '{"id":99999999}')
+[ "$RC" = "404" ] \
+  && ok "an unknown id never exists" \
+  || bad "unknown-id mint answered $RC"
+
+# CheckFileInfo: description plus the spike's stability rule (section 11).
+CF=$(req GET "/wopi/files/$BRIEF?access_token=$TOK" "$JA")
+[ "$(jget "$CF" BaseFileName)" = "brief.docx" ] \
+  && ok "CheckFileInfo describes the file" \
+  || bad "CheckFileInfo: $CF"
+[ "$(jget "$CF" UserCanWrite)" = "1" ] \
+  && ok "v1 sessions are write sessions (decision 11)" \
+  || bad "UserCanWrite: $(jget "$CF" UserCanWrite)"
+CF2=$(req GET "/wopi/files/$BRIEF?access_token=$TOK" "$JA")
+LMT1=$(jget "$CF" LastModifiedTime)
+LMT2=$(jget "$CF2" LastModifiedTime)
+[ -n "$LMT1" ] && [ "$LMT1" = "$LMT2" ] \
+  && ok "LastModifiedTime stays byte-stable between writes (spike finding)" \
+  || bad "time drifted: [$LMT1] vs [$LMT2]"
+
+# Every token refusal is the same 404 - never a hint (section 5).
+first=${TOK:0:1}
+if [ "$first" = "A" ]; then TOKBAD="B${TOK:1}"; else TOKBAD="A${TOK:1}"; fi
+RC=$(reqcode GET "/wopi/files/$BRIEF?access_token=$TOKBAD" "$JA")
+[ "$RC" = "404" ] && ok "a tampered token answers 404" || bad "tampered token: $RC"
+RC=$(reqcode GET "/wopi/files/$DOC?access_token=$TOK" "$JA")
+[ "$RC" = "404" ] \
+  && ok "a token bound to another file answers 404" \
+  || bad "cross-file token: $RC"
+RC=$(reqcode GET "/wopi/files/$BRIEF" "$JA")
+[ "$RC" = "404" ] && ok "no token answers 404" || bad "tokenless: $RC"
+
+# GetFile: both spellings, the same bytes (measured against both engines).
+BODY=$(req GET "/wopi/files/$BRIEF/contents?access_token=$TOK" "$JA")
+[ "$BODY" = "ORIGINALEINZEILE" ] \
+  && ok "GetFile (Collabora spelling) serves the bytes" \
+  || bad "contents=[$BODY]"
+BODY2=$(req GET "/wopi/files/$BRIEF/content?access_token=$TOK" "$JA")
+[ "$BODY2" = "ORIGINALEINZEILE" ] \
+  && ok "GetFile (MS spec spelling) serves the bytes too" \
+  || bad "content=[$BODY2]"
+
+# PutFile round-trip and decision 12 (pin per session).
+SAVE1=$(req POST "/wopi/files/$BRIEF/contents?access_token=$TOK" "$JA" "NEUEINHALTV1")
+echo "$SAVE1" | grep -q '"LastModifiedTime"' \
+  && echo "$SAVE1" | grep -q '"Version"' \
+  && ok "PutFile answers with the WOPI save fields" \
+  || bad "save1=$SAVE1"
+DLO=$(req GET "/api/files/download?id=$BRIEF" "$JA")
+[ "$DLO" = "NEUEINHALTV1" ] \
+  && ok "the office save landed in the file store" \
+  || bad "download=[$DLO]"
+VN=$(req GET "/api/files/versions?id=$BRIEF" "$JA" | grep -o '"id"' | wc -l)
+[ "$VN" -eq 1 ] \
+  && ok "the first office save pins the outgoing content (rule b)" \
+  || bad "expected 1 version after save1, got $VN"
+
+SAVE2=$(req POST "/wopi/files/$BRIEF/contents?access_token=$TOK" "$JA" "NEUEINHALTV2")
+VN=$(req GET "/api/files/versions?id=$BRIEF" "$JA" | grep -o '"id"' | wc -l)
+[ -n "$SAVE2" ] && [ "$VN" -eq 1 ] \
+  && ok "the session's own autosave does NOT pin again (decision 12)" \
+  || bad "expected still 1 version, got $VN"
+
+# A foreign write pins twice over: the other mechanism's outgoing content
+# lands in history, and the next office save pins what it did not write.
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" \
+  -H 'Content-Type: text/plain; charset=utf-8' --data-binary 'FREMDSCHREIBER' \
+  "$BASE/api/files/content?id=$BRIEF")
+[ "$RC" = "200" ] || bad "foreign write failed: $RC"
+VN=$(req GET "/api/files/versions?id=$BRIEF" "$JA" | grep -o '"id"' | wc -l)
+[ "$VN" -eq 2 ] \
+  && ok "the built-in editor's write pins the office session's content" \
+  || bad "expected 2 versions after foreign write, got $VN"
+SAVE3=$(req POST "/wopi/files/$BRIEF/contents?access_token=$TOK" "$JA" "NEUEINHALTV3")
+VN=$(req GET "/api/files/versions?id=$BRIEF" "$JA" | grep -o '"id"' | wc -l)
+[ -n "$SAVE3" ] && [ "$VN" -eq 3 ] \
+  && ok "the next office save pins content this session did not write" \
+  || bad "expected 3 versions, got $VN"
+
+# The second embed flow (Collabora's), same one-shot restart pattern.
+kill "$(cat "$ROOT/server.pid")" 2>/dev/null
+wait 2>/dev/null
+FXCLOUD_DATA="$DATA" FXCLOUD_PORT=$PORT FXCLOUD_TRASH_DAYS=30 FXCLOUD_TRASH_SWEEP_SECS=2 \
+  FXCLOUD_OFFICE_URL=http://office.example:9980 \
+  FXCLOUD_OFFICE_SECRET=unit-secret-0123456789 \
+  FXCLOUD_OFFICE_EMBED=iframe \
+  "$BIN" >>"$ROOT/server.log" 2>&1 &
+echo $! > "$ROOT/server.pid"
+for _ in $(seq 1 100); do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/me")" != "000" ] && break
+  sleep 0.2
+done
+IFR=$(req POST /api/office/start "$JA" "{\"id\":$BRIEF}")
+[ "$(jget "$IFR" mode)" = "iframe" ] \
+  && ok "FXCLOUD_OFFICE_EMBED=iframe selects the Collabora flow" \
+  || bad "mode=$(jget "$IFR" mode)"
+echo "$IFR" | grep -q "cool.html?WOPISrc=" \
+  && echo "$IFR" | grep -q "access_token=" \
+  && ok "the iframe URL carries WOPISrc and the token in the query" \
+  || bad "iframe url=$(jget "$IFR" url)"
+
+# Back to plain mode: the routes disappear again (decision 3).
+restart_server || { bad "server did not return to plain mode"; exit 1; }
+RC=$(reqcode GET "/wopi/files/1?access_token=x" "$JA")
+[ "$RC" = "404" ] \
+  && ok "back in plain mode the office routes are gone again" \
+  || bad "office routes survived the restart: $RC"
 
 # ---- install.sh, Dockerfile, --version: the shipped routines ----
 note "one-line install/update and the container build"

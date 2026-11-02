@@ -639,7 +639,9 @@ fn preview_content_type(entry: &FileEntry) -> Option<String> {
 }
 
 /// What to do with a request's `Range` header.
-enum ByteRange {
+/// (`pub(crate)`: the WOPI `GetFile` streams the whole body through the
+/// same helper - one streaming path, no drift, concepts/office.md section 5.)
+pub(crate) enum ByteRange {
     /// No header (or one we deliberately ignore): send the whole body.
     Full,
     /// A satisfiable single range, both ends inclusive.
@@ -687,18 +689,18 @@ fn parse_byte_range(value: &str, len: usize) -> ByteRange {
 }
 
 /// An answered body with its range arithmetic resolved.
-struct RangedBody {
-    status: StatusCode,
-    body: Body,
-    content_range: Option<String>,
-    content_len: u64,
+pub(crate) struct RangedBody {
+    pub(crate) status: StatusCode,
+    pub(crate) body: Body,
+    pub(crate) content_range: Option<String>,
+    pub(crate) content_len: u64,
 }
 
 /// Turn a parsed range into a streamed answer: seek + take for a slice, the
 /// whole handle otherwise, `416` (with `bytes */len`) for a range outside the
 /// file. Download and preview both go through it, so the two cannot drift
 /// apart (S1, `concepts/streaming.md`).
-async fn ranged_body(
+pub(crate) async fn ranged_body(
     mut file: tokio::fs::File,
     len: usize,
     range: ByteRange,
@@ -904,7 +906,9 @@ pub async fn save_content(
     )
     .await?;
 
-    let outcome = save_streamed(&state, user.id(), &q, entry, temp.clone(), &sample, size).await;
+    let pin_old = entry.size > 0;
+    let outcome =
+        save_streamed(&state, user.id(), &q, entry, temp.clone(), &sample, size, pin_old).await;
     if outcome.is_err() {
         // The temp file only ever disappears by being renamed into place.
         let _ = tokio::fs::remove_file(&temp).await;
@@ -915,7 +919,14 @@ pub async fn save_content(
 /// The byte-dependent half of [`save_content`]: the enc/`key` matrix, the
 /// type decision, and the meta + blob commit under the row's write lock.
 /// `temp` is consumed by the rename that publishes the content.
-async fn save_streamed(
+///
+/// `pin_old` drives both halves that depend on keeping the outgoing bytes:
+/// the quota delta (`update_file_meta` charges the full incoming size when
+/// the outgoing content becomes a version row, growth only when it does not)
+/// and the pin itself. The editor save passes `entry.size > 0` (pin unless
+/// the file was empty); the WOPI save passes the session rule of
+/// concepts/office.md section 6 (decision 12).
+pub(crate) async fn save_streamed(
     state: &SharedState,
     user_id: i64,
     q: &ContentQuery,
@@ -923,6 +934,7 @@ async fn save_streamed(
     temp: PathBuf,
     sample: &[u8],
     size: i64,
+    pin_old: bool,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let enc_version = q.enc.unwrap_or(entry.enc_version as u8);
     let transition = match (q.enc, &q.key) {
@@ -1034,10 +1046,9 @@ async fn save_streamed(
     // no byte is copied twice.
     {
         let _write = state.files.begin_replace(entry.id).await;
-        let pins_old = entry.size > 0;
         state
             .db
-            .update_file_meta(user_id, entry.id, size, mime, transition, pins_old)
+            .update_file_meta(user_id, entry.id, size, mime, transition, pin_old)
             .await?;
         // History (concepts/versioning.md): the outgoing bytes get their
         // version name while they are still the entry's content - link,
@@ -1045,7 +1056,9 @@ async fn save_streamed(
         // over a name nothing else points at yet. Nothing is copied either
         // way; with the row already checked, this order also keeps the
         // quota gate's arithmetic (growth = incoming size) exact.
-        state.files.pin_content_as_version(user_id, &entry).await?;
+        if pin_old {
+            state.files.pin_content_as_version(user_id, &entry).await?;
+        }
         state.files.commit_blob(&entry, &temp).await?;
     }
     // Fresh row for the response: size and modified_at just changed.

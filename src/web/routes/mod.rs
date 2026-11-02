@@ -4,6 +4,7 @@ pub mod files;
 pub mod groups;
 pub mod keys;
 pub mod links;
+pub mod office;
 pub mod passkeys;
 pub mod public;
 pub mod shares;

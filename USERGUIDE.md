@@ -140,6 +140,18 @@ versions to keep per file, and an age in days - `0` disables either bound.
 A background sweep applies the age bound on the same cadence as the trash
 purge; the count bound is applied whenever a version is saved.
 
+### Office documents
+
+If your instance runs an office engine (see
+[INSTALL.md](INSTALL.md#office-integration-optional)), office files -
+docx, xlsx, pptx, odt, ods, odp - open in a browser editor instead of
+staying inert: click the file (or **Open in office editor** in the row
+menu), edit, close. The save comes back through the same doors as any
+other write: it counts against the quota, shows up in the version
+history above, and is refused for encrypted files (the built-in editor
+handles those). Without an engine configured nothing changes - the rows
+keep behaving exactly as before.
+
 ## 5. Sharing
 
 Share files or folders with other accounts of the same instance:

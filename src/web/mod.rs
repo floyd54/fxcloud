@@ -55,6 +55,35 @@ const CSP: HeaderValue = HeaderValue::from_static(concat!(
     "object-src 'none'"
 ));
 
+/// The policy every response gets unless the route set its own.
+///
+/// With office editing configured (concepts/office.md section 7) exactly two
+/// directives gain the engine's origin: `frame-src`, because the editor
+/// lives in an iframe on that origin, and `form-action`, because the
+/// official WOPI host page posts its `access_token` cross-origin into that
+/// same iframe (the `form` embed flow). `script-src` stays untouched - the
+/// overlay never loads engine JavaScript into the app's own origin; the
+/// engine page inside the iframe runs under *its* policy. Unconfigured
+/// deployments get the byte-for-byte static `CSP` above (decision 3), which
+/// the suite pins.
+fn csp_for(config: &crate::config::Config) -> HeaderValue {
+    let Some(origin) = config.office_origin.as_deref() else {
+        return CSP.clone();
+    };
+    let text = CSP
+        .to_str()
+        .unwrap_or_default()
+        .replace(
+            "frame-src 'self' blob:; ",
+            &format!("frame-src 'self' blob: {origin}; "),
+        )
+        .replace("form-action 'self'; ", &format!("form-action 'self' {origin}; "));
+    // The origin was validated as `scheme://host[:port]` at config load,
+    // so this cannot produce an unparseable header; the fallback keeps the
+    // baseline policy rather than dropping it.
+    HeaderValue::from_str(&text).unwrap_or_else(|_| CSP.clone())
+}
+
 /// Attach the baseline security headers to every response (Audit.md F2).
 ///
 /// Each header is only added when the route has not set one itself: the
@@ -80,7 +109,7 @@ async fn security_headers(
         h.entry(header::REFERRER_POLICY)
             .or_insert(HeaderValue::from_static("same-origin"));
         h.entry(header::CONTENT_SECURITY_POLICY)
-            .or_insert(CSP.clone());
+            .or_insert(csp_for(&state.config));
         if state.config.secure_cookie {
             h.entry(header::STRICT_TRANSPORT_SECURITY)
                 .or_insert(HeaderValue::from_static("max-age=15552000"));
@@ -275,6 +304,15 @@ pub fn build_router(state: SharedState) -> Router {
         )
         .route("/groups/{id}/keys", post(routes::groups::distribute_key));
 
+    // Office integration (concepts/office.md): the editor-session mint.
+    // Registered only when an engine is configured - feature off means no
+    // office route exists at all (decision 3), which the suite pins.
+    let api = if state.config.office_url.is_some() {
+        api.route("/office/start", post(routes::office::start))
+    } else {
+        api
+    };
+
     // Passkeys (WebAuthn): ceremony endpoints for adding a device and for
     // signing in, plus the device list the settings dialog manages. The
     // register pair and `/me/passkeys` take the `AuthUser` extractor; the
@@ -310,7 +348,7 @@ pub fn build_router(state: SharedState) -> Router {
             sliding_renewal,
         ));
 
-    Router::new()
+    let mut router = Router::new()
         // UI pages & embedded assets
         .route("/", get(ui::index))
         .route("/login", get(ui::login_page))
@@ -322,7 +360,33 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/dav", any(crate::webdav::dispatch))
         .route("/dav/", any(crate::webdav::dispatch))
         .route("/dav/{*path}", any(crate::webdav::dispatch))
-        .nest("/api", api)
+        .nest("/api", api);
+
+    // The WOPI host itself (concepts/office.md section 5): what the engine
+    // container calls server-side. Registered only when FXCLOUD_OFFICE_URL
+    // is set - feature off means these paths do not exist (decision 3), and
+    // the suite pins that both content spellings exist when they do:
+    // `/content` (MS spec) and `/contents` (Collabora - measured in the
+    // spike, section 11). GetFile reads, CheckFileInfo describes, and
+    // PutFile (POST or PUT, on the file path or the content path) saves.
+    if state.config.office_url.is_some() {
+        router = router
+            .route(
+                "/wopi/files/{id}",
+                get(routes::office::checkfileinfo)
+                    .put(routes::office::putfile)
+                    .post(routes::office::putfile),
+            )
+            .route("/wopi/files/{id}/content", get(routes::office::getfile))
+            .route(
+                "/wopi/files/{id}/contents",
+                get(routes::office::getfile)
+                    .put(routes::office::putfile)
+                    .post(routes::office::putfile),
+            );
+    }
+
+    router
         .layer(DefaultBodyLimit::max(max_body))
         .layer(CompressionLayer::new())
         // Baseline security headers on every response, outermost so nothing

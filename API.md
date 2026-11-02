@@ -293,6 +293,34 @@ way it forgives ceremonies. Requests arrive from the socket address -
 `X-Forwarded-For` is never trusted, so real deployments put the proxy
 in front and keep fxcloud on a private interface.
 
+## Office editing (WOPI)
+
+Office documents (docx, xlsx, pptx, odt, ods, odp) open in an office
+engine (Euro-Office, OnlyOffice or Collabora) when one is configured -
+concepts/office.md has the design, INSTALL.md the setup. fxcloud's side
+is a WOPI host: the engine has no session, its bearer token is the only
+credential, and all of it exists only while `FXCLOUD_OFFICE_URL` is set
+(otherwise every path below answers `404`).
+
+| Method | Path | Body / Query | Description |
+| ------ | ---- | ------------ | ----------- |
+| POST | `/api/office/start` | `{id}` | Mint the editor session -> `{url, access_token, access_token_ttl, mode}`; needs a session (`401`), a readable plaintext file (`404` unknown / `400` folder / `409` encrypted) and UPDATE (`403`). The HMAC secret never appears in the answer. |
+| GET | `/wopi/files/{id}` | `?access_token=` | CheckFileInfo: name, size, `Version` (millis of `modified_at` - stable between writes), `LastModifiedTime`, `UserCanWrite: true` (v1 has no viewer mode), `SupportsLocks: false`. |
+| GET | `/wopi/files/{id}/content` | `?access_token=` | GetFile (MS spec spelling). |
+| GET | `/wopi/files/{id}/contents` | `?access_token=` | GetFile (Collabora's spelling - same bytes). |
+| PUT/POST | `/wopi/files/{id}` | `?access_token=`, raw body | PutFile -> `{LastModifiedTime, Version}`. |
+| PUT/POST | `/wopi/files/{id}/contents` | `?access_token=`, raw body | PutFile (Collabora posts here). |
+
+Token rules: HMAC-SHA256 over file id, user id, opened-at and a 10 h
+expiry, signed with `FXCLOUD_OFFICE_SECRET`; the engines append it to
+the request URL. The live state is re-checked on every call - a
+deactivated account, a revoked share or a trashed file cut the editor off
+on its next request - and every refusal (tampered, expired, wrong file,
+missing) answers the same `404`, never a hint that the id exists. PutFile
+streams through the ordinary save path: quota `507`, plaintext only
+(`409` on an encrypted row), version pinning per concepts/office.md
+section 6.
+
 ## Batch operations
 
 The `batch/*` endpoints answer with `{ok: [ids], failed: [{id, name,

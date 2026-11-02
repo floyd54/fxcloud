@@ -49,6 +49,11 @@ with sharing, quotas and version history. New to fxcloud? The
 - **Trash** - deletions go to a per-user trash first; restore entries
   with one click, everything older than 30 days is purged by a
   background sweep ([concepts/trash.md](concepts/trash.md)).
+- **Office documents** - open docx/xlsx/pptx/odt/ods/odp in the browser
+  through an office engine (WOPI, e.g. Euro-Office or Collabora);
+  optional, needs an engine sidecar, off unless configured
+  ([concepts/office.md](concepts/office.md), setup in
+  [INSTALL.md](INSTALL.md#office-integration-optional)).
 
 ## Install
 
@@ -76,10 +81,9 @@ systemd, Docker and the reverse-proxy setup - lives in
 - [API.md](API.md) - HTTP endpoints, batch/ZIP semantics, WebDAV details
 - [concepts/](concepts/) - one design note per feature: accounts,
   passkeys, files, preview, versioning, sharing, public links, groups,
-  quotas, trash, and [streaming](concepts/streaming.md), the memory
-  profile every content path shares. Decided, not yet implemented:
-  [office documents](concepts/office.md) over WOPI with an optional
-  engine sidecar.
+  quotas, trash, [office documents](concepts/office.md) (WOPI with an
+  optional engine sidecar) and [streaming](concepts/streaming.md), the
+  memory profile every content path shares.
 - [TRANSLATING.md](TRANSLATING.md) - adding a language to the UI
 
 ## License

@@ -21,9 +21,9 @@ struct Assets;
 /// A deactivated user is treated as logged out so their browser lands on
 /// `/login` instead of the app shell (whose API calls would all 401 anyway).
 async fn is_logged_in(state: &SharedState, headers: &header::HeaderMap) -> bool {
-    let Some(token) = token_from_cookie_header(
-        headers.get(header::COOKIE).and_then(|v| v.to_str().ok()),
-    ) else {
+    let Some(token) =
+        token_from_cookie_header(headers.get(header::COOKIE).and_then(|v| v.to_str().ok()))
+    else {
         return false;
     };
     let Ok(Some(user_id)) = state.db.session_user_id(token).await else {
@@ -43,7 +43,7 @@ pub async fn index(
     if !is_logged_in(&state, &headers).await {
         return Ok(Redirect::to("/login").into_response());
     }
-    serve_asset("index.html")
+    serve_asset("index.html", state.config.office_url.as_deref().unwrap_or(""))
 }
 
 /// GET /login – the login/register page. Sends authenticated users home.
@@ -54,15 +54,23 @@ pub async fn login_page(
     if is_logged_in(&state, &headers).await {
         return Ok(Redirect::to("/").into_response());
     }
-    serve_asset("login.html")
+    serve_asset("login.html", "")
 }
 
 /// GET /assets/{*path} – serve a static asset with sensible caching.
 pub async fn asset(AxumPath(path): AxumPath<String>) -> Result<Response, AppError> {
-    serve_asset(&format!("assets/{path}"))
+    serve_asset(&format!("assets/{path}"), "")
 }
 
-fn serve_asset(path: &str) -> Result<Response, AppError> {
+/// Serve an embedded asset, filling the server-side template slots.
+///
+/// `office` is the engine base URL when office editing is configured and
+/// the empty string otherwise: `index.html` parks it in a `data-office`
+/// attribute, so the UI knows whether to offer the office editor at all
+/// without an extra round trip (concepts/office.md section 5 - with the
+/// feature off the attribute stays empty and nothing in the frontend
+/// changes, decision 3).
+fn serve_asset(path: &str, office: &str) -> Result<Response, AppError> {
     let Some(file) = Assets::get(path) else {
         return Err(AppError::NotFound);
     };
@@ -80,9 +88,11 @@ fn serve_asset(path: &str) -> Result<Response, AppError> {
 
     let mut data = file.data.into_owned();
     if path.ends_with(".html") {
-        // Server-side template slot: the version badge next to the logo is
+        // Server-side template slots: the version badge next to the logo is
         // filled in from Cargo.toml, so display and release tag stay in step.
-        let html = String::from_utf8_lossy(&data).replace("{{version}}", VERSION);
+        let html = String::from_utf8_lossy(&data)
+            .replace("{{version}}", VERSION)
+            .replace("{{office}}", office);
         data = html.into_bytes().into();
     }
 

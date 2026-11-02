@@ -1,11 +1,12 @@
 # Concept: in-browser office documents (OnlyOffice / Euro-Office / Collabora)
 
-Status: **decided** 2026-11-02 - WOPI host confirmed, engine left to the
+Status: **implemented** 2026-11-02 (Phase 1 of this document; the release
+that ships it is cut separately). WOPI host confirmed, engine left to the
 operator at deploy time, feature gated behind `FXCLOUD_OFFICE_URL`.
 Phase 0 spike run on the 32 GB instance: **Collabora and Euro-Office
 roundtrips both proven** (section 11); the operator favours
-Euro-Office. Nothing is implemented yet; section 14 holds what is still
-open.
+Euro-Office. Section 15 records what the shipped implementation had to
+decide beyond this spec; section 14 still holds the open UX questions.
 
 ## 1. Goal and non-goals
 
@@ -101,43 +102,56 @@ New routes, all token-authenticated, all absent when `FXCLOUD_OFFICE_URL`
 is unset:
 
 ```text
-GET  /api/office/start?id=<fileId>  -> {url}   mints the iframe URL and
-                                               access token; the secret
-                                               never reaches the browser
-GET  /wopi/files/<id>               -> CheckFileInfo JSON
-GET  /wopi/files/<id>/content       -> streamed bytes (open_blob)
-GET  /wopi/files/<id>/contents      -> same bytes (Collabora's spelling,
-                                       spike finding - answer both)
-POST /wopi/files/<id>               -> PutFile: body -> standard save
-POST /wopi/files/<id>/contents      -> PutFile too (Collabora posts the
-                                       body here, spike finding)
+POST /api/office/start {"id": <fileId>}
+                          -> 200 {url, access_token,
+                                   access_token_ttl, mode}
+                             mode = "form" | "iframe" (config); the mint
+                             needs a session (401), a readable plaintext
+                             file (404/400/409) and PERM_UPDATE (403)
+GET  /wopi/files/<id>      -> CheckFileInfo JSON
+GET  /wopi/files/<id>/content  -> streamed bytes (open_blob)
+GET  /wopi/files/<id>/contents -> same bytes (Collabora's spelling,
+                                  spike finding - answer both)
+PUT|POST /wopi/files/<id>          -> PutFile: body -> standard save
+PUT|POST /wopi/files/<id>/contents -> PutFile too (Collabora posts the
+                                  body here, spike finding)
 ```
 
-- **Token**: HMAC-SHA256 over (file id, user id, permissions, opened-at,
-  expiry) with `FXCLOUD_OFFICE_SECRET`; stateless - no schema, no
-  migration. Short-lived (hours) and re-checked against *live*
-  permissions on every call, so a revoked share cannot keep writing.
+- **Token**: HMAC-SHA256 over (file id, user id, opened-at, expiry) with
+  `FXCLOUD_OFFICE_SECRET`, domain-separated (`fxcloud-wopi-v1:`) and
+  constant-time compared; stateless - no schema, no migration. The
+  engines append it to the request URL, so every WOPI route reads
+  `?access_token=`. Ten hours of life (the host-page documentation's
+  recommended `access_token_ttl`), re-checked against *live* state on
+  every call - deactivated account, revoked share and moved-into-trash
+  all cut the editor off on its next request, and every refusal (bad,
+  expired, wrong file) is the same `404`.
 - **CheckFileInfo** carries what the editor needs: BaseFileName, Size,
-  MimeType (`mime_guess`), Version (`modified_at`, so the engine
-  re-fetches after any WebDAV or built-in-editor write),
-  LastModifiedTime, UserId, UserFriendlyName, `UserCanWrite` =
-  PERM_UPDATE (a read-only share opens the viewer), `SupportsLocks:
-  false` in v1 (spike item). **These two time/version fields must stay
+  MimeType, Version (`modified_at` in millis, so the engine re-fetches
+  after any WebDAV or built-in-editor write), LastModifiedTime (ISO-8601
+  - the form WOPI asks for), UserId, UserFriendlyName, `UserCanWrite` =
+  true (v1 has no viewer mode, decision 11), `SupportsLocks: false` in
+  v1 (spike item). **These two time/version fields must stay
   byte-stable between real writes** - a value that drifts per read makes
   the engine discard local edits (observed in the spike, section 11).
 - **PutFile** re-runs the permission check, the quota gate (507 travels
-  back as a failed save), the trash and encryption checks (404/409), then
-  the standard save sequence. The body streams through
+  back as a failed save) and the plaintext rule (409 on an encrypted
+  row), then the standard save sequence. The body streams through
   `stream_body_to_temp`: flat memory, exactly like an upload.
-- **Frontend**: office extensions gain a preview kind. Feature off ->
-  nothing changes (row inert, Download in the menu). Feature on -> a
-  click opens a full-screen overlay with the engine's iframe; close
-  refreshes the row (size, modified_at). txt/md/csv stay in the built-in
-  editor.
+- **Frontend**: office extensions get a click handler and a row-menu
+  entry, both gated by the same rule the server enforces (engine
+  configured, plaintext row, UPDATE) and rendered into a full-screen
+  overlay; close refreshes the row (size, modified_at). txt/md/csv stay
+  in the built-in editor. The engine URL reaches the page in one
+  `data-office` attribute filled at render time - no config round trip,
+  and with the feature off the attribute is empty and nothing changes.
 - **Config**: `FXCLOUD_OFFICE_URL` (browser-side editor base; unset =
-  feature off), `FXCLOUD_OFFICE_SECRET` (token key), optional
-  `FXCLOUD_OFFICE_WOPI_BASE` for the URL the *engine* uses to reach
-  fxcloud (Docker bridge vs public URL; defaults to `FXCLOUD_ORIGIN`).
+  feature off), `FXCLOUD_OFFICE_SECRET` (token key - required with the
+  URL, fails loudly otherwise), optional `FXCLOUD_OFFICE_WOPI_BASE` for
+  the URL the *engine* uses to reach fxcloud (Docker bridge vs public
+  URL; defaults to `FXCLOUD_ORIGIN`), and `FXCLOUD_OFFICE_EMBED` =
+  `form` (default; the official host-page POST, OnlyOffice/Euro-Office)
+  or `iframe` (Collabora's query-string GET).
 
 ## 6. Version history: the save-volume problem
 
@@ -173,10 +187,13 @@ of them.
   load the iframe/api.js from the engine's origin at runtime. Linking or
   redistributing AGPL assets into an MIT repository is the one way this
   feature could taint fxcloud; talking HTTP to it does not.
-- **CSP**: feature on -> `frame-src` gains the engine origin
-  (`script-src` too only on the api.js route), built once at startup
-  from config. Feature off -> the header stays byte-for-byte what the
-  suite pins today.
+- **CSP**: feature on -> `frame-src` gains the engine origin (the editor
+  iframe) and `form-action` gains the same origin (the official host
+  page posts its token cross-origin into that iframe). No `script-src`
+  change: the overlay never loads engine JavaScript into the app's own
+  origin - the engine page inside the iframe runs under *its* policy.
+  Built once per response from config. Feature off -> the header stays
+  byte-for-byte what the suite pins today.
 - **Proxy**: the engine needs websockets (Upgrade headers) and a body
   limit of at least `FXCLOUD_MAX_UPLOAD_MB` - PutFile is an upload by
   another name.
@@ -339,26 +356,48 @@ change, no UI change, no cost.
 
 ## 9. i18n and UX strings
 
-Every new string exists in en/de/tlh (the suite's parity walk pins it):
-"Open in office editor", "Editing read-only", "Save failed: quota
-exceeded", "Encrypted files cannot be edited here", "Close editor",
-"Office server not configured". The iframe itself carries the engine's
-own language - pass the fxcloud language (en/de; tlh falls back to en) as
-the engine's language parameter.
+Three keys, in en/de/tlh (the suite's parity walk pins the sets):
+`office.open` "Open in office editor", `office.close` "Close editor",
+`office.failed` "Could not open the office editor" - every mint failure
+(missing engine, no UPDATE, encrypted row, dead session) collapses onto
+that one line, because the menu and row only offer the entry when the
+server could accept it anyway. Engine-side messages (quota, save errors)
+come from the engine in its own language; passing the fxcloud language
+along as the engine's `lang` parameter is polish for later. txt/md/csv
+deliberately keep the built-in editor's strings.
 
 ## 10. Testing
 
-- **In the suite the engine is curl.** The WOPI endpoints are plain
-  REST: CheckFileInfo fields, GetFile bytes, a PutFile that appends and
-  asserts the content changed and the old bytes became a version, quota
-  full -> 507, missing/expired/foreign token -> 404, encrypted row ->
-  409, read-only token -> `UserCanWrite: false` and a refused PutFile,
-  feature off -> 404 on every route, CSP unchanged when off and widened
-  when on, i18n keys x3. No Docker in CI, no real engine in the suite.
+- **In the suite the engine is curl** - the WOPI contract is plain REST,
+  so no Docker is needed in CI (27 checks in the "office integration"
+  section):
+  - *feature off* (the default server): all four routes answer 404, and
+    the source pins hold the knobs, the encryption gate, the UPDATE gate
+    and both content spellings;
+  - *feature on* (one restart with the env, like the HSTS test): the
+    app shell carries the engine URL, the CSP widens `frame-src` and
+    `form-action`, the mint needs a session (401), refuses folders (400)
+    and unknown ids (404), never leaks the secret, and builds the
+    host-page URL with the configured WOPI base;
+  - *CheckFileInfo*: description fields, `UserCanWrite`, and the
+    stability rule - two reads give the same `LastModifiedTime`;
+  - *token refusals*: tampered, cross-file and missing tokens all answer
+    the same 404;
+  - *GetFile*: both content spellings serve the same bytes;
+  - *PutFile + decision 12*: first save pins (1 version), the session's
+    next save does not (still 1), a built-in-editor write pins (2), the
+    next office save pins what it did not write (3);
+  - *embed=iframe*: the Collabora flow, one restart with
+    `FXCLOUD_OFFICE_EMBED=iframe`.
+- **Encrypted rows (409) and the UPDATE refusals are source-pinned**
+  (`enc_version > 0` and `require_update` in office.rs): both gates run
+  before anything else, and their failure modes (409/403) are already
+  behavioural in the editor save and share sections.
 - **The real engine is a manual smoke test** (documented in INSTALL.md):
   run one container, open, type, close, verify the bytes landed and the
   version appeared.
-- The suite count in ARCHITECTURE.md moves with the new checks.
+- The suite count in ARCHITECTURE.md moves with the new checks (758 ->
+  795).
 
 ## 11. Phases
 
@@ -457,3 +496,51 @@ All three settled 2026-11-02 - nothing open:
    host binds only a URL (decision 10).
 2. Read-only preview for sharees -> **not in v1** (decision 11).
 3. Version rule -> **(b) pin per session** (decision 12, section 6).
+
+## 15. Implementation notes
+
+Where the shipped code went past or beside the spec above:
+
+- **Conditional routes.** The four WOPI paths and `/api/office/start` are
+  registered only when `FXCLOUD_OFFICE_URL` is set - decision 3's "no
+  routes" is literal, not a404 inside a live route. The start endpoint
+  takes the file id as a **JSON body** (`{"id": n}`), not a query
+  parameter: a query string would put file ids in every proxy log.
+- **The token travels in the query** on every engine call (measured for
+  GET *and* POST in the spike); the `form` embed flow carries it in the
+  POST body of the host page, the `iframe` flow in the URL. Ten-hour
+  lifetime, HMAC-SHA256 with the `fxcloud-wopi-v1:` domain separator,
+  constant-time comparison; `hmac 0.13` was already in the lock tree
+  (via rfc6979, on the same digest line as our `sha2`).
+- **Embed flows need an engine-specific target**: `form` builds
+  `/hosting/wopi/{word|cell|slide}/edit?wopisrc=...` by extension (the
+  kind map lives in office.rs; csv maps to `cell` but the UI keeps csv
+  in the text editor), `iframe` builds `/cool.html?WOPISrc=...`. Both
+  are why `FXCLOUD_OFFICE_EMBED` exists (section 5).
+- **Decision 12's rule is an ownership map, not a timestamp**: the spec
+  sketched "the token carries opened-at"; the implementation keeps a
+  bounded in-memory map `(file_id, opened_at) -> our last written
+  modified_at` (pruned on access past 12 h, capped at 4096 entries,
+  cleared wholesale on overflow - a lost entry costs one extra version
+  row, never a missing one). A save pins iff the current `modified_at`
+  differs from what *this session* recorded, which also pins a WebDAV
+  write that landed *during* the session - the goal of section 6, not
+  just its time-based sketch.
+- **`save_streamed` gained a `pin_old` parameter** driving both the
+  quota delta and the pin; the editor save passes `entry.size > 0`
+  (byte-for-byte its old behaviour), the office save passes the
+  decision-12 result.
+- **GetFile reuses `ranged_body` (Full)** - one streaming path for
+  download, preview and the engine; `Version` is `modified_at` in
+  milliseconds, `LastModifiedTime` its ISO-8601 form.
+- **CSP is computed per response** from config (`csp_for`), so the
+  header layer's `or_insert` contract with route-set headers (the
+  preview sandbox) survives; the suite's source pin moved with it.
+- **The UI mirrors the server's gates** (`canOffice`: engine
+  configured, plaintext row, UPDATE) purely as affordance logic - every
+  one of them is re-checked server-side at mint and again on every WOPI
+  call. The engine URL reaches the page as a `data-office` attribute
+  filled by the same template slot that fills the version badge.
+- **Not in v1:** the engine's `lang` parameter (engine UI keeps its own
+  default), viewer mode (decision 11), locks (decision 7), PDF editing
+  (PDF keeps the native preview).
