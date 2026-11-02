@@ -2,9 +2,10 @@
 
 Status: **decided** 2026-11-02 - WOPI host confirmed, engine left to the
 operator at deploy time, feature gated behind `FXCLOUD_OFFICE_URL`.
-Phase 0 spike run on the 32 GB instance: Collabora roundtrip proven
-(section 11). Nothing is implemented yet; section 14 holds what is
-still open.
+Phase 0 spike run on the 32 GB instance: **Collabora and Euro-Office
+roundtrips both proven** (section 11); the operator favours
+Euro-Office. Nothing is implemented yet; section 14 holds what is still
+open.
 
 ## 1. Goal and non-goals
 
@@ -210,6 +211,73 @@ count, just fewer of them.
   USERGUIDE section 14). Office integration is an *addition* for
   instances with RAM to spare, never a requirement.
 
+**The three connections (deployment topology):**
+
+```text
+Browser -- session, files -----------------------> fxcloud
+   |
+   +-- editor iframe + websocket ----------------> office server
+   |
+   +-- (mints editor URL + token via POST /api/office/start)
+
+office server -- WOPI (server-side) -------------> fxcloud
+              CheckFileInfo / GetFile / PutFile
+```
+
+1. **Browser -> fxcloud**: unchanged from today. The only new endpoint
+   is `POST /api/office/start`, which mints the editor URL and the WOPI
+   access token (HMAC, fxcloud-side secret).
+2. **Browser -> office server**: the editor runs in an iframe on an
+   fxcloud page, but its UI assets and websocket come from the engine.
+   This origin must be **HTTPS** (mixed-content rules - an https page
+   may not embed an http iframe) and the proxy must pass **websocket
+   upgrades**.
+3. **Office server -> fxcloud**: the WOPI calls happen server-side in
+   the engine container. It needs an address for fxcloud that the
+   *container* can reach - often not the public URL
+   (`FXCLOUD_OFFICE_WOPI_BASE`, default `FXCLOUD_ORIGIN`).
+
+**Environment (fxcloud):**
+
+| Variable | Meaning |
+|---|---|
+| `FXCLOUD_OFFICE_URL` | engine base URL **as the browser sees it** (iframe source); unset = feature off |
+| `FXCLOUD_OFFICE_SECRET` | HMAC key for WOPI access tokens |
+| `FXCLOUD_OFFICE_WOPI_BASE` | fxcloud URL **as the engine container sees it** (default: `FXCLOUD_ORIGIN`) |
+
+**Engine containers (both proven against the stub, section 11):**
+
+```bash
+# Collabora CODE - no JWT, the alias group is the host allow list
+docker run -d --name fxcloud-office -p 9980:9980 \
+  -e aliasgroup1="http://fxcloud.example:8080" collabora/code
+
+# Euro-Office / OnlyOffice - WOPI on, private IPs allowed for the
+# host-internal WOPI base, explicit allow rule for the fxcloud host
+docker run -d --name fxcloud-office -p 8010:80 \
+  -e WOPI_ENABLED=true -e ALLOW_PRIVATE_IP_ADDRESS=true \
+  -e IP_FILTER_RULES="allow fxcloud.example; deny all" \
+  nextcloud/aio-eurooffice:20261029_171813
+```
+
+**Why `curl | sh` is no longer enough:** the one-liner writes the
+fxcloud systemd unit and nothing else. Office adds four more things -
+(1) pulling and starting the engine container with the env above,
+(2) generating one shared secret and pasting it into both sides,
+(3) extending the reverse proxy: a second origin (or port) for the
+engine, websocket upgrade headers, a body limit of at least
+`FXCLOUD_MAX_UPLOAD_MB` (PutFile is an upload), HTTPS for both origins,
+(4) adding the three `FXCLOUD_OFFICE_*` vars to the fxcloud unit.
+install.sh can own all of that behind an opt-in flag in a later phase
+(`--office=...` / `FXCLOUD_OFFICE=...`); without the env var none of
+this exists. Until then INSTALL.md documents the manual procedure.
+
+**Deployment shapes:** (a) fxcloud (systemd) + engine (docker) on one
+box - the recommended shape, this32 GB instance; (b) both in docker on
+one host - shared network, `FXCLOUD_OFFICE_WOPI_BASE=http://fxcloud:8080`;
+(c) split hosts - `FXCLOUD_OFFICE_WOPI_BASE` points at fxcloud's
+internal address.
+
 None of this exists unless `FXCLOUD_OFFICE_URL` is set: no routes, no CSP
 change, no UI change, no cost.
 
@@ -271,11 +339,28 @@ the engine's language parameter.
   - **Euro-Office image exists** (`nextcloud/aio-eurooffice`, 2.6 GB,
     tags dated 2026-10): same codebase as OnlyOffice, so same entry
     point question; not yet run.
+  - **Euro-Office (nextcloud/aio-eurooffice, Document Server 9.3.7):
+    roundtrip proven too.** Same env switches as OnlyOffice
+    (`WOPI_ENABLED`, `ALLOW_PRIVATE_IP_ADDRESS`, `IP_FILTER_RULES`).
+    Key finding: the discovery advertises `/hosting/wopi/word/edit?...`
+    but **GET on it answers 404 - the route accepts only POST**, which
+    is exactly the official host-page flow: the host page renders a
+    `<form method="post">` carrying `access_token` +
+    `access_token_ttl` into an iframe (api.onlyoffice.com "Host page").
+    With that form POST the editor page rendered and talked WOPI to the
+    stub: CheckFileInfo, GetFile (`/contents`) and **two PutFiles
+    (25298 + 25450 bytes)** landed, the saved file contained the typed
+    text. The surrounding original text was lost to test-automation
+    artifacts (Collabora click coordinates into a different layout, plus
+    a TXT-import dialog left over from an earlier attempt) - a tooling
+    issue, not a WOPI one: fetch-edit-save-refetch over the protocol is
+    proven for this engine as well.
   - **Tooling learned:** `--add-host host.docker.internal:host-gateway`
     reaches the host from containers; editing `local.json` in the
     container needs `chown ds:ds` afterwards (the docservice exits with
     EACCES otherwise); headless Chromium + CDP drives all three engines
-    and is the basis for fxcloud's own integration tests later.
+    and is the basis for fxcloud's own integration tests later - but
+    editor automation needs per-engine dialog handling and click maps.
 - **Phase 1 (v1):** the WOPI host of section 5, plaintext single-file
   editing, overlay UI, i18n, suite section, docs (README bullet,
   INSTALL.md section, API.md, USERGUIDE).
@@ -302,16 +387,14 @@ Protocol module + config-built CSP + overlay UI + i18n x3 + suite section
 | 7 | Locks (v1) | `SupportsLocks: false`; in-memory locks are a phase-2 item |
 | 8 | Public links | out of scope for v1 |
 | 9 | RAM / who gets it | **+4 GB budget for the engine** (all three fit); a 32 GB box runs it unnoticed, a 1-2 GB VPS runs **without** Office - WebDAV mount + native tools is the supported answer there, not a missing feature - section 8 |
-| 10 | First engine | **Collabora CODE** for the first integration - the only engine with a proven browser roundtrip in the spike (section 11); OnlyOffice/Euro-Office stay a config swap once their editor entry point is confirmed for the pinned version |
+| 10 | First engine | spike proves **both Collabora and Euro-Office** (section 11); the operator favours **Euro-Office** - keep the host engine-agnostic so the choice stays a URL, with Collabora as the documented fallback |
 
 ## 14. Open questions (for the operator)
 
-1. Engine preference now, or decide after the phase-0 spike? The spike
-   is done (section 11): Collabora has a proven roundtrip and is the
-   recommended first engine; OnlyOffice/Euro-Office need their editor
-   entry point re-tested for the pinned version before they are offered
-   as the swap target. (RAM is settled: budget +4 GB, section 8 /
-   decision 9.)
+1. ~~Engine preference~~ **settled by the spike (section 11):**
+   Euro-Office is the favourite and has a proven roundtrip; Collabora
+   stays the documented fallback and the host binds only a URL
+   (decision 10). (RAM: budget +4 GB, section 8 / decision 9.)
 2. Is read-only *preview* in the browser (for sharees, viewer mode)
    wanted in v1? Same machinery, half the UX work.
 3. Version rule (a) or (b) in section 6 - (b) is the recommendation.
