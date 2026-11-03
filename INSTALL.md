@@ -48,7 +48,7 @@ FXCLOUD_MAX_UPLOAD_MB=4096 curl -fsSL https://raw.githubusercontent.com/floyd54/
 
 Afterwards the knobs live in the unit file: edit
 `/etc/systemd/system/fxcloud.service` and `systemctl restart fxcloud`.
-Pin a version with `FXCLOUD_VERSION=v0.1.6`; other platforms (macOS,
+Pin a version with `FXCLOUD_VERSION=v0.2.0`; other platforms (macOS,
 ARM64, ...) build from source or run the Docker image below.
 
 ## Prebuilt binary
