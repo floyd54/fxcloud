@@ -286,9 +286,12 @@ fxcloud systemd unit and nothing else. Office adds four more things -
 engine, websocket upgrade headers, a body limit of at least
 `FXCLOUD_MAX_UPLOAD_MB` (PutFile is an upload), HTTPS for both origins,
 (4) adding the three `FXCLOUD_OFFICE_*` vars to the fxcloud unit.
-install.sh can own all of that behind an opt-in flag in a later phase
-(`--office=...` / `FXCLOUD_OFFICE=...`); without the env var none of
-this exists. Until then INSTALL.md documents the manual procedure.
+install.sh owns all of that behind the opt-in `FXCLOUD_OFFICE_URL`
+(prompted interactively on a terminal, or set in front of `sh` behind the
+pipe); without a hostname none of this exists. It demands a preinstalled
+Docker instead of installing it, seeds the branding mounts, extends
+existing units rerun-proof and reconciles the engine container. INSTALL.md
+documents this path plus the manual procedure for everything else.
 
 **Deployment shapes:** (a) fxcloud (systemd) + engine (docker) on one
 box - the recommended shape, this32 GB instance; (b) both in docker on

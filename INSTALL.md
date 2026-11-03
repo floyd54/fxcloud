@@ -27,13 +27,16 @@ The first line prints `fxcloud v... is running` once
 `http://<host>:8080/login` answers. Open it and register: the **first
 account** becomes the administrator.
 
-Environment variables in front of the command configure the unit it writes
-(all optional, defaults in brackets):
+Environment variables configure the unit the script writes (all optional,
+defaults in brackets). They have to reach the script itself: `export` them
+before the one-liner, or place them in front of `sh` *behind* the pipe. In
+front of `curl` they would only reach curl, never the script:
 
 ```bash
 # example: public HTTPS address + bigger uploads
-FXCLOUD_ORIGIN=https://cloud.example.com FXCLOUD_SECURE_COOKIE=1 \
-FXCLOUD_MAX_UPLOAD_MB=4096 curl -fsSL https://raw.githubusercontent.com/floyd54/fxcloud/main/install.sh | sh
+export FXCLOUD_ORIGIN=https://cloud.example.com FXCLOUD_SECURE_COOKIE=1 \
+  FXCLOUD_MAX_UPLOAD_MB=4096
+curl -fsSL https://raw.githubusercontent.com/floyd54/fxcloud/main/install.sh | sh
 ```
 
 | Variable               | Meaning (default)                                          |
@@ -216,6 +219,51 @@ and everything else on this page keeps working exactly as before.
 | **Any box with RAM to spare** | **+4 GB RAM** for the engine container covers all three engines: Collabora CODE idles around 1.3 GB (+~100 MB per concurrent user); the OnlyOffice-class engines are sized **4 GB RAM / 40 GB disk** by their vendor guidance. Plus ~2 GB of image and engine cache. |
 | **1-2 GB VPS** | Runs **without Office - that is a supported configuration, not a missing feature.** The documented answer is the WebDAV mount ([USERGUIDE](USERGUIDE.md#14-webdav)): `rclone`, a Windows network drive or the Finder open the same tree in LibreOffice/Word with full fidelity. Office editing is for instances with RAM to spare, never a requirement. |
 
+### Office via install.sh
+
+The one-liner can do everything below. Run it on a terminal and it asks:
+
+```text
+office hostname (e.g. office.example.com, Enter to skip):
+```
+
+The name is the **public** origin of the editor (the proxy entry you make
+anyway), e.g. `office.example.com` - `https://` is added if you leave it
+out, Enter skips office entirely. Non-interactive (or to skip the question)
+pass it in front of `sh` behind the pipe:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/floyd54/fxcloud/main/install.sh | \
+  FXCLOUD_OFFICE_URL=https://office.example.com sh
+```
+
+With a hostname the script, in one run:
+
+- **requires Docker** (`command -v docker` + `docker info`) and stops with a
+  clear message if it is missing - it never installs Docker itself;
+- generates the WOPI secret, starts the `fxcloud-office` container with your
+  own landing page bind-mounted from `$FXCLOUD_HOME/office` (see below), and
+  waits until the editor answers;
+- **adds the `FXCLOUD_OFFICE_*` lines to the unit - also to an
+  existing unit**, so plain updates on an installed fxcloud gain office
+  without touching anything else (rerun-proof, existing values are kept);
+- prints the local port the reverse proxy has to target.
+
+What stays manual: the reverse proxy entry for the office name (websocket
+upgrade + TLS) - covered under Reverse proxy below.
+
+| Variable | Meaning (default) |
+| --- | --- |
+| `FXCLOUD_OFFICE_URL` | public editor origin; asked interactively when omitted (Enter = no office) |
+| `FXCLOUD_OFFICE_SECRET` | WOPI token key (generated when omitted, kept on reruns) |
+| `FXCLOUD_OFFICE_IMAGE` | engine `image:tag` (the release in Run the engine); a different tag = engine update on rerun |
+| `FXCLOUD_OFFICE_PORT` | host port published for the engine (8010) |
+| `FXCLOUD_OFFICE_NETWORK` | `auto` (default: publish the port, fall back to `host` where the runtime refuses it, e.g. nested/LXC), `bridge` or `host` |
+| `FXCLOUD_OFFICE_WOPI_BASE` | fxcloud URL as the engine sees it (derived from the container network when omitted) |
+
+Everything from **The three connections** down describes what the script
+does for you - use it for reference and for manual setups.
+
 ### The three connections
 
 ```text
@@ -273,23 +321,87 @@ docker run -d --name fxcloud-office --restart unless-stopped \
   -e aliasgroup1="http://fxcloud.example.com:8080" collabora/code
 
 # Euro-Office / OnlyOffice - WOPI on, private addresses allowed for the
-# internal WOPI base, an explicit allow rule for the fxcloud host
+# internal WOPI base, JWT off (the WOPI access token authenticates instead)
 docker run -d --name fxcloud-office --restart unless-stopped \
   -p 8010:80 \
-  -e WOPI_ENABLED=true -e ALLOW_PRIVATE_IP_ADDRESS=true \
-  -e IP_FILTER_RULES="allow fxcloud.example.com; deny all" \
+  -e WOPI_ENABLED=true -e ALLOW_PRIVATE_IP_ADDRESS=true -e JWT_ENABLED=false \
   nextcloud/aio-eurooffice:20261029_171813
 ```
 
-(The OnlyOffice-class engines block private addresses and wildcard-only
-IP rules by default - `ALLOW_PRIVATE_IP_ADDRESS=true` lifts the private
-address block, and WOPI needs a rule that *names* your fxcloud host. Set
-`FXCLOUD_OFFICE_WOPI_BASE` to the address the engine container can
+(The OnlyOffice-class engines block private addresses by default -
+`ALLOW_PRIVATE_IP_ADDRESS=true` lifts the private address block, which is
+what the internal WOPI base (`172.17.0.1`, `127.0.0.1`) needs;
+`JWT_ENABLED=false` keeps the DocumentServer's own JWT layer out of the
+WOPI flow. An `IP_FILTER_RULES` rule is **not** needed: this image never
+reads that variable, and its own `ipfilter.useforrequest` stays `false`.
+Set `FXCLOUD_OFFICE_WOPI_BASE` to the address the engine container can
 reach: a Docker network name, `host.docker.internal`, or an internal IP.)
 
 `--restart unless-stopped` matters: without it a reboot leaves the engine
 stopped while fxcloud comes back up, and every office button fails until
 you notice.
+
+### The landing page (branding)
+
+The bare engine serves its own welcome page (and a version banner at
+`/index.html`). Two bind mounts replace both with your own files - kept on
+the **host**, so they survive every image update and container
+recreation. Mount the welcome **directory**, not single files: the
+engine's entrypoint rewrites those pages with `sed -i` on every start
+under `set -e`, which fails on a read-only single-file mount and kills
+the container:
+
+```bash
+ENGINE_DIR=/home/fxcloud/office        # install.sh uses $FXCLOUD_HOME/office
+mkdir -p "$ENGINE_DIR/welcome"
+cat > "$ENGINE_DIR/welcome/docker.html" <<'EOF'
+<!DOCTYPE html>
+<html lang="de">
+<head><meta charset="utf-8"><title>fxcloud</title></head>
+<body>
+  <h1>fxcloud</h1>
+  <p>Office-Endpunkt &ndash; Dokumente bearbeitest du in fxcloud.</p>
+  <p><a href="https://cloud.example.com/">Zu fxcloud</a></p>
+</body>
+</html>
+EOF
+printf '%s\n' 'location = /index.html { return 200 "OK"; }' > "$ENGINE_DIR/ds-branding.conf"
+```
+
+Add both mounts to the `docker run` above:
+
+```text
+  -v /home/fxcloud/office/welcome:/var/www/euro-office/documentserver-example/welcome \
+  -v /home/fxcloud/office/ds-branding.conf:/etc/nginx/includes/ds-branding.conf \
+```
+
+- `docker.html` is what `/` and `/welcome/` serve (nginx `index`); any page
+  you do not create simply404s - no foreign branding under your domain;
+- `ds-branding.conf` is picked up by nginx's `ds-*.conf` include and turns
+  the version banner at `/index.html` into `200 OK`;
+- install.sh seeds `docker.html`, `example-disabled.html`,
+  `admin-disabled.html` and `ds-branding.conf` when they are missing -
+  your edits are never overwritten by a rerun or an engine update.
+
+### Updating the engine
+
+Nothing of the office setup lives inside the image: URL, secret and WOPI
+base are unit lines, the landing page is on the host. So an update is
+pull + recreate with the same flags and mounts:
+
+```bash
+docker pull nextcloud/aio-eurooffice:<new-tag>
+docker rm -f fxcloud-office            # in-flight editor sessions are lost
+docker run -d ...                      # same command as above, new tag
+```
+
+Or in one line with install.sh (also reconciles container, mounts and
+unit):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/floyd54/fxcloud/main/install.sh | \
+  FXCLOUD_OFFICE_IMAGE=nextcloud/aio-eurooffice:<new-tag> sh
+```
 
 ### Reverse proxy
 
@@ -337,11 +449,13 @@ private network or VPN if possible.
   permission denied`** - seen on LXC containers: `-p` port publishing
   triggers a sysctl write the nested environment refuses. Use
   `--network host` for the engine container instead (and put the engine's
-  port into `FXCLOUD_OFFICE_URL`).
+  port into `FXCLOUD_OFFICE_URL`). install.sh does this automatically:
+  its default `FXCLOUD_OFFICE_NETWORK=auto` retries with `--network host`
+  when publishing fails (then the engine needs port 80 on the host).
 - **`DNS lookup ... is not allowed. Because, It is private IP address`**
   (in the engine's log): the engine refuses the internal WOPI base -
-  `-e ALLOW_PRIVATE_IP_ADDRESS=true` plus an `IP_FILTER_RULES` rule that
-  names your fxcloud host.
+  `-e ALLOW_PRIVATE_IP_ADDRESS=true` lifts the private address block
+  (nothing else is required for WOPI on this image).
 - **The editor iframe stays blank / " refused to connect"**: mixed
   content (the page is https, the engine http) or the proxy lacks the
   websocket upgrade headers.
@@ -355,3 +469,9 @@ private network or VPN if possible.
   engine is down (`docker ps`), the URL/secret mismatch between the two
   sides, or the file is encrypted (office editing works on plaintext -
   the built-in editor handles encrypted files).
+- **install.sh: `office was requested, but docker is not installed`** -
+  by design the script never installs Docker. Install it yourself
+  (docs.docker.com/engine/install/) and re-run.
+- **install.sh never asks for the office hostname** - the prompt only
+  appears on a real terminal (`/dev/tty`); in automated runs pass the
+  name in front of `sh` behind the pipe (see Office via install.sh).
