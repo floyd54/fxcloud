@@ -393,9 +393,8 @@ EOF
 cat > "$ENGINE_DIR/ds-branding.conf" <<'EOF'
 location = /index.html { return 200 "OK"; }
 # the landing page is hand-edited - never let browsers cache it for a year
-location = /welcome/ {
+location = /welcome/docker.html {
   alias /var/www/euro-office/documentserver-example/welcome/docker.html;
-  default_type text/html;
   expires -1;
 }
 EOF
@@ -420,8 +419,13 @@ Add both mounts to the `docker run` above:
   the next run retargets exactly that one line and nothing else you wrote;
 - the engine serves the welcome path with a one-year cache
   (`expires365d`), so both conf versions above override it with
-  `no-cache`. A copy your browser already cached keeps showing the old
-  page until you hard-refresh once (Ctrl+Shift+R / Cmd+Shift+R).
+  `no-cache` - on the final file URI (`/welcome/docker.html`), which the
+  engine's own location redirects `/welcome/` to. A copy your browser
+  already cached keeps showing the old page until you hard-refresh once
+  (Ctrl+Shift+R / Cmd+Shift+R);
+- `ds-branding.conf` is a **single-file** mount: write to it in place
+  (`>>`, `cat tmp > file`) or restart the engine afterwards - editors
+  save via rename, and the container would keep serving the old file.
 
 ### Updating the engine
 
@@ -519,3 +523,18 @@ private network or VPN if possible.
 - **install.sh never asks for the office hostname** - the prompt only
   appears on a real terminal (`/dev/tty`); in automated runs pass the
   name in front of `sh` behind the pipe (see Office via install.sh).
+- **`500 Internal Server Error` on the welcome page** - a
+  `location = /welcome/ { alias .../docker.html; }` block (written by
+  install.sh before the fix) makes nginx's index module stat
+  `docker.htmlindex.html` on every request; the engine log shows
+  `[alert] ... is not a directory`. Re-run install.sh: it replaces that
+  block with the `location = /welcome/docker.html` variant **in place**
+  and reloads the engine, no restart needed. Or by hand: edit the conf
+  in place (see the branding section), then
+  `docker exec fxcloud-office nginx -t && docker exec fxcloud-office nginx -s reload`.
+- **edited `ds-branding.conf`, nothing changes in the browser** - the file
+  is a single-file bind mount and editors save via rename, so the
+  container keeps serving the previous file. `docker restart fxcloud-office`
+  picks your version up. install.sh itself only writes in place and
+  verifies that `/welcome/` answers `200` after a change (restarting the
+  engine only if it does not).

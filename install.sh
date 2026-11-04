@@ -302,32 +302,56 @@ EOF
     cp "$OFFICE_DIR/welcome/example-disabled.html" "$OFFICE_DIR/welcome/admin-disabled.html"
   fi
   # the landing page conf: index override + no-cache for a page you edit by
-  # hand; an earlier seed only had the index line - extend it in place
+  # hand. The no-cache location matches the FINAL file URI: /welcome/ is
+  # handled by the engine's own location and redirects to
+  # /welcome/docker.html, so the index module never runs under our exact
+  # match. An exact match on /welcome/ with alias to the FILE made nginx
+  # stat "<file>index.html" per request -> ENOTDIR ->500.
+  # Every write here is truncate-in-place (never sed -i): the conf is a
+  # FILE bind mount, a rename silently decouples the container's view.
   OFFICE_CONF_CHANGED=0
   OFFICE_BRAND_CONF="$OFFICE_DIR/ds-branding.conf"
   if [ ! -f "$OFFICE_BRAND_CONF" ]; then
     cat > "$OFFICE_BRAND_CONF" <<'EOF'
 location = /index.html { return 200 "OK"; }
 # the landing page is hand-edited - never let browsers cache it for a year
-location = /welcome/ {
+location = /welcome/docker.html {
   alias /var/www/euro-office/documentserver-example/welcome/docker.html;
-  default_type text/html;
   expires -1;
 }
 EOF
-  elif ! grep -q 'location = /welcome/' "$OFFICE_BRAND_CONF" &&
-    grep -q 'location = /index.html' "$OFFICE_BRAND_CONF"; then
-    cat >> "$OFFICE_BRAND_CONF" <<'EOF'
+  else
+    # repair the block from the broken variant (our own comment + location)
+    if grep -qF '# the landing page is hand-edited' "$OFFICE_BRAND_CONF" &&
+      grep -qF 'location = /welcome/ {' "$OFFICE_BRAND_CONF"; then
+      OFFICE_TMP="$OFFICE_BRAND_CONF.tmp"
+      awk 'skip && /^}$/{skip=0; next}
+           skip{next}
+           /^# the landing page is hand-edited/{skip=1; next}
+           {print}' "$OFFICE_BRAND_CONF" > "$OFFICE_TMP" &&
+        cat "$OFFICE_TMP" > "$OFFICE_BRAND_CONF" &&
+        rm -f "$OFFICE_TMP" ||
+        die "cannot repair $OFFICE_BRAND_CONF - fix it by hand and re-run"
+      OFFICE_CONF_CHANGED=1
+      log "office: repaired the welcome block in ds-branding.conf (the old one made nginx answer500)"
+    fi
+    # a welcome block this script does not know would shadow the fixed one
+    if grep -qF 'location = /welcome/ {' "$OFFICE_BRAND_CONF"; then
+      die "$OFFICE_BRAND_CONF contains an unknown 'location = /welcome/' block (it makes nginx answer500) - remove it and re-run"
+    fi
+    if ! grep -qF 'location = /welcome/docker.html' "$OFFICE_BRAND_CONF" &&
+      grep -qF 'location = /index.html' "$OFFICE_BRAND_CONF"; then
+      cat >> "$OFFICE_BRAND_CONF" <<'EOF'
 
 # the landing page is hand-edited - never let browsers cache it for a year
-location = /welcome/ {
+location = /welcome/docker.html {
   alias /var/www/euro-office/documentserver-example/welcome/docker.html;
-  default_type text/html;
   expires -1;
 }
 EOF
-    OFFICE_CONF_CHANGED=1
-    log "office: added no-cache for the landing page to ds-branding.conf"
+      OFFICE_CONF_CHANGED=1
+      log "office: added no-cache for the landing page to ds-branding.conf"
+    fi
   fi
 
   # earlier seeds linked back to the office origin itself ("/") - retarget
@@ -643,6 +667,42 @@ if [ -n "$OFFICE_URL" ]; then
     if docker exec fxcloud-office nginx -t >/dev/null 2>&1 &&
       docker exec fxcloud-office nginx -s reload >/dev/null 2>&1; then
       log "office: engine reloaded - the landing page is no longer cached for a year"
+      # prove the reload took effect: the conf is a FILE bind mount, a
+      # rename-save editor decouples it and every write stays invisible
+      WCODE=000
+      i=0
+      while [ "$i" -lt 10 ]; do
+        WCODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+          "http://127.0.0.1:$ENGINE_LOCAL_PORT/welcome/" 2>/dev/null || true)
+        if [ "$WCODE" = 200 ]; then break; fi
+        i=$((i + 1))
+        sleep 1
+      done
+      if [ "$WCODE" != 200 ]; then
+        log "office: /welcome/ still answers $WCODE - restarting the engine so it picks up ds-branding.conf (in-flight editor sessions drop)"
+        docker restart fxcloud-office >/dev/null || true
+        i=0
+        while [ "$i" -lt 30 ]; do
+          WCODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+            "http://127.0.0.1:$ENGINE_LOCAL_PORT/welcome/" 2>/dev/null || true)
+          if [ "$WCODE" = 200 ]; then break; fi
+          i=$((i + 1))
+          sleep 1
+        done
+        if [ "$WCODE" = 200 ]; then
+          log "office: landing page OK after the restart"
+          # the restart also dropped the document service - wait for it again
+          i=0
+          while [ "$i" -lt 30 ]; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$ENGINE_DEEP" 2>/dev/null || true)
+            if [ "$CODE" != 502 ] && [ "$CODE" != 503 ] && [ "$CODE" != 000 ]; then break; fi
+            i=$((i + 1))
+            sleep 1
+          done
+        else
+          log "office: /welcome/ still answers $WCODE - compare what nginx sees: docker exec fxcloud-office cat /etc/nginx/includes/ds-branding.conf"
+        fi
+      fi
     else
       log "office: could not reload the engine nginx - run: docker exec fxcloud-office nginx -s reload"
     fi
