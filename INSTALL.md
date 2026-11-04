@@ -226,12 +226,12 @@ and everything else on this page keeps working exactly as before.
 > **Explicit recommendation: start without office integration.** Get
 > fxcloud running first; office is an add-on you retrofit later, when you
 > actually need it - and that is deliberately easy: run the same one-liner
-> again with the office hostname ([Office via install.sh](#office-via-installsh)),
-> it wires office into an already installed instance. Starting out with
-> office makes the first installation unnecessarily more complicated:
-> Docker must be in place, a second reverse-proxy entry and an image
-> download come into play, and the engine reserves its RAM from the very
-> first minute.
+> again with the office hostname
+> ([Office via install.sh](#office-via-installsh)), it wires office into
+> an already installed instance. Starting out with office makes the first
+> installation unnecessarily more complicated: Docker must be in place, a
+> second reverse-proxy entry and an image download come into play, and
+> the engine reserves its RAM from the very first minute.
 
 ### What it costs
 
