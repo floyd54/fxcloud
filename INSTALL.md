@@ -27,6 +27,18 @@ The first line prints `fxcloud v... is running` once
 `http://<host>:8080/login` answers. Open it and register: the **first
 account** becomes the administrator.
 
+On a terminal the script asks one question before it installs anything:
+
+```text
+office hostname (e.g. office.example.com, Enter to skip):
+```
+
+**Explicit recommendation: press Enter and start without office
+integration.** It retrofits later with one rerun of the same line plus
+the office hostname ([Office integration](#office-integration-optional))
+- at the beginning it only makes the installation more complicated than
+it has to be.
+
 Environment variables configure the unit the script writes (all optional,
 defaults in brackets). They have to reach the script itself: `export` them
 before the one-liner, or place them in front of `sh` *behind* the pipe. In
@@ -211,6 +223,16 @@ This is an **addition, never a requirement**. Unless `FXCLOUD_OFFICE_URL`
 is set, none of it exists: no routes, no CSP change, no UI, no cost -
 and everything else on this page keeps working exactly as before.
 
+> **Explicit recommendation: start without office integration.** Get
+> fxcloud running first; office is an add-on you retrofit later, when you
+> actually need it - and that is deliberately easy: run the same one-liner
+> again with the office hostname ([Office via install.sh](#office-via-installsh)),
+> it wires office into an already installed instance. Starting out with
+> office makes the first installation unnecessarily more complicated:
+> Docker must be in place, a second reverse-proxy entry and an image
+> download come into play, and the engine reserves its RAM from the very
+> first minute.
+
 ### What it costs
 
 | Where you run | What to budget |
@@ -247,7 +269,10 @@ With a hostname the script, in one run:
 - **adds the `FXCLOUD_OFFICE_*` lines to the unit - also to an
   existing unit**, so plain updates on an installed fxcloud gain office
   without touching anything else (rerun-proof, existing values are kept);
-- prints the local port the reverse proxy has to target.
+- **prints where the engine listens**: the raw port mapping (e.g.
+  `0.0.0.0:8010`) as soon as the container is up - the exact number the
+  reverse proxy needs, no `ss` digging - and both proxy targets (localhost
+  and this host) again in the final summary.
 
 What stays manual: the reverse proxy entry for the office name (websocket
 upgrade + TLS) - covered under Reverse proxy below.
@@ -365,7 +390,15 @@ cat > "$ENGINE_DIR/welcome/docker.html" <<'EOF'
 </body>
 </html>
 EOF
-printf '%s\n' 'location = /index.html { return 200 "OK"; }' > "$ENGINE_DIR/ds-branding.conf"
+cat > "$ENGINE_DIR/ds-branding.conf" <<'EOF'
+location = /index.html { return 200 "OK"; }
+# the landing page is hand-edited - never let browsers cache it for a year
+location = /welcome/ {
+  alias /var/www/euro-office/documentserver-example/welcome/docker.html;
+  default_type text/html;
+  expires -1;
+}
+EOF
 ```
 
 Add both mounts to the `docker run` above:
@@ -381,7 +414,14 @@ Add both mounts to the `docker run` above:
   the version banner at `/index.html` into `200 OK`;
 - install.sh seeds `docker.html`, `example-disabled.html`,
   `admin-disabled.html` and `ds-branding.conf` when they are missing -
-  your edits are never overwritten by a rerun or an engine update.
+  your edits are never overwritten by a rerun or an engine update;
+- the link back to fxcloud targets `FXCLOUD_ORIGIN` (unit line or knob)
+  when install.sh seeds it; a seed from before that still points at `/` -
+  the next run retargets exactly that one line and nothing else you wrote;
+- the engine serves the welcome path with a one-year cache
+  (`expires365d`), so both conf versions above override it with
+  `no-cache`. A copy your browser already cached keeps showing the old
+  page until you hard-refresh once (Ctrl+Shift+R / Cmd+Shift+R).
 
 ### Updating the engine
 
@@ -442,6 +482,10 @@ private network or VPN if possible.
    row changed, and **Settings > Version history** (or the row menu)
    shows one new version - that is the save round trip through WOPI.
 4. `journalctl -u fxcloud -f` again: no404 from the engine's WOPI calls.
+5. Open the office hostname directly in a browser: your own landing page
+   appears (not the engine's welcome page) and its link back reaches
+   fxcloud - hard-refresh once (Ctrl+Shift+R) if the browser still shows
+   an old cached copy.
 
 ### Troubleshooting
 

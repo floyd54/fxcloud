@@ -84,6 +84,19 @@ OFFICE_URL="$OFFICE_URL_IN_UNIT"
 if [ -z "$OFFICE_URL" ]; then
   OFFICE_URL="${FXCLOUD_OFFICE_URL:-}"
 fi
+# where the landing page sends visitors back to: the origin the running
+# service uses (an existing unit wins, like everywhere else), else the
+# FXCLOUD_ORIGIN knob; without a usable value the button links to "/"
+# and the summary says how to fix that
+OFFICE_LINK="${FXCLOUD_ORIGIN:-}"
+if [ -f "$UNIT" ]; then
+  OFFICE_LINK_IN_UNIT=$(sed -n 's/^Environment=FXCLOUD_ORIGIN=//p' "$UNIT" | head -n 1)
+  if [ -n "$OFFICE_LINK_IN_UNIT" ]; then
+    OFFICE_LINK="$OFFICE_LINK_IN_UNIT"
+  fi
+fi
+OFFICE_LINK=$(printf '%s' "$OFFICE_LINK" | tr -d '\r\n')
+[ -n "$OFFICE_LINK" ] || OFFICE_LINK="/"
 if [ -z "$OFFICE_URL" ] && ( : </dev/tty ) 2>/dev/null; then
   printf 'office hostname (e.g. office.example.com, Enter to skip): '
   OFFICE_ANSWER=""
@@ -288,8 +301,55 @@ EOF
   if [ ! -f "$OFFICE_DIR/welcome/admin-disabled.html" ]; then
     cp "$OFFICE_DIR/welcome/example-disabled.html" "$OFFICE_DIR/welcome/admin-disabled.html"
   fi
-  if [ ! -f "$OFFICE_DIR/ds-branding.conf" ]; then
-    printf '%s\n' 'location = /index.html { return 200 "OK"; }' > "$OFFICE_DIR/ds-branding.conf"
+  # the landing page conf: index override + no-cache for a page you edit by
+  # hand; an earlier seed only had the index line - extend it in place
+  OFFICE_CONF_CHANGED=0
+  OFFICE_BRAND_CONF="$OFFICE_DIR/ds-branding.conf"
+  if [ ! -f "$OFFICE_BRAND_CONF" ]; then
+    cat > "$OFFICE_BRAND_CONF" <<'EOF'
+location = /index.html { return 200 "OK"; }
+# the landing page is hand-edited - never let browsers cache it for a year
+location = /welcome/ {
+  alias /var/www/euro-office/documentserver-example/welcome/docker.html;
+  default_type text/html;
+  expires -1;
+}
+EOF
+  elif ! grep -q 'location = /welcome/' "$OFFICE_BRAND_CONF" &&
+    grep -q 'location = /index.html' "$OFFICE_BRAND_CONF"; then
+    cat >> "$OFFICE_BRAND_CONF" <<'EOF'
+
+# the landing page is hand-edited - never let browsers cache it for a year
+location = /welcome/ {
+  alias /var/www/euro-office/documentserver-example/welcome/docker.html;
+  default_type text/html;
+  expires -1;
+}
+EOF
+    OFFICE_CONF_CHANGED=1
+    log "office: added no-cache for the landing page to ds-branding.conf"
+  fi
+
+  # earlier seeds linked back to the office origin itself ("/") - retarget
+  # exactly those lines at fxcloud; anything else you wrote is untouched
+  if [ "$OFFICE_LINK" != "/" ]; then
+    OFFICE_LINK_SED=$(printf '%s' "$OFFICE_LINK" | sed 's/[&\\|]/\\&/g')
+    OFFICE_MIGRATED=0
+    for OFFICE_PAGE in "$OFFICE_DIR/welcome/"*.html; do
+      [ -f "$OFFICE_PAGE" ] || continue
+      if grep -qF '<a class="btn" href="/">Zu fxcloud</a>' "$OFFICE_PAGE" ||
+        grep -qF '<a href="/">Zur&uuml;ck zu fxcloud</a>' "$OFFICE_PAGE"; then
+        sed -i \
+          -e "s|<a class=\"btn\" href=\"/\">Zu fxcloud</a>|<a class=\"btn\" href=\"$OFFICE_LINK_SED\">Zu fxcloud</a>|" \
+          -e "s|<a href=\"/\">Zur&uuml;ck zu fxcloud</a>|<a href=\"$OFFICE_LINK_SED\">Zur\&uuml;ck zu fxcloud</a>|" \
+          "$OFFICE_PAGE" ||
+          die "cannot update the link in $OFFICE_PAGE - fix it by hand"
+        OFFICE_MIGRATED=$((OFFICE_MIGRATED + 1))
+      fi
+    done
+    if [ "$OFFICE_MIGRATED" -gt 0 ]; then
+      log "office: landing page now links to $OFFICE_LINK ($OFFICE_MIGRATED pages)"
+    fi
   fi
   chown -R "$USER_NAME" "$OFFICE_DIR"
 
@@ -355,12 +415,16 @@ EOF
     fi
   fi
 
-  # local address for the readiness check and the proxy hint
+  # local address for the readiness check, the proxy hint - and the loud
+  # "where does it listen" line: this is the number your proxy needs
   if [ "$OFFICE_MODE" = host ]; then
     ENGINE_LOCAL_PORT=80
+    log "office: engine runs in the host network - listens on port 80 of this host (proxy target: http://<this-host>:80)"
   else
-    ENGINE_LOCAL_PORT=$(docker port fxcloud-office 80/tcp 2>/dev/null | head -n 1 | sed 's/.*://')
+    ENGINE_BIND=$(docker port fxcloud-office 80/tcp 2>/dev/null | head -n 1)
+    ENGINE_LOCAL_PORT="${ENGINE_BIND##*:}"
     ENGINE_LOCAL_PORT="${ENGINE_LOCAL_PORT:-$OFFICE_PPORT}"
+    log "office: engine published as ${ENGINE_BIND:-port $ENGINE_LOCAL_PORT} - proxy target: http://<this-host>:$ENGINE_LOCAL_PORT"
   fi
 
   # WOPI base: knob > existing unit > derived from how the engine reaches fxcloud
@@ -529,9 +593,14 @@ printf '    configure: edit %s, then systemctl restart fxcloud\n' "$UNIT"
 if [ -n "$OFFICE_URL" ]; then
   printf '    office:    %s\n' "$OFFICE_URL"
   printf '    engine:    %s (%s network, local port %s)\n' "$OFFICE_IMAGE" "$OFFICE_MODE" "$ENGINE_LOCAL_PORT"
-  printf '    proxy:     still yours: route the office name to http://<this-host>:%s\n' "$ENGINE_LOCAL_PORT"
-  printf '               (websocket upgrade + TLS required - see INSTALL.md, office section)\n'
-  printf '    branding:  %s/welcome - your landing page, survives engine updates\n' "$OFFICE_DIR"
+  printf '    proxy:     route %s to http://<this-host>:%s\n' "$OFFICE_URL" "$ENGINE_LOCAL_PORT"
+  printf '               (local proxy: http://127.0.0.1:%s; websocket upgrade + TLS - INSTALL.md)\n' "$ENGINE_LOCAL_PORT"
+  printf '    branding:  %s/welcome - links to %s\n' "$OFFICE_DIR" "$OFFICE_LINK"
+  if [ "$OFFICE_LINK" = "/" ] &&
+    grep -qF 'href="/"' "$OFFICE_DIR/welcome/docker.html" 2>/dev/null; then
+    printf '    note:      the landing page button points at "/" - set a valid FXCLOUD_ORIGIN\n'
+    printf '               in %s and re-run this script to point it at your cloud\n' "$UNIT"
+  fi
 fi
 if [ -f "$BIN.bak" ]; then
   printf '    rollback:  systemctl stop fxcloud && cp %s %s && systemctl start fxcloud\n' "$BIN.bak" "$BIN"
@@ -568,5 +637,15 @@ if [ -n "$OFFICE_URL" ]; then
     fi
     sleep 1
   done
+  # apply a landing-page conf we extended to a kept engine (a container
+  # created in this run already read it at start)
+  if [ "$OFFICE_CONF_CHANGED" = 1 ] && [ "$OFFICE_RECREATE" = 0 ]; then
+    if docker exec fxcloud-office nginx -t >/dev/null 2>&1 &&
+      docker exec fxcloud-office nginx -s reload >/dev/null 2>&1; then
+      log "office: engine reloaded - the landing page is no longer cached for a year"
+    else
+      log "office: could not reload the engine nginx - run: docker exec fxcloud-office nginx -s reload"
+    fi
+  fi
   log "office: editor engine ready"
 fi
