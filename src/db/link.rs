@@ -505,6 +505,9 @@ fn row_to_entry_for_link(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry>
         purge_at: None,
         enc_version: row.get("enc_version")?,
         enc_key: None,
+        // The visitor surface decides access from the link's mask; a zone
+        // flag would be policy the visitor cannot act on.
+        enc_zone: 0,
     })
 }
 

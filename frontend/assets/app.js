@@ -588,6 +588,16 @@
     } else {
       if (entry.is_dir) {
         items.push([t("act.open"), () => openFolder(entry.id, perms)]);
+        if (perms & PERM_UPDATE) {
+          items.push([
+            t("enc.migrate.menu"),
+            () => openMigrate(entry.id, t("enc.migrate.folder", { name: entry.name })),
+          ]);
+          items.push([
+            t("zone.menu", { state: entry.enc_zone ? t("zone.on") : t("zone.off") }),
+            () => toggleZone(entry),
+          ]);
+        }
       }
       if (!entry.is_dir && (perms & PERM_READ)) {
         if (canOffice(entry, perms)) {
@@ -656,6 +666,23 @@
     const left = Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8);
     menu.style.left = Math.max(8, left) + "px";
     openMenu = menu;
+  }
+
+  /**
+   * Flip a folder's encryption zone flag and refresh the listing, so the
+   * menu label and every write gate see the new state at once.
+   */
+  async function toggleZone(entry) {
+    try {
+      await api("/api/files/zone", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: entry.id, flag: entry.enc_zone ? 0 : 1 }),
+      });
+      await loadFiles(currentParent);
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   // Close the popup on outside clicks, Escape, and layout changes.
@@ -1047,6 +1074,34 @@
     }
   }
 
+  // ---------- phase 4 write zone (ENCRYPTION.md 12) ----------
+  // A folder flagged as an encryption zone demands the key for new writes
+  // below it even when the badge is off. The flag rides the breadcrumb, so
+  // one request answers for the folder and everything under it; the
+  // virtual root has no row and can never be a zone.
+  async function zoneActive(parentId) {
+    if (parentId == null) return false;
+    const crumbs = await api(`/api/files/breadcrumb?id=${parentId}`).then((r) =>
+      r.json()
+    );
+    return (crumbs.breadcrumbs || []).some((c) => c.enc_zone);
+  }
+
+  /**
+   * Unlock when - and only when - the write target sits in a zone. An
+   * unlocked tab, or any unmarked path, proceeds exactly as before: the
+   * badge keeps ruling everywhere else (DECISION 11).
+   */
+  async function ensureZoneUnlocked(parentId) {
+    if (FXEnc.unlocked()) return true;
+    if (!(await zoneActive(parentId))) return true;
+    if (!(await FXEnc.requestKeys())) {
+      alert(t("zone.needUnlock"));
+      return false;
+    }
+    return true;
+  }
+
   async function newFile() {
     let name = prompt(t("prompt.newFile"), "note.md");
     if (name === null) return; // cancelled
@@ -1061,6 +1116,9 @@
       alert(t("file.textOnly"));
       return;
     }
+    // A zone demands the key before the row exists: an Unencrypted tab
+    // unlocks here instead of leaving a plaintext row in the zone.
+    if (!(await ensureZoneUnlocked(currentParent))) return;
     try {
       const res = await api("/api/files/file", {
         method: "POST",
@@ -1577,14 +1635,23 @@
     const entry = editorEntry;
     const content = editorText.value;
     setEditorStatus(t("editor.saving"));
-    const save =
-      entry.enc_version > 0
-        ? FXEnc.writeText(entry, content)
-        : api(`/api/files/content?id=${entry.id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-            body: content,
-          }).then((r) => r.json());
+    const save = (async () => {
+      if (entry.enc_version > 0) return FXEnc.writeText(entry, content);
+      // The write zone (ENCRYPTION.md phase 4): a plaintext row below a
+      // flagged folder is promoted on save - the key is demanded first,
+      // and the plaintext history drops with the plaintext itself.
+      if (await zoneActive(entry.parent_id)) {
+        if (!FXEnc.unlocked() && !(await FXEnc.requestKeys())) {
+          throw new Error(t("zone.needUnlock"));
+        }
+        if (FXEnc.unlocked()) return FXEnc.writeText(entry, content, true);
+      }
+      return api(`/api/files/content?id=${entry.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+        body: content,
+      }).then((r) => r.json());
+    })();
     return save
       .then((res) => {
         // The row changed on the server, whatever the editor does next - so
@@ -1945,6 +2012,11 @@
     // always wrapped with *our* root key and stored on a row we own - which
     // makes it correct inside our own tree, inside a folder someone shared
     // with us, or anywhere else an upload is allowed to land.
+    //
+    // The zone is the one exception to "not a prompt": a folder flagged as
+    // an encryption zone unlocks here first - and then everything in this
+    // drop encrypts, because the tab is unlocked (ENCRYPTION.md phase 4).
+    if (!(await ensureZoneUnlocked(base))) return;
     const encrypt = FXEnc.unlocked();
 
     const failures = [];

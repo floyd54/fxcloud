@@ -215,6 +215,16 @@ impl Db {
                 include_str!("../../migrations/018_public_links.sql"),
                 None,
             ),
+            // The folder write zone (ENCRYPTION.md phase 4): a flag column,
+            // so the pragma guard every column addition carries here.
+            (
+                "019_enc_zone",
+                include_str!("../../migrations/019_enc_zone.sql"),
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('files')
+                     WHERE name = 'enc_zone'",
+                ),
+            ),
         ];
         let conn = self.pool.get()?;
         for (name, sql, guard) in MIGRATIONS {

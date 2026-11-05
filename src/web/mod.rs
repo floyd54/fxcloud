@@ -223,6 +223,9 @@ pub fn build_router(state: SharedState) -> Router {
         // Store a key record without touching bytes (folders on first
         // encrypted write, re-binding after a move, share-time migration).
         .route("/files/key", put(routes::files::put_key));
+    // Policy: a folder that demands the key for new writes below it
+    // (the phase4 write zone, ENCRYPTION.md 12).
+    let api = api.route("/files/zone", put(routes::files::put_enc_zone));
     // Sharing
     let api = api
         .route("/shares", post(routes::shares::create))

@@ -1435,6 +1435,33 @@ RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" -H 'Content-Type: ap
   "$BASE/api/files/content?id=$MFILE&enc=1&key=$MKEY&history=keep")
 [ "$RC" = "400" ] && ok "an unknown history value -> 400" || bad "expected 400, got $RC"
 
+note "phase4 zone: a folder flag the write paths read"
+ZRESP=$(req POST /api/files/folder "$JA" '{"name":"vault-zone"}')
+ZID=$(jget "$ZRESP" entry.id)
+[ -n "$ZID" ] && ok "zone folder created" || bad "zone folder missing: $ZRESP"
+RC=$(reqcode PUT /api/files/zone "$JA" "{\"id\":$ZID,\"flag\":1}")
+[ "$RC" = "200" ] && ok "PUT /api/files/zone marks a folder" || bad "mark: $RC"
+ME=$(req GET "/api/files/info?id=$ZID" "$JA")
+[ "$(jget "$ME" entry.enc_zone)" = "1" ] && ok "the flag rides on the entry" || bad "info: $ME"
+BC=$(req GET "/api/files/breadcrumb?id=$ZID" "$JA")
+echo "$BC" | grep -q '"enc_zone":1' \
+  && ok "the breadcrumb carries the flag (one request for the whole path)" \
+  || bad "breadcrumb: $BC"
+RC=$(reqcode PUT /api/files/zone "$JA" "{\"id\":$ZID,\"flag\":0}")
+[ "$RC" = "200" ] && ok "unmark -> 200" || bad "unmark: $RC"
+ME=$(req GET "/api/files/info?id=$ZID" "$JA")
+[ "$(jget "$ME" entry.enc_zone)" = "0" ] && ok "the flag comes off" || bad "info: $ME"
+# A file has no zone: only folders can demand the key.
+printf 'zone target\n' > "$ROOT/src/zone.txt"
+ZF=$(jget "$(up "$JA" "" zone.txt)" entry.id)
+RC=$(reqcode PUT /api/files/zone "$JA" "{\"id\":$ZF,\"flag\":1}")
+[ "$RC" = "400" ] && ok "a file has no zone -> 400" || bad "expected 400, got $RC"
+# An UPDATE grantee may write, but may not change the folder's policy.
+req POST /api/shares/batch "$JA" \
+  "{\"items\":[{\"file_id\":$ZID}],\"username\":\"bob\",\"permissions\":3}" >/dev/null
+RC=$(reqcode PUT /api/files/zone "$JB" "{\"id\":$ZID,\"flag\":1}")
+[ "$RC" = "403" ] && ok "an UPDATE grantee cannot change the zone -> 403" || bad "expected 403, got $RC"
+
 note "version history: quota sums live rows and version history"
 ME=$(req GET /api/me "$JA")
 USED=$(jget "$ME" used_bytes)

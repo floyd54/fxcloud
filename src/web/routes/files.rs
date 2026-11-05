@@ -1194,6 +1194,19 @@ pub async fn put_key(
     Ok(Json(json!({ "entry": entry })))
 }
 
+/// PUT /api/files/zone – mark or unmark a folder as an encryption zone
+/// (ENCRYPTION.md phase 4). Policy only: the flag changes nothing about
+/// stored bytes, it makes the client demand the key for new writes below
+/// the folder even when the badge is off.
+pub async fn put_enc_zone(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<crate::models::SetZoneRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let entry = state.db.set_enc_zone(user.id(), req.id, req.flag).await?;
+    Ok(Json(json!({ "entry": entry })))
+}
+
 // ---------------------------------------------------------------------------
 // Batch operations (multi-selection)
 // ---------------------------------------------------------------------------

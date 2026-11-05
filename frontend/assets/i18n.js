@@ -502,6 +502,11 @@
     "enc.migrate.failed": "Fehlgeschlagen: {names}",
     "enc.migrate.continue": "Weiter nach Platz schaffen",
     "enc.migrate.cancel": "Abbrechen",
+    "enc.migrate.menu": "Ordner jetzt verschl\u00fcsseln\u2026",
+    "zone.menu": "Verschl\u00fcsselungs-Zone: {state}",
+    "zone.on": "ein",
+    "zone.off": "aus",
+    "zone.needUnlock": "Dieser Ordner ist eine Verschl\u00fcsselungs-Zone - entsperre die Verschl\u00fcsselung, um hier zu schreiben.",
 
     // login / register page
     "login.title": "Anmelden \u00b7 fxcloud",
@@ -1061,6 +1066,11 @@
     "enc.migrate.failed": "Failed: {names}",
     "enc.migrate.continue": "Continue after freeing space",
     "enc.migrate.cancel": "Cancel",
+    "enc.migrate.menu": "Encrypt folder now\u2026",
+    "zone.menu": "Encryption zone: {state}",
+    "zone.on": "on",
+    "zone.off": "off",
+    "zone.needUnlock": "This folder is an encryption zone - unlock encryption to write here.",
 
     // login / register page
     "login.title": "Sign in \u00b7 fxcloud",
@@ -1593,6 +1603,11 @@
     "enc.migrate.failed": "Failed: {names}",
     "enc.migrate.continue": "Continue after freeing space",
     "enc.migrate.cancel": "Cancel",
+    "enc.migrate.menu": "Encrypt folder now\u2026",
+    "zone.menu": "Encryption zone: {state}",
+    "zone.on": "on",
+    "zone.off": "off",
+    "zone.needUnlock": "This folder is an encryption zone - unlock encryption to write here.",
 
     // login / register page
     "login.title": "nom \u00b7 fxcloud",

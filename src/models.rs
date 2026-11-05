@@ -148,6 +148,11 @@ pub struct FileEntry {
     /// already authorizes the caller, because that is who may unwrap it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enc_key: Option<String>,
+    /// The folder's write zone (ENCRYPTION.md phase 4): new writes below a
+    /// flagged folder demand the key even when the badge is off. Read from
+    /// the breadcrumbs, so one request answers "is this path a zone?".
+    #[serde(default)]
+    pub enc_zone: i64,
 }
 
 /// One account's encryption key material (ENCRYPTION.md section 6).
@@ -311,6 +316,10 @@ pub struct Breadcrumb {
     /// the entry itself, with its own record last.
     #[serde(default)]
     pub enc_key: Option<String>,
+    /// The crumb's write-zone flag (ENCRYPTION.md phase 4), so the client
+    /// can ask "does any ancestor demand the key?" in the same request.
+    #[serde(default)]
+    pub enc_zone: i64,
 }
 
 /// Payload for creating a new folder.
@@ -638,6 +647,14 @@ pub struct SetKeyRequest {
     /// Base64 of the wrapped record, exactly as every other endpoint
     /// carries it. Empty and undecodable values are refused.
     pub key: String,
+}
+
+/// PUT /api/files/zone: mark (`flag = 1`) or unmark (`flag = 0`) a folder
+/// as an encryption zone (ENCRYPTION.md phase 4).
+#[derive(Debug, Deserialize)]
+pub struct SetZoneRequest {
+    pub id: i64,
+    pub flag: i64,
 }
 
 // ---------------------------------------------------------------------------

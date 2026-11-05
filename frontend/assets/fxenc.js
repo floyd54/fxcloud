@@ -1181,7 +1181,7 @@
    * that one is wrapped under its folder's key so the chain below the
    * folder stays walkable.
    */
-  async function writeText(entry, text) {
+  async function writeText(entry, text, dropHistory) {
     if (state.status !== "unlocked") throw new Error(t("enc.err.save"));
     const plain = new TextEncoder().encode(text);
     let fileKey;
@@ -1195,8 +1195,15 @@
       wrappedKey = await FX().wrapChildKey(parentKey, entry.id, fileKey);
     }
     const out = await heavy("encryptBytes", [entry.id, fileKey, plain], [plain.buffer]);
+    // `dropHistory` is the zone-promoted save (ENCRYPTION.md phase 4): it
+    // replaces plaintext with ciphertext, so the plaintext history it would
+    // otherwise pin goes with the plaintext itself.
     const res = await http(
-      "/api/files/content?id=" + entry.id + "&enc=1&key=" + encodeURIComponent(wrappedKey),
+      "/api/files/content?id=" +
+        entry.id +
+        "&enc=1&key=" +
+        encodeURIComponent(wrappedKey) +
+        (dropHistory ? "&history=drop" : ""),
       {
         method: "PUT",
         headers: { "Content-Type": "application/octet-stream" },

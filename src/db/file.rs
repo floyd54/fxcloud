@@ -41,6 +41,7 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
         enc_key: row
             .get::<_, Option<Vec<u8>>>("enc_key")?
             .map(|b| BASE64.encode(b)),
+        enc_zone: row.get("enc_zone")?,
         deleted_at: deleted_at.as_deref().map(|s| parse_ts(s, 9)).transpose()?,
         purge_at: None,
     })
@@ -162,7 +163,11 @@ fn ensure_quota(conn: &Connection, principal: TreeOwner, additional: i64) -> Res
 }
 
 const ENTRY_COLS: &str = "id, owner_id, owner_group_id, parent_id, name, is_dir, size, mime, \
-                         created_at, modified_at, deleted_at, enc_version, enc_key";
+                         created_at, modified_at, deleted_at, enc_version, enc_key, enc_zone";
+
+/// One breadcrumb step's columns as [`Db::breadcrumbs`] reads them:
+/// (name, parent_id, owner_id, owner_group_id, enc_key, enc_zone).
+type CrumbRow = (String, Option<i64>, i64, Option<i64>, Option<Vec<u8>>, i64);
 
 /// Enforce the count bound on one file's history: keep the newest `keep`
 /// versions, collect and delete the rest. `keep <= 0` disables the bound
@@ -781,17 +786,20 @@ impl Db {
                 if hops > 64 {
                     return Err(AppError::NotFound);
                 }
-                let (name, parent, owner, group, enc_key): (
-                    String,
-                    Option<i64>,
-                    i64,
-                    Option<i64>,
-                    Option<Vec<u8>>,
-                ) = conn.query_row(
-                    "SELECT name, parent_id, owner_id, owner_group_id, enc_key
+                let (name, parent, owner, group, enc_key, enc_zone): CrumbRow = conn.query_row(
+                    "SELECT name, parent_id, owner_id, owner_group_id, enc_key, enc_zone
                        FROM files WHERE id = ?1",
                     params![cid],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                        ))
+                    },
                 )?;
                 top_owner = Some(owner);
                 top_group = group;
@@ -799,6 +807,7 @@ impl Db {
                     id: Some(cid),
                     name,
                     enc_key: enc_key.map(|b| BASE64.encode(b)),
+                    enc_zone,
                 });
                 current = parent;
             }
@@ -833,6 +842,9 @@ impl Db {
                     // The synthetic root has no row and therefore no key
                     // record: a read starts from the session's root key.
                     enc_key: None,
+                    // No row either, so no zone: the root can never demand
+                    // the key - only a real folder can carry the flag.
+                    enc_zone: 0,
                 },
             );
             Ok(trail)
@@ -1612,6 +1624,63 @@ impl Db {
         .await
     }
 
+    /// Mark (`flag = 1`) or unmark a folder as an encryption zone
+    /// (ENCRYPTION.md phase 4): policy only, stored bytes never change -
+    /// it makes the client demand the key for new writes below the folder
+    /// even when the badge is off. Folders only (a file's own flag would
+    /// never be read), and the same line the key record draws: PERM_UPDATE,
+    /// but only the row's owner - the group manager on a group row - may
+    /// change the policy.
+    pub async fn set_enc_zone(
+        &self,
+        user_id: i64,
+        id: i64,
+        flag: i64,
+    ) -> Result<FileEntry, AppError> {
+        let flag = if flag == 0 { 0 } else { 1 };
+        self.run(move |conn| {
+            let principal = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
+            let (user, group) = principal_params(principal);
+            let is_dir: bool = conn
+                .query_row(
+                    &format!("SELECT is_dir != 0 FROM files WHERE id = ?1 AND {PRINCIPAL_GUARD}"),
+                    params![id, user, group],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or(AppError::NotFound)?;
+            if !is_dir {
+                return Err(AppError::BadRequest(
+                    "only folders have an encryption zone".into(),
+                ));
+            }
+            let may_set = match principal {
+                TreeOwner::User(owner) => user_id == owner,
+                TreeOwner::Group(group_id) => matches!(
+                    group_role(conn, user_id, group_id)?,
+                    Some(role) if role == crate::sharing::ROLE_MANAGER
+                ),
+            };
+            if !may_set {
+                return Err(AppError::ForbiddenDetail(
+                    match principal {
+                        TreeOwner::User(_) => "only the row's owner may change its encryption zone",
+                        TreeOwner::Group(_) => {
+                            "only a group manager may change this folder's encryption zone"
+                        }
+                    }
+                    .into(),
+                ));
+            }
+            conn.execute(
+                &format!("UPDATE files SET enc_zone = ?1 WHERE id = ?2 AND {PRINCIPAL_GUARD}"),
+                params![flag, id, user, group],
+            )?;
+            get_entry_by_id(conn, id)
+        })
+        .await
+    }
+
     /// Fetch an entry the user may *read*: their own, or one covered by a
     /// share granting READ. Stamps the share's permissions onto the entry.
     pub async fn entry_for_read(
@@ -2060,6 +2129,10 @@ fn incoming_mounts(conn: &Connection, user_id: i64) -> Result<Vec<FileEntry>, Ap
                 subtree_bytes: None,
                 enc_version: r.get(11)?,
                 enc_key: r.get::<_, Option<Vec<u8>>>(12)?.map(|b| BASE64.encode(b)),
+                // A mount is a view of the shares table, not a folder row:
+                // it has no flag of its own (a path *below* a mount walks
+                // the real parent chain, where the flag lives).
+                enc_zone: 0,
                 deleted_at: None,
                 purge_at: None,
             })
@@ -2433,6 +2506,7 @@ mod tests {
             purge_at: None,
             enc_version: 0,
             enc_key: None,
+            enc_zone: 0,
         };
 
         let mut entries = vec![
@@ -2520,6 +2594,48 @@ mod tests {
         // Re-running the migration is a no-op, not an error.
         let again = s.db.drop_versions(file_id).await.expect("drop again");
         assert!(again.is_empty(), "a second drop finds nothing");
+    }
+
+    #[tokio::test]
+    async fn enc_zone_is_folders_only_and_owner_scoped() {
+        let s = scratch();
+        let (owner, file_id) = seed_file(&s, "doc.txt", 10, 1_000_000);
+        // A file has no zone to mark: the flag only ever lives on folders.
+        let err =
+            s.db.set_enc_zone(owner, file_id, 1)
+                .await
+                .expect_err("files have no zone");
+        assert!(
+            matches!(err, AppError::BadRequest(_)),
+            "expected BadRequest, got {err:?}"
+        );
+        let folder =
+            s.db.create_dir(owner, None, None, "vault".into())
+                .await
+                .expect("create dir");
+        let on =
+            s.db.set_enc_zone(owner, folder.id, 1)
+                .await
+                .expect("mark zone");
+        assert_eq!(on.enc_zone, 1, "the mark is readable back");
+        let off =
+            s.db.set_enc_zone(owner, folder.id, 0)
+                .await
+                .expect("unmark zone");
+        assert_eq!(off.enc_zone, 0, "and it comes off again");
+        // The flag rides on every read path the client uses.
+        s.db.set_enc_zone(owner, folder.id, 1)
+            .await
+            .expect("re-mark");
+        let crumbs =
+            s.db.breadcrumbs(owner, folder.id)
+                .await
+                .expect("breadcrumbs");
+        assert_eq!(
+            crumbs.last().map(|c| c.enc_zone),
+            Some(1),
+            "the breadcrumb carries the flag"
+        );
     }
 
     #[tokio::test]
