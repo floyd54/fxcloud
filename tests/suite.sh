@@ -1392,6 +1392,49 @@ NB=$(ls "$DATA/blobs/_versions/$VFILE" | wc -l)
 [ "$NB" = "1" ] && ok "pruned versions are unlinked from disk too" || bad "$NB blobs on disk, expected 1"
 sqlite3 "$DATA/fxcloud.db" "UPDATE users SET version_keep_n=20 WHERE username='alice';"
 
+note "phase4 migration: history=drop replaces content and history in one save"
+printf 'plain bytes before the migration' > "$ROOT/src/mig.txt"
+printf 'FXE1migrated-ciphertext' > "$ROOT/src/mig.enc"
+MR=$(up "$JA" "" mig.txt)
+MFILE=$(jget "$MR" entry.id)
+[ -n "$MFILE" ] && ok "migration test file created" || bad "migration test file missing"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" -H 'Content-Type: text/plain' \
+  --data-binary "@$ROOT/src/mig.txt" "$BASE/api/files/content?id=$MFILE")
+[ "$RC" = "200" ] || bad "pre-migration save failed: $RC"
+VL=$(req GET "/api/files/versions?id=$MFILE" "$JA")
+NV=$(printf '%s' "$VL" | perl -MJSON::PP -0777 -e 'my $d=decode_json(do{local $/;<STDIN>}); print scalar @{$d->{versions}}')
+OLDVID=$(jget "$VL" versions.0.id)
+MVK=$(sqlite3 "$DATA/fxcloud.db" "SELECT blob_created_at FROM file_versions WHERE file_id=$MFILE LIMIT 1;")
+MVKB="$DATA/blobs/_versions/$MFILE/$MVK"
+[ "$NV" = "1" ] && [ -f "$MVKB" ] \
+  && ok "the file carries one plaintext version on disk" \
+  || bad "expected one version+blob, got NV=$NV blob=$MVKB"
+MKEY=$(printf 'wrapped-file-key' | base64 -w0)
+# the migration shape: FXE1 body + a key record + the history flag
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" -H 'Content-Type: application/octet-stream' \
+  --data-binary "@$ROOT/src/mig.enc" \
+  "$BASE/api/files/content?id=$MFILE&enc=1&key=$MKEY&history=drop")
+[ "$RC" = "200" ] && ok "migration save (enc=1, history=drop) -> 200" || bad "migration save: $RC"
+VL=$(req GET "/api/files/versions?id=$MFILE" "$JA")
+NV=$(printf '%s' "$VL" | perl -MJSON::PP -0777 -e 'my $d=decode_json(do{local $/;<STDIN>}); print scalar @{$d->{versions}}')
+[ "$NV" = "0" ] && ok "history=drop leaves no versions behind" || bad "expected 0 versions, got $NV: $VL"
+ME=$(req GET "/api/files/info?id=$MFILE" "$JA")
+[ "$(jget "$ME" entry.enc_version)" = "1" ] && ok "the row is encrypted now" || bad "info: $ME"
+VB=$(sqlite3 "$DATA/fxcloud.db" "SELECT COUNT(*) FROM file_versions WHERE file_id=$MFILE;")
+[ "$VB" = "0" ] && ok "the plaintext history row is gone from the db" || bad "$VB rows left"
+[ ! -f "$MVKB" ] && ok "the plaintext bytes are unlinked from disk" || bad "blob still on disk: $MVKB"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -b "$JA" \
+  "$BASE/api/files/version/download?id=$MFILE&vid=$OLDVID")
+[ "$RC" = "404" ] && ok "the dropped version id answers 404" || bad "expected 404, got $RC"
+# the flag only exists as part of an explicit promotion
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" -H 'Content-Type: text/plain' \
+  --data-binary "@$ROOT/src/mig.txt" "$BASE/api/files/content?id=$MFILE&history=drop")
+[ "$RC" = "400" ] && ok "history=drop without enc=1 -> 400" || bad "expected 400, got $RC"
+RC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -b "$JA" -H 'Content-Type: application/octet-stream' \
+  --data-binary "@$ROOT/src/mig.enc" \
+  "$BASE/api/files/content?id=$MFILE&enc=1&key=$MKEY&history=keep")
+[ "$RC" = "400" ] && ok "an unknown history value -> 400" || bad "expected 400, got $RC"
+
 note "version history: quota sums live rows and version history"
 ME=$(req GET /api/me "$JA")
 USED=$(jget "$ME" used_bytes)

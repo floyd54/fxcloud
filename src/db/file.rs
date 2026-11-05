@@ -1420,6 +1420,29 @@ impl Db {
         .await
     }
 
+    /// Every version of one row, gone - the blobs behind them included.
+    /// The phase4 migration (`history=drop` on the content PUT) uses this:
+    /// turning plaintext into ciphertext must not leave the plaintext it
+    /// replaced readable as history (ENCRYPTION.md, phase 4). The caller
+    /// holds the row's write lock; the save's permission checks apply.
+    pub async fn drop_versions(&self, file_id: i64) -> Result<Vec<BlobRef>, AppError> {
+        self.run(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT file_id, blob_created_at FROM file_versions WHERE file_id = ?1")?;
+            let gone = stmt
+                .query_map(params![file_id], |r| {
+                    Ok(version_blob_ref(r.get(0)?, &r.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            conn.execute(
+                "DELETE FROM file_versions WHERE file_id = ?1",
+                params![file_id],
+            )?;
+            Ok(gone)
+        })
+        .await
+    }
+
     /// The age half of retention (concepts/versioning.md section 5): drop
     /// every version older than its author's `version_keep_days` (0 = off;
     /// no author left, so the file's owner decides). Runs in the trash sweep
@@ -2472,6 +2495,31 @@ mod tests {
                 .await
                 .expect("list versions");
         assert_eq!(rows.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn drop_versions_takes_the_whole_history_and_returns_its_blobs() {
+        let s = scratch();
+        let (owner, file_id) = seed_file(&s, "doc.txt", 10, 1_000_000);
+        // Bound off: the test decides what "whole history" means.
+        s.db.update_settings(owner, None, None, Some(0), None)
+            .await
+            .expect("disable the count bound");
+        for n in 0..3i64 {
+            s.db.insert_version(owner, file_id, 5 + n, 0, format!("key{n}"))
+                .await
+                .expect("insert version");
+        }
+        let gone = s.db.drop_versions(file_id).await.expect("drop versions");
+        assert_eq!(gone.len(), 3, "every row comes back as a blob to unlink");
+        let rows =
+            s.db.list_versions(owner, file_id)
+                .await
+                .expect("list versions");
+        assert!(rows.is_empty(), "the history is gone");
+        // Re-running the migration is a no-op, not an error.
+        let again = s.db.drop_versions(file_id).await.expect("drop again");
+        assert!(again.is_empty(), "a second drop finds nothing");
     }
 
     #[tokio::test]

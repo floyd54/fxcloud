@@ -420,6 +420,16 @@ impl FileService {
         Ok(true)
     }
 
+    /// The row's whole version history goes away with the bytes it
+    /// describes (phase 4 migration): a file turned into ciphertext must
+    /// not leave the plaintext it replaced behind as readable history.
+    /// Called from the content save under the row's write lock.
+    pub async fn drop_version_history(&self, entry: &FileEntry) -> Result<(), AppError> {
+        let gone = self.db.drop_versions(entry.id).await?;
+        self.delete_blobs(&gone).await;
+        Ok(())
+    }
+
     /// Copy a readable file's bytes to another entry's blob (WebDAV `COPY`
     /// and the API's copy route): the same permission check as every read,
     /// then a filesystem-level copy - 64 KiB on the kernel's side, never the

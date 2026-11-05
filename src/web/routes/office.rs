@@ -383,6 +383,9 @@ pub async fn putfile(
         id: file_id,
         enc: None,
         key: None,
+        // The office save behaves like every other content write: it pins
+        // the outgoing bytes, it never drops a history it did not migrate.
+        history: None,
     };
     let pin_old = entry.size > 0 && state.office_pin_needed(file_id, claims.o, entry.modified_at);
     let outcome = save_streamed(

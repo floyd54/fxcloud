@@ -871,6 +871,11 @@ pub struct ContentQuery {
     pub id: i64,
     pub enc: Option<u8>,
     pub key: Option<String>,
+    /// Phase 4 migration: `history=drop` replaces the row's content *and*
+    /// its version history in one save. Only accepted together with
+    /// `enc=1&key=` - the plaintext history is exactly what the encryption
+    /// is supposed to remove (ENCRYPTION.md, phase 4).
+    pub history: Option<String>,
 }
 
 /// PUT /api/files/content?id=<id> – overwrite a file's content with the raw
@@ -898,6 +903,24 @@ pub async fn save_content(
         return Err(AppError::BadRequest("cannot edit a folder".into()));
     }
 
+    // Phase 4 migration guard: dropping the history is the destructive half
+    // of turning a row into ciphertext, so it is only accepted as part of an
+    // explicit `enc=1` promotion - never as a stray flag on a plain save.
+    // Checked before the body is streamed, so a misuse costs no bandwidth.
+    match q.history.as_deref() {
+        None => {}
+        Some("drop") => {
+            if q.enc != Some(1) || q.key.is_none() {
+                return Err(AppError::BadRequest(
+                    "history=drop requires enc=1 and key".into(),
+                ));
+            }
+        }
+        Some(_) => {
+            return Err(AppError::BadRequest("history must be 'drop'".into()));
+        }
+    }
+
     // The body streams into a temp file (S1): the FXE1 magic is read off the
     // head, the count doubles as the size limit, and nothing the checks below
     // reject is ever kept in memory.
@@ -908,7 +931,9 @@ pub async fn save_content(
     )
     .await?;
 
-    let pin_old = entry.size > 0;
+    // The migration write does not pin the outgoing bytes: the plaintext it
+    // replaces (history included) is what the encryption removes.
+    let pin_old = entry.size > 0 && q.history.as_deref() != Some("drop");
     let outcome = save_streamed(
         &state,
         user.id(),
@@ -1071,6 +1096,8 @@ pub(crate) async fn save_streamed(
         // quota gate's arithmetic (growth = incoming size) exact.
         if pin_old {
             state.files.pin_content_as_version(user_id, &entry).await?;
+        } else if q.history.as_deref() == Some("drop") {
+            state.files.drop_version_history(&entry).await?;
         }
         state.files.commit_blob(&entry, &temp).await?;
     }
