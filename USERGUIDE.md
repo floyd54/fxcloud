@@ -353,6 +353,36 @@ The full design (threat model, key hierarchy, the DECISIONs) lives in
   above. WebDAV desktop clients do not encrypt: encrypted files are
   visible there as ciphertext and cannot be written through them.
 
+### Encrypt existing files
+
+**Settings > Account > Encrypt existing files** walks the whole tree in
+this browser, encrypts every plaintext file it finds and drops each
+file's old version history - that history *is* the plaintext. The dialog
+shows `i of n`, can be cancelled at any time, and resumes where it
+stopped: rerunning skips everything already encrypted. When the quota
+fills up it pauses with the quota message and offers **Continue after
+freeing space**. A folder's row menu has the same action for just that
+subtree (**Encrypt folder now...**).
+
+### Encryption zones
+
+A folder's row menu (**Encryption zone: on/off**) marks it as a zone:
+new files and saves below it demand the passphrase even when the badge
+says **Unencrypted**, so that folder stays encrypted while the rest of
+the account stays WebDAV-compatible. Only the owner (or a group's
+manager) can change the flag, descendants inherit it automatically, and
+copying a folder does not carry it - set it again on the copy.
+
+### Recovery key: show it again or issue a new one
+
+**Settings > Account** has a **Recovery key** section: enter the storage
+passphrase and **Show recovery key** displays it again (64 hex digits,
+with **Download**), or **Issue a new one** generates a fresh key behind a
+confirmation - the old key stops working the moment the new one is
+stored. A wrong passphrase never gets that far. Accounts set up before
+this version have no stored copy and answer "issue one here"; their first
+reissue enables showing for them too.
+
 ## 12. Passkeys
 
 A passkey signs you in with a PIN or biometrics instead of a password.

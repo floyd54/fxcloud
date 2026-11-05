@@ -404,8 +404,8 @@
     "enc.saved.title": "Wiederherstellungsschl\u00fcssel speichern",
     "enc.saved.lead":
       "Das ist der einzige Weg zur\u00fcck zu deinen verschl\u00fcsselten Dateien, falls die " +
-      "Passphrase vergessen wird. Er wird einmalig angezeigt und an keinem Ort gespeichert, " +
-      "an dem du ihn sp\u00e4ter wiederfinden k\u00f6nntest.",
+      "Passphrase vergessen wird. Du kannst ihn in den Einstellungen jederzeit " +
+      "wieder anzeigen, solange du das Passwort kennst - und dort neu ausstellen.",
     "enc.saved.dl": "Wiederherstellungsschl\u00fcssel herunterladen",
     "enc.saved.ack":
       "Ich habe diesen Wiederherstellungsschl\u00fcssel sicher und offline gespeichert.",
@@ -986,8 +986,8 @@
     "enc.saved.title": "Save your recovery key",
     "enc.saved.lead":
       "This is the only way back into your encrypted files if the " +
-      "passphrase is forgotten. It is shown once and never stored anywhere " +
-      "you can retrieve it later.",
+      "passphrase is forgotten. You can show it again from the settings " +
+      "whenever you know that passphrase - and issue a new one there.",
     "enc.saved.dl": "Download recovery key",
     "enc.saved.ack":
       "I have saved this recovery key somewhere safe and offline.",

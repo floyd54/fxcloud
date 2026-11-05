@@ -505,10 +505,14 @@ and one round trip per remaining grantee (DECISION 4).
   re-encryption, no share re-wrapping.
 - **Recovery:** if the passphrase is lost, the data is unrecoverable by
   design. A **recovery key** is generated at setup: a random 256-bit
-  value, shown once as a downloadable file / printable code, which wraps
-  ARK as an additional envelope the server stores. The server cannot use
-  it (it stores only the wrapped copy); anyone holding the recovery file
-  can. **Mandatory under DECISION 3**, because reusing the login password
+  value, shown as a downloadable file / printable code, which wraps ARK
+  as an additional envelope the server stores. The server cannot use it
+  (it stores only the wrapped copies); anyone holding the recovery file
+  can. Since phase 4 it can be **shown again** from the settings while
+  the passphrase is known - the server keeps a second copy wrapped under
+  the passphrase KEK, and a passphrase holder could already unwrap the
+  ARK, so this adds no new power - and it can be **reissued**: both
+  envelopes move together and the old key stops working at once. **Mandatory under DECISION 3**, because reusing the login password
   correlates the "forgot password" and "lost the data" failure modes into
   one event: setup must not complete until the recovery key is downloaded
   or the user explicitly confirms they accept losing everything.
@@ -587,6 +591,7 @@ private_key_wrapped BLOB NOT NULL         -- private key wrapped under ARK
 wrapped_ark        BLOB NOT NULL          -- ARK wrapped under the passphrase KEK
 wrapped_root_key   BLOB NOT NULL          -- root folder key wrapped under ARK (5.4)
 wrapped_ark_recovery BLOB NOT NULL        -- ARK wrapped under the recovery KEK
+wrapped_recovery   BLOB                   -- recovery key under the passphrase KEK (phase 4, nullable)
 kdf_salt           BLOB NOT NULL
 kdf_params         TEXT NOT NULL          -- JSON: argon2 m/t/p, kdf suite id
 fingerprint        TEXT NOT NULL          -- display + out-of-band compare
@@ -766,12 +771,21 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
 
 - v1 does **not** re-encrypt anything automatically. Existing files keep
   `enc_version = 0` and behave exactly as today.
-- A user can run **"Encrypt existing files"**: a client-side batch job
-  (download -> encrypt -> upload -> replace row) that walks the tree,
-  shows progress, is resumable, and pauses on quota pressure (ciphertext
-  adds a few bytes per chunk, so peak usage grows slightly).
-- Per-folder toggle means users can encrypt a subtree first and keep the
-  rest compatible with WebDAV while evaluating.
+- A user runs **"Encrypt existing files"** (Settings > Account, or
+  **Encrypt folder now...** in a folder's row menu): a client-side batch
+  job (download -> encrypt -> replace row) that walks the tree, shows
+  progress, is resumable - an already encrypted row is counted, never
+  touched - and pauses on quota pressure (ciphertext adds a few bytes
+  per chunk, so peak usage grows slightly). Each migrated row is written
+  with `history=drop`: the plaintext history a normal save would pin is
+  exactly the plaintext the encryption is supposed to remove.
+- The per-folder **encryption zone** (row menu, owner or group manager):
+  a flagged folder demands the key for new writes below it even when the
+  badge is off - encrypt a subtree first and keep the rest compatible
+  with WebDAV while evaluating. The flag rides the breadcrumb, so every
+  descendant inherits it; unflagged paths keep following the badge alone
+  (DECISION 11). Copying a folder does not carry the flag: a copy is a
+  fresh start, set it again where you want it.
 - Rollout safety: every read path branches on `enc_version`, so mixed
   trees are a normal, tested state - not an edge case.
 
@@ -901,7 +915,7 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
 | 1 | Key setup, unlock, encrypt-on-upload, decrypt-on-download; **login KDF params raised (condition of DECISION 3)**; recovery key mandatory at setup; UI limited to the header badge plus the setup / unlock / recovery dialog - no preview, no client-side ZIP | **released since v0.0.9** |
 | 2 | Text editor round-trip (**shipped**: decrypt on open, encrypt on save, and a file created while encryption is on stored encrypted from its first second), client-side preview for images/video/audio/PDF/HTML (**shipped**: the tab decrypts and renders from a Blob URL, section 7), client-side ZIP - still one download per row rather than one archive (the server's ZIP refuses ciphertext, so an encrypted selection decrypts each row in the tab and saves it; a real in-browser ZIP writer stays open) | makes daily use possible |
 | 3 | Sharing: key exchange, envelopes, fingerprints, revoke | **done** - shipped in this release: folder-key hierarchy filled in lazily (5.4), share-time subtree migration and one envelope per share row (5.5), fingerprint shown while picking + TOFU with a changed-key warning (DECISION 6), owner-only swap of a key record, re-bind-before-move. Folder re-key on revoke stays phase 6 (DECISION 4) | G3 satisfied |
-| 4 | Migration tool ("Encrypt existing files"), per-folder encrypt toggle, recovery-key UX refinements | G5 satisfied |
+| 4 | Migration tool ("Encrypt existing files"), per-folder encrypt toggle, recovery-key UX refinements | **shipped**: the client-side batch job with `history=drop` (10), the encryption-zone write gate (10, decision 14), and the recovery key shown again / reissued from the settings (5.7, decision 15) | G5 satisfied |
 | 5 | **`fxcloud sync` agent** - local daemon doing encrypt/decrypt between Finder/Explorer and the unchanged DAV API; this is what makes WebDAV *flawless* (DECISION 9), so it is a committed deliverable, not "later, independent" | largest single item; own milestone |
 | 6 | Folder re-key, key rotation action, (optional) metadata encryption | later, independent |
 
@@ -934,6 +948,9 @@ security story beyond "content at rest is protected".
 | 10 | Test strategy for client crypto | WebCrypto round-trip harness in CI + API visibility tests | implement as recommended |
 | 11 | Write rule while the keys are not loaded | first cut: a locked tab stops new writes and asks to unlock (9, flow 3) | **revised after v0.0.12 - follow the badge.** The two write paths (`newFile`, `uploadTree`) gate on `unlocked()`, not `enabled()`: an "Unencrypted" tab writes plaintext under a badge that says so, an "Encrypted" tab encrypts. Opening an encrypted row still prompts, because those bytes cannot be read any other way. See 9, flows 2-3 |
 | 12 | Shape of phase-3 sharing: one envelope per *file*, or the folder hierarchy the concept already describes? | concept as written (5.2 + 5.5): parent-wraps-child folder keys, one envelope per share row | **implement the concept as written.** Folder keys appear lazily (first encrypted write below a folder, or the subtree walk a share performs), one envelope per share row carries the folder key, and the server stays key-blind: PERM_UPDATE is the whole check on `PUT /api/files/key` and on the JSON move, while WebDAV keeps the key-domain refusal because it holds no keys at all. A move re-binds before it travels (and rolls back if refused); a save never rotates the key (DECISION 5); a grantee may pass their own record back but not swap it. Legacy flat rows keep opening through the root-key fallback, which no grantee ever has. Detail in 5.4 + 5.5 |
+| 13 | What happens to a plaintext file's version history when it is encrypted? | the history is the plaintext - it must not survive the migration | **drop it**: the phase 4 save carries `history=drop` - the outgoing bytes are neither pinned nor kept as versions (rows and blobs go together, under the save's row lock) and the quota gate charges only the net growth. A normal save keeps pinning exactly as before (concepts/versioning.md) |
+| 14 | Semantics of the per-folder encrypt toggle | a flag the write paths read | **the write zone**: a flagged folder demands the key for new writes below it even when the badge is off - descendants inherit it through the breadcrumb, unflagged paths follow the badge alone (DECISION 11 untouched). Set from the row menu by the owner or group manager; a copy does not carry it |
+| 15 | Recovery-key UX: show it again? issue a new one? | showing needs a stored copy, issuing needs the ARK | **both**: the server keeps the key wrapped under the passphrase KEK (a passphrase holder could already unwrap the ARK, so this adds no new power - 5.7), and `PUT /api/keys/recovery` moves both envelopes in one O(1) step, killing the old key. Rows from before that column answer "issue a new key" |
 
 ---
 
