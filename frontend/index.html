@@ -221,6 +221,13 @@
               <input type="number" id="set-keep-days" min="0" step="1" inputmode="numeric" />
               <button class="btn" type="submit" data-i18n="act.save">Save</button>
             </form>
+
+            <h4 data-i18n="enc.migrate.title">Encrypt existing files</h4>
+            <p class="settings-hint" data-i18n="enc.migrate.settingsHint">
+              Walks the tree and encrypts every plaintext file here in the browser.
+            </p>
+            <button class="btn" type="button" id="set-migrate"
+                    data-i18n="enc.migrate.title">Encrypt existing files</button>
           </section>
 
           <section class="settings-panel" data-settings-panel="appearance">
@@ -277,6 +284,23 @@
 
       <div class="modal-footer">
         <button class="btn secondary" id="set-close-btn" type="button" data-i18n="act.close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 4 migration: encrypt the existing plaintext in this browser
+       (ENCRYPTION.md section 12) -->
+  <div class="modal-backdrop" id="migrate-modal" style="display:none">
+    <div class="modal">
+      <h3 data-i18n="enc.migrate.title">Encrypt existing files</h3>
+      <p class="settings-hint" id="migrate-scope"></p>
+      <p class="upload-status" id="migrate-status" data-i18n="enc.migrate.idle">Ready.</p>
+      <p class="settings-hint" id="migrate-summary" hidden></p>
+      <div class="modal-footer">
+        <button class="btn" id="migrate-primary" type="button"
+                data-i18n="enc.migrate.cancel" hidden>Cancel</button>
+        <button class="btn secondary" id="migrate-close" type="button"
+                data-i18n="act.close">Close</button>
       </div>
     </div>
   </div>

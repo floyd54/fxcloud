@@ -2778,6 +2778,122 @@
     settingsModal.style.display = "none";
   }
 
+  // ---------- phase 4: encrypt existing files (ENCRYPTION.md 12) ----------
+  // The dialog drives FXEnc.migrateTree. Progress is a status line - the
+  // same shape as the upload status - so the app keeps exactly one way of
+  // showing "i of n, current name".
+  const migrateModal = document.getElementById("migrate-modal");
+  let migrateCancel = false;
+  let migrateRunning = false;
+
+  function migrateEl(id) {
+    return document.getElementById(id);
+  }
+
+  function setMigrateMode(mode) {
+    // "running" | "paused" | "idle": the primary button is Cancel while a
+    // run is going, Continue when the quota stopped it, hidden when done.
+    const primary = migrateEl("migrate-primary");
+    if (mode === "idle") {
+      primary.hidden = true;
+      return;
+    }
+    const key = mode === "paused" ? "enc.migrate.continue" : "enc.migrate.cancel";
+    primary.hidden = false;
+    primary.dataset.i18n = key;
+    primary.textContent = t(key);
+  }
+
+  function showMigrateSummary(res) {
+    const summary = migrateEl("migrate-summary");
+    let text = t("enc.migrate.done", {
+      enc: String(res.encrypted),
+      already: String(res.already),
+      failed: String(res.failed.length),
+    });
+    if (res.failed.length) {
+      const names =
+        res.failed.slice(0, 6).join(", ") +
+        (res.failed.length > 6 ? " (...)" : "");
+      text += " " + t("enc.migrate.failed", { names: names });
+    }
+    summary.textContent = text;
+    summary.hidden = false;
+  }
+
+  async function runMigrate(scope) {
+    migrateCancel = false;
+    migrateRunning = true;
+    setMigrateMode("running");
+    migrateEl("migrate-summary").hidden = true;
+    migrateEl("migrate-status").textContent = t("enc.migrate.running");
+    try {
+      const res = await FXEnc.migrateTree(scope, {
+        onProgress: (p) => {
+          migrateEl("migrate-status").textContent = t("upload.at", {
+            i: p.i,
+            n: p.n,
+            path: p.name,
+          });
+        },
+        cancelled: () => migrateCancel,
+      });
+      if (migrateModal.style.display === "none") return;
+      if (res.paused) {
+        migrateEl("migrate-status").textContent = res.paused;
+        showMigrateSummary(res);
+        setMigrateMode("paused");
+      } else if (res.cancelled) {
+        migrateEl("migrate-status").textContent = t("enc.migrate.cancelled");
+        showMigrateSummary(res);
+        setMigrateMode("idle");
+      } else {
+        migrateEl("migrate-status").textContent = t("enc.migrate.idle");
+        showMigrateSummary(res);
+        setMigrateMode("idle");
+      }
+    } catch (e) {
+      if (migrateModal.style.display !== "none") {
+        migrateEl("migrate-status").textContent = e.message;
+        setMigrateMode("idle");
+      }
+    } finally {
+      migrateRunning = false;
+      // The lock glyph of every migrated row changes with this listing.
+      loadFiles(currentParent).catch(() => {});
+    }
+  }
+
+  function migrateOnKey(e) {
+    if (e.key === "Escape") closeMigrate();
+  }
+
+  function closeMigrate() {
+    migrateCancel = true; // the run stops at its next row
+    migrateModal.style.display = "none";
+    document.removeEventListener("keydown", migrateOnKey);
+  }
+
+  async function openMigrate(scope, scopeLabel) {
+    // A run that is winding down still owns migrateRunning: reopening
+    // mid-flight would interleave two walks over the same tree.
+    if (migrateRunning) return;
+    if (!(await FXEnc.requestKeys())) return;
+    migrateEl("migrate-scope").textContent = scopeLabel || t("enc.migrate.all");
+    migrateEl("migrate-summary").hidden = true;
+    migrateEl("migrate-status").textContent = t("enc.migrate.idle");
+    migrateModal.style.display = "flex";
+    document.addEventListener("keydown", migrateOnKey);
+    migrateEl("migrate-primary").onclick = () => {
+      if (migrateRunning) {
+        migrateCancel = true; // Cancel pressed
+        return;
+      }
+      runMigrate(scope); // paused: continue
+    };
+    runMigrate(scope);
+  }
+
   // Save the display name. The topbar label and the menu update at once -
   // the server answered with the saved row, so nothing here has to guess.
   async function saveDisplayName(name) {
@@ -3842,6 +3958,13 @@
   document.getElementById("set-versioning-form").addEventListener("submit", (e) => {
     e.preventDefault();
     saveVersioning();
+  });
+  document.getElementById("set-migrate").addEventListener("click", () => {
+    openMigrate(null);
+  });
+  document.getElementById("migrate-close").addEventListener("click", closeMigrate);
+  document.getElementById("migrate-modal").addEventListener("click", (e) => {
+    if (e.target === migrateModal) closeMigrate();
   });
   document.getElementById("versions-close-btn").addEventListener("click", closeVersionsDialog);
   document.getElementById("versions-modal").addEventListener("click", (e) => {

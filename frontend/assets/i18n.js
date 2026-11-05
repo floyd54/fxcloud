@@ -491,6 +491,18 @@
     "enc.err.worker": "Krypto-Worker-Fehler",
     "enc.err.workerStopped": "Krypto-Worker wurde beendet",
 
+    "enc.migrate.title": "Vorhandene Dateien verschl\u00fcsseln",
+    "enc.migrate.settingsHint": "Durchl\u00e4uft den Ordnerbaum und verschl\u00fcsselt jede Klartextdatei hier im Browser; die Versionshistorie der jeweiligen Datei f\u00e4llt damit weg. Abbruch und Fortsetzen sind jederzeit m\u00f6glich.",
+    "enc.migrate.all": "Der gesamte Ordnerbaum",
+    "enc.migrate.folder": "Ordner {name}",
+    "enc.migrate.idle": "Bereit.",
+    "enc.migrate.running": "Verschl\u00fcsselt ...",
+    "enc.migrate.cancelled": "Abgebrochen - was bereits verschl\u00fcsselt ist, bleibt verschl\u00fcsselt.",
+    "enc.migrate.done": "{enc} verschl\u00fcsselt, {already} bereits, {failed} fehlgeschlagen",
+    "enc.migrate.failed": "Fehlgeschlagen: {names}",
+    "enc.migrate.continue": "Weiter nach Platz schaffen",
+    "enc.migrate.cancel": "Abbrechen",
+
     // login / register page
     "login.title": "Anmelden \u00b7 fxcloud",
     "login.tagline": "Deine Dateien, synchronisiert und an einem Ort.",
@@ -1038,6 +1050,18 @@
     "enc.err.worker": "crypto worker error",
     "enc.err.workerStopped": "crypto worker stopped",
 
+    "enc.migrate.title": "Encrypt existing files",
+    "enc.migrate.settingsHint": "Walks the tree and encrypts every plaintext file here in the browser; each file's version history goes with it. Stop and continue at any time.",
+    "enc.migrate.all": "The whole tree",
+    "enc.migrate.folder": "Folder {name}",
+    "enc.migrate.idle": "Ready.",
+    "enc.migrate.running": "Encrypting ...",
+    "enc.migrate.cancelled": "Cancelled - whatever was encrypted stays encrypted.",
+    "enc.migrate.done": "{enc} encrypted, {already} already, {failed} failed",
+    "enc.migrate.failed": "Failed: {names}",
+    "enc.migrate.continue": "Continue after freeing space",
+    "enc.migrate.cancel": "Cancel",
+
     // login / register page
     "login.title": "Sign in \u00b7 fxcloud",
     "login.tagline": "Your files, synced and in one place.",
@@ -1557,6 +1581,18 @@
     "enc.err.uploadCancelled": "chuSQang laD qetlu'be'",
     "enc.err.worker": "quj Qap ram",
     "enc.err.workerStopped": "quj Qap ta'",
+
+    "enc.migrate.title": "Encrypt existing files",
+    "enc.migrate.settingsHint": "Walks the tree and encrypts every plaintext file here in the browser; each file's version history goes with it. Stop and continue at any time.",
+    "enc.migrate.all": "The whole tree",
+    "enc.migrate.folder": "Folder {name}",
+    "enc.migrate.idle": "Ready.",
+    "enc.migrate.running": "Encrypting ...",
+    "enc.migrate.cancelled": "Cancelled - whatever was encrypted stays encrypted.",
+    "enc.migrate.done": "{enc} encrypted, {already} already, {failed} failed",
+    "enc.migrate.failed": "Failed: {names}",
+    "enc.migrate.continue": "Continue after freeing space",
+    "enc.migrate.cancel": "Cancel",
 
     // login / register page
     "login.title": "nom \u00b7 fxcloud",

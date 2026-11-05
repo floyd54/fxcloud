@@ -991,6 +991,129 @@
   }
 
   /** Fetch, decrypt and save - the only way an encrypted row leaves fxcloud. */
+  /**
+   * Phase 4 migration (ENCRYPTION.md 12): encrypt every plaintext row
+   * below `parentId` (null = the whole tree) and drop the version history
+   * each migrated save would otherwise pin - the plaintext history is
+   * exactly what the encryption removes.
+   *
+   * Resumable by construction: an already encrypted row is counted, never
+   * touched, so a cancelled or quota-paused run continues where it
+   * stopped. Per-row failures are collected, not fatal.
+   *
+   * `opts.onProgress({ i, n, name })` fires before each row,
+   * `opts.cancelled()` is polled between rows. Resolves to
+   * `{ scanned, encrypted, already, failed, paused, cancelled }`, where
+   * `paused` carries the localized quota message (507) that stopped it.
+   */
+  async function migrateTree(parentId, opts) {
+    if (!(await requestKeys())) {
+      throw new Error(t("enc.migrate.cancelled"));
+    }
+    const onProgress = opts && opts.onProgress || function () {};
+    const cancelled = opts && opts.cancelled || function () {
+      return false;
+    };
+
+    // Pass 1: walk the tree, remember the plaintext rows and count what
+    // is already encrypted on the way.
+    const queue = [parentId];
+    const files = [];
+    let already = 0;
+    while (queue.length > 0) {
+      if (cancelled()) {
+        return {
+          scanned: 0,
+          encrypted: 0,
+          already: already,
+          failed: [],
+          paused: null,
+          cancelled: true,
+        };
+      }
+      const folder = queue.shift();
+      const list = await http(
+        folder == null ? "/api/files" : "/api/files?parent=" + folder
+      ).then((r) => r.json());
+      for (const e of list.entries || []) {
+        if (e.is_dir) {
+          queue.push(e.id);
+        } else if (e.enc_version > 0) {
+          already++;
+        } else {
+          files.push({ entry: e, parent: folder });
+        }
+      }
+    }
+
+    // Pass 2: one row at a time - take the plaintext the server still
+    // holds, mint and wrap its key under the folder chain, encrypt in the
+    // worker, promote the row with history=drop.
+    let encrypted = 0;
+    const failed = [];
+    for (let idx = 0; idx < files.length; idx++) {
+      if (cancelled()) {
+        return {
+          scanned: idx,
+          encrypted: encrypted,
+          already: already,
+          failed: failed,
+          paused: null,
+          cancelled: true,
+        };
+      }
+      const row = files[idx];
+      const entry = row.entry;
+      onProgress({ i: idx + 1, n: files.length, name: entry.name });
+      try {
+        const res = await http("/api/files/download?id=" + entry.id);
+        const plain = new Uint8Array(await res.arrayBuffer());
+        const fileKey = FX().randomBytes(32);
+        const parentKey = await ensureChainKey(row.parent);
+        const wrappedKey = await FX().wrapChildKey(parentKey, entry.id, fileKey);
+        const out = await heavy(
+          "encryptBytes",
+          [entry.id, fileKey, plain],
+          [plain.buffer]
+        );
+        await http(
+          "/api/files/content?id=" +
+            entry.id +
+            "&enc=1&key=" +
+            encodeURIComponent(wrappedKey) +
+            "&history=drop",
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/octet-stream" },
+            body: out.bytes,
+          }
+        );
+        encrypted++;
+      } catch (err) {
+        if (err && err.status === 507) {
+          // The quota gate answered: stop here, the rest continues later.
+          return {
+            scanned: idx,
+            encrypted: encrypted,
+            already: already,
+            failed: failed,
+            paused: err.message,
+            cancelled: false,
+          };
+        }
+        failed.push(entry.name);
+      }
+    }
+    return {
+      scanned: files.length,
+      encrypted: encrypted,
+      already: already,
+      failed: failed,
+      paused: null,
+      cancelled: false,
+    };
+  }
+
   async function download(entry) {
     if (state.status !== "unlocked") throw new Error(t("enc.err.download"));
     const res = await http("/api/files/download?id=" + entry.id);
@@ -1219,6 +1342,7 @@
     enabled: () => state.status === "unlocked" || state.status === "locked",
     requestKeys: requestKeys,
     encryptUpload: encryptUpload,
+    migrateTree: migrateTree,
     readText: readText,
     writeText: writeText,
     download: download,
