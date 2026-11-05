@@ -4,7 +4,7 @@
 //! Mounted at `/dav/` and authenticated via HTTP Basic auth. The path after
 //! `/dav/` is relative to the authenticated user's home.
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -97,6 +97,7 @@ fn build_href(segments: &[String], is_dir: bool) -> String {
 ///
 /// Entries carry the viewer's permission mask, so every operation can check
 /// its required bit before acting.
+#[allow(clippy::large_enum_variant)] // FileEntry stays unboxed: matches stay readable
 enum Target {
     Root,
     Entry(FileEntry),
@@ -112,6 +113,7 @@ impl Target {
 }
 
 /// Enforce that a target grants `required` (permission bitmask).
+#[allow(clippy::result_large_err)] // the Err is the response the handler returns
 fn require(target: &Target, required: i64) -> Result<(), Response> {
     if crate::sharing::grants(target.permissions(), required) {
         Ok(())
@@ -120,6 +122,7 @@ fn require(target: &Target, required: i64) -> Result<(), Response> {
     }
 }
 
+#[allow(clippy::result_large_err)] // the Err is the response the handler returns
 async fn resolve(
     state: &SharedState,
     owner_id: i64,
@@ -146,6 +149,7 @@ struct ParentTarget {
 ///
 /// Unlike [`resolve`], a missing intermediate returns `409 Conflict` (per
 /// RFC 4918) instead of `404`, as does a path that is not a directory.
+#[allow(clippy::result_large_err)] // the Err is the response the handler returns
 async fn resolve_parent(
     state: &SharedState,
     owner_id: i64,
@@ -153,12 +157,18 @@ async fn resolve_parent(
 ) -> Result<ParentTarget, Response> {
     if segments.is_empty() {
         // The virtual root belongs to the requester.
-        return Ok(ParentTarget { id: None, permissions: crate::sharing::PERM_ALL });
+        return Ok(ParentTarget {
+            id: None,
+            permissions: crate::sharing::PERM_ALL,
+        });
     }
     match state.db.resolve_path(owner_id, segments.to_vec()).await {
         Ok(Some(e)) => {
             if e.is_dir {
-                Ok(ParentTarget { id: Some(e.id), permissions: e.permissions })
+                Ok(ParentTarget {
+                    id: Some(e.id),
+                    permissions: e.permissions,
+                })
             } else {
                 Err(conflict())
             }
@@ -215,18 +225,16 @@ async fn propfind(
 
     match depth {
         Depth::Zero => {}
-        Depth::One => {
-            match state.db.list_children(owner_id, list_parent).await {
-                Ok(children) => {
-                    for c in children {
-                        let mut cs = base_segments.clone();
-                        cs.push(c.name.clone());
-                        resources.push(Resource::from_entry(&cs, &c));
-                    }
+        Depth::One => match state.db.list_children(owner_id, list_parent).await {
+            Ok(children) => {
+                for c in children {
+                    let mut cs = base_segments.clone();
+                    cs.push(c.name.clone());
+                    resources.push(Resource::from_entry(&cs, &c));
                 }
-                Err(e) => return e.into_response(),
             }
-        }
+            Err(e) => return e.into_response(),
+        },
         Depth::Infinity => {
             // Iterative BFS over every descendant.
             let mut queue: Vec<(Vec<String>, Option<i64>)> = vec![(base_segments, list_parent)];
@@ -380,9 +388,10 @@ async fn put_file(
         Err(e) => return e.into_response(),
     };
 
-    let outcome =
-        put_finish(state, owner_id, segments, &name, &parent, &existing, &temp, &sample, size)
-            .await;
+    let outcome = put_finish(
+        state, owner_id, segments, &name, &parent, &existing, &temp, &sample, size,
+    )
+    .await;
     match outcome {
         // Committed: the temp file was renamed into the blob layout.
         Ok(response) => response,
@@ -398,6 +407,8 @@ async fn put_file(
 /// decision and the metadata + blob commit. `Ok` means committed (the temp
 /// file was renamed into the blob layout); `Err` means the caller still owns
 /// the temp file.
+#[allow(clippy::too_many_arguments)] // mirrors the PUT phases, not a public API
+#[allow(clippy::result_large_err)] // the Err is the response the handler returns
 async fn put_finish(
     state: &SharedState,
     owner_id: i64,
@@ -405,7 +416,7 @@ async fn put_finish(
     name: &str,
     parent: &ParentTarget,
     existing: &Option<FileEntry>,
-    temp: &PathBuf,
+    temp: &Path,
     sample: &[u8],
     size: i64,
 ) -> Result<Response, Response> {
@@ -425,15 +436,13 @@ async fn put_finish(
             // must be whoever holds the file key - same contract the editor
             // save path takes (DECISION 5: no rotation on overwrite).
             if old.enc_version > 0 && !sample.starts_with(crate::files::FXE1_MAGIC) {
-                return Err(
-                    (
-                        StatusCode::CONFLICT,
-                        "Encrypted file: this row only accepts an FXE1 container. A \
+                return Err((
+                    StatusCode::CONFLICT,
+                    "Encrypted file: this row only accepts an FXE1 container. A \
                          desktop client cannot produce one - write through the web \
                          client, or use the fxcloud sync agent.",
-                    )
-                        .into_response(),
-                );
+                )
+                    .into_response());
             }
             // No magic sniffing on plaintext rows: their content is arbitrary
             // user data, and four bytes of it are none of the server's
@@ -486,7 +495,16 @@ async fn put_finish(
             let mime = crate::files::resolve_mime(declared.as_deref(), sample);
             match state
                 .db
-                .create_file(owner_id, parent.id, None, name.to_string(), size, mime, 0, None)
+                .create_file(
+                    owner_id,
+                    parent.id,
+                    None,
+                    name.to_string(),
+                    size,
+                    mime,
+                    0,
+                    None,
+                )
                 .await
             {
                 Ok(entry) => {
@@ -690,10 +708,7 @@ pub(crate) async fn copy_recursive(
              download and upload it instead"
         )));
     }
-    state
-        .db
-        .check_quota(owner_id, dst_parent, total)
-        .await?;
+    state.db.check_quota(owner_id, dst_parent, total).await?;
     copy_node(state, owner_id, src, dst_parent, dst_name).await
 }
 
@@ -966,7 +981,10 @@ fn forbidden() -> Response {
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Basic realm=\"fxcloud\", charset=\"UTF-8\"")],
+        [(
+            header::WWW_AUTHENTICATE,
+            "Basic realm=\"fxcloud\", charset=\"UTF-8\"",
+        )],
         "Unauthorized",
     )
         .into_response()

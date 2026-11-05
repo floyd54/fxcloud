@@ -100,8 +100,7 @@ fn mint_token(secret: &str, file_id: i64, user_id: i64, now_ms: i64) -> (String,
         o: now_ms,
         x: now_ms + OFFICE_TTL_MS,
     };
-    let payload = URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(&claims).expect("claims serialize"));
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("claims serialize"));
     let sig = URL_SAFE_NO_PAD.encode(hmac_sig(secret.as_bytes(), &payload));
     (format!("{payload}.{sig}"), claims.x)
 }
@@ -385,10 +384,18 @@ pub async fn putfile(
         enc: None,
         key: None,
     };
-    let pin_old =
-        entry.size > 0 && state.office_pin_needed(file_id, claims.o, entry.modified_at);
-    let outcome =
-        save_streamed(&state, claims.u, &q, entry, temp.clone(), &sample, size, pin_old).await;
+    let pin_old = entry.size > 0 && state.office_pin_needed(file_id, claims.o, entry.modified_at);
+    let outcome = save_streamed(
+        &state,
+        claims.u,
+        &q,
+        entry,
+        temp.clone(),
+        &sample,
+        size,
+        pin_old,
+    )
+    .await;
     if let Err(e) = outcome {
         // The temp file only ever disappears by being renamed into place.
         let _ = tokio::fs::remove_file(&temp).await;
@@ -424,7 +431,10 @@ mod tests {
         assert_eq!(exp, now + OFFICE_TTL_MS);
         let claims = verify_token(SECRET, &token, 7).expect("valid token verifies");
         assert_eq!((claims.f, claims.u, claims.o), (7, 42, now));
-        assert!(verify_token(SECRET, &token, 8).is_err(), "wrong file must404");
+        assert!(
+            verify_token(SECRET, &token, 8).is_err(),
+            "wrong file must404"
+        );
     }
 
     /// Tampering with either half kills the token: flipping a payload byte
@@ -439,7 +449,10 @@ mod tests {
         assert!(verify_token(SECRET, &format!("{flipped_payload}.{sig}"), 1).is_err());
         let flipped_sig = format!("{}{}", &sig[1..], &sig[..1]);
         assert!(verify_token(SECRET, &format!("{payload}.{flipped_sig}"), 1).is_err());
-        assert!(verify_token("other-secret", &token, 1).is_err(), "wrong key");
+        assert!(
+            verify_token("other-secret", &token, 1).is_err(),
+            "wrong key"
+        );
         assert!(verify_token(SECRET, "not-a-token", 1).is_err(), "garbage");
     }
 

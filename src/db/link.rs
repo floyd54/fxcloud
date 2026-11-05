@@ -131,7 +131,7 @@ impl Db {
                     expires_at
                 ],
             )
-            .map_err(|e| map_link_constraint(e))?;
+            .map_err(map_link_constraint)?;
             let id = conn.last_insert_rowid();
 
             Ok((

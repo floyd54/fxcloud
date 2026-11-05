@@ -112,7 +112,7 @@ impl Db {
                     envelope
                 ],
             )
-            .map_err(|e| map_share_constraint(e))?;
+            .map_err(map_share_constraint)?;
 
             Ok(OutgoingShare {
                 id: conn.last_insert_rowid(),
@@ -203,50 +203,6 @@ impl Db {
         })
         .await
     }
-
-    /// The share that mounts `display_name` in this user's root, if any.
-    pub async fn access_by_display_name(
-        &self,
-        grantee_id: i64,
-        display_name: String,
-    ) -> Result<Option<ShareAccess>, AppError> {
-        self.run(move |conn| share_by_display_name(conn, grantee_id, &display_name))
-        .await
-    }
-
-    /// Authorize access to `entry_id` for `requester_id`.
-    ///
-    /// Returns `true` if the requester owns the entry, or a share on the entry
-    /// (or one of its ancestors) grants `required`. Walks up the owner's tree
-    /// so children of a shared folder are covered by the folder's share.
-    pub async fn authorize_entry(
-        &self,
-        requester_id: i64,
-        entry_id: i64,
-        required: i64,
-    ) -> Result<bool, AppError> {
-        self.run(move |conn| {
-            let owner_id: Option<i64> = conn
-                .query_row(
-                    "SELECT owner_id FROM files WHERE id = ?1",
-                    params![entry_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let Some(entry_owner) = owner_id else {
-                return Ok(false); // no such entry
-            };
-            if entry_owner == requester_id {
-                return Ok(true); // owners can do anything to their own items
-            }
-            // Find the nearest shared ancestor (or the entry itself).
-            match covering_share(conn, requester_id, entry_id)? {
-                Some(access) => Ok(access.can(required)),
-                None => Ok(false),
-            }
-        })
-        .await
-    }
 }
 
 /// The share (if any) that governs `entry_id` for `grantee_id`: either a share
@@ -309,7 +265,11 @@ fn row_to_access(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShareAccess> {
     })
 }
 
-fn share_on(conn: &Connection, grantee_id: i64, source_id: i64) -> Result<Option<ShareAccess>, AppError> {
+fn share_on(
+    conn: &Connection,
+    grantee_id: i64,
+    source_id: i64,
+) -> Result<Option<ShareAccess>, AppError> {
     let found = conn
         .query_row(
             "SELECT id, source_id, owner_id, grantee_id, permissions
@@ -381,7 +341,9 @@ fn uniquify_root_name(
             return Ok(candidate);
         }
     }
-    Err(AppError::Conflict("too many shares named this in your root".into()))
+    Err(AppError::Conflict(
+        "too many shares named this in your root".into(),
+    ))
 }
 
 fn map_share_constraint(e: rusqlite::Error) -> AppError {

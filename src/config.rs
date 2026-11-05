@@ -64,20 +64,15 @@ pub struct Config {
 }
 
 /// The two embed flows of the office editor (concepts/office.md section 5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OfficeEmbed {
     /// `<form method="post">` with `access_token`/`access_token_ttl` into
     /// an iframe, target URL `.../hosting/wopi/<kind>/edit?wopisrc=...`.
+    #[default]
     Form,
     /// Plain iframe `src` with the token in the query string,
     /// `.../cool.html?WOPISrc=...&access_token=...`.
     Iframe,
-}
-
-impl Default for OfficeEmbed {
-    fn default() -> Self {
-        OfficeEmbed::Form
-    }
 }
 
 /// Split an office base URL into `(origin, base)`: the origin is what the
@@ -98,7 +93,10 @@ fn office_base_parts(raw: &str) -> anyhow::Result<(String, String)> {
     if rest.is_empty() {
         anyhow::bail!("missing host");
     }
-    if rest.contains('?') || rest.contains('#') || rest.contains('@') || rest.contains(char::is_whitespace)
+    if rest.contains('?')
+        || rest.contains('#')
+        || rest.contains('@')
+        || rest.contains(char::is_whitespace)
     {
         anyhow::bail!("no query, fragment, userinfo or whitespace allowed");
     }
@@ -113,7 +111,10 @@ fn office_base_parts(raw: &str) -> anyhow::Result<(String, String)> {
     {
         anyhow::bail!("host must be a plain name, address and optional port");
     }
-    Ok((format!("{scheme}://{authority}"), format!("{scheme}://{authority}{path}")))
+    Ok((
+        format!("{scheme}://{authority}"),
+        format!("{scheme}://{authority}{path}"),
+    ))
 }
 
 impl Config {
@@ -163,7 +164,11 @@ impl Config {
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
-        for stray in ["FXCLOUD_OFFICE_SECRET", "FXCLOUD_OFFICE_WOPI_BASE", "FXCLOUD_OFFICE_EMBED"] {
+        for stray in [
+            "FXCLOUD_OFFICE_SECRET",
+            "FXCLOUD_OFFICE_WOPI_BASE",
+            "FXCLOUD_OFFICE_EMBED",
+        ] {
             if office_url.is_none()
                 && std::env::var(stray)
                     .map(|v| !v.trim().is_empty())
@@ -187,9 +192,8 @@ impl Config {
         };
         let (office_origin, office_url, office_secret, office_wopi_base) = match office_url {
             Some(raw) => {
-                let (origin, base) = office_base_parts(&raw).context(
-                    "FXCLOUD_OFFICE_URL must look like http(s)://host[:port][/prefix]",
-                )?;
+                let (origin, base) = office_base_parts(&raw)
+                    .context("FXCLOUD_OFFICE_URL must look like http(s)://host[:port][/prefix]")?;
                 let secret = std::env::var("FXCLOUD_OFFICE_SECRET")
                     .ok()
                     .map(|v| v.trim().to_string())

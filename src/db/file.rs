@@ -67,7 +67,11 @@ fn blob_ref(
 
 /// The acting user's role in `group_id`, or `None` when they are not a
 /// member - the one fact every group permission check starts from.
-pub(super) fn group_role(conn: &Connection, user_id: i64, group_id: i64) -> rusqlite::Result<Option<i64>> {
+pub(super) fn group_role(
+    conn: &Connection,
+    user_id: i64,
+    group_id: i64,
+) -> rusqlite::Result<Option<i64>> {
     let role: Option<i64> = conn
         .query_row(
             "SELECT role FROM group_members WHERE group_id = ?1 AND user_id = ?2",
@@ -279,8 +283,8 @@ impl Db {
                     if let Some(group_id) = parent.owner_group_id {
                         // The membership role decides, creator or not
                         // (concepts/groups.md section 4).
-                        let role = group_role(conn, user_id, group_id)?
-                            .ok_or(AppError::NotFound)?;
+                        let role =
+                            group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
                         let perms = role_perms(role);
                         if !crate::sharing::grants(perms, crate::sharing::PERM_READ) {
                             return Err(AppError::NotFound);
@@ -315,17 +319,6 @@ impl Db {
             };
             fill_subtree_sizes(conn, &mut entries)?;
             Ok(entries)
-        })
-        .await
-    }
-
-    /// Fetch a single entry, verifying it belongs to `owner_id`.
-    pub async fn get_entry(&self, owner_id: i64, id: i64) -> Result<Option<FileEntry>, AppError> {
-        self.run(move |conn| {
-            let mut stmt =
-                conn.prepare(&format!("SELECT {ENTRY_COLS} FROM files WHERE id = ?1 AND owner_id = ?2"))?;
-            let found = stmt.query_row(params![id, owner_id], row_to_entry).optional()?;
-            Ok(found)
         })
         .await
     }
@@ -366,6 +359,7 @@ impl Db {
     ///
     /// Shares the parent rules of [`Db::create_dir`], including the root
     /// bootstrap through `group`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_file(
         &self,
         user_id: i64,
@@ -625,8 +619,7 @@ impl Db {
             }
             let principal = match entry.owner_group_id {
                 Some(group_id) => {
-                    let role =
-                        group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
+                    let role = group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
                     if !crate::sharing::grants(role_perms(role), crate::sharing::PERM_DELETE) {
                         return Err(AppError::NotFound);
                     }
@@ -717,8 +710,7 @@ impl Db {
             }
             match entry.owner_group_id {
                 Some(group_id) => {
-                    let role =
-                        group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
+                    let role = group_role(conn, user_id, group_id)?.ok_or(AppError::NotFound)?;
                     if !crate::sharing::grants(role_perms(role), crate::sharing::PERM_DELETE) {
                         return Err(AppError::NotFound);
                     }
@@ -749,7 +741,7 @@ impl Db {
         self.run(move |conn| {
             let mut stmt =
                 conn.prepare("SELECT id, owner_id, owner_group_id, created_at FROM files")?;
-            let mut rows = stmt.query_map([], |r| {
+            let rows = stmt.query_map([], |r| {
                 let id: i64 = r.get(0)?;
                 let owner_id: i64 = r.get(1)?;
                 let owner_group_id: Option<i64> = r.get(2)?;
@@ -757,7 +749,7 @@ impl Db {
                 Ok((id, blob_ref(id, owner_id, owner_group_id, &created_at)?))
             })?;
             let mut out = HashMap::new();
-            while let Some(row) = rows.next() {
+            for row in rows {
                 let (id, blob) = row?;
                 out.insert(id, blob);
             }
@@ -911,7 +903,9 @@ impl Db {
                 };
                 parent = Some(found.id);
             }
-            let Some(id) = parent else { return Ok(None); };
+            let Some(id) = parent else {
+                return Ok(None);
+            };
             let Ok(mut entry) = get_entry_by_id(conn, id) else {
                 return Ok(None);
             };
@@ -958,12 +952,14 @@ impl Db {
             let dest = create_target(conn, user_id, new_parent, None, &new_name)?;
             match (src, dest) {
                 (TreeOwner::User(a), TreeOwner::User(b)) if a != b => {
-                    return Err(AppError::BadRequest(if new_parent.is_none() {
-                        "cannot move a shared item into your own root"
-                    } else {
-                        "cannot move an item across owners"
-                    }
-                    .into()));
+                    return Err(AppError::BadRequest(
+                        if new_parent.is_none() {
+                            "cannot move a shared item into your own root"
+                        } else {
+                            "cannot move an item across owners"
+                        }
+                        .into(),
+                    ));
                 }
                 (TreeOwner::User(a), TreeOwner::Group(_)) if a != user_id => {
                     return Err(AppError::BadRequest(
@@ -1137,7 +1133,9 @@ impl Db {
                           WHERE id IN (SELECT id FROM subtree)
                             AND (id != ?1 OR {PRINCIPAL_GUARD})"
                     ),
-                    params![id, new_parent, new_name, now, dest_group, dest_user, src_user, src_group],
+                    params![
+                        id, new_parent, new_name, now, dest_group, dest_user, src_user, src_group
+                    ],
                 )
                 .map_err(|e| map_constraint(e, &new_name))?
             } else {
@@ -1583,9 +1581,7 @@ impl Db {
                 ));
             }
             conn.execute(
-                &format!(
-                    "UPDATE files SET enc_key = ?1 WHERE id = ?2 AND {PRINCIPAL_GUARD}"
-                ),
+                &format!("UPDATE files SET enc_key = ?1 WHERE id = ?2 AND {PRINCIPAL_GUARD}"),
                 params![key, id, user, group],
             )?;
             get_entry_by_id(conn, id)
@@ -1681,8 +1677,7 @@ impl Db {
 }
 
 fn get_entry_by_id(conn: &Connection, id: i64) -> Result<FileEntry, AppError> {
-    let mut stmt =
-        conn.prepare(&format!("SELECT {ENTRY_COLS} FROM files WHERE id = ?1"))?;
+    let mut stmt = conn.prepare(&format!("SELECT {ENTRY_COLS} FROM files WHERE id = ?1"))?;
     let entry = stmt.query_row(params![id], row_to_entry).optional()?;
     entry.ok_or(AppError::NotFound)
 }
@@ -2181,7 +2176,9 @@ fn validate_name(name: &str) -> Result<(), AppError> {
         return Err(AppError::BadRequest("name must not be empty".into()));
     }
     if trimmed == "." || trimmed == ".." || trimmed.contains('/') || trimmed.contains('\\') {
-        return Err(AppError::BadRequest("name contains invalid characters".into()));
+        return Err(AppError::BadRequest(
+            "name contains invalid characters".into(),
+        ));
     }
     if trimmed.chars().any(|c| c.is_control()) {
         return Err(AppError::BadRequest(
@@ -2193,7 +2190,9 @@ fn validate_name(name: &str) -> Result<(), AppError> {
 
 fn map_constraint(e: rusqlite::Error, name: &str) -> AppError {
     match e {
-        rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation => {
+        rusqlite::Error::SqliteFailure(f, _)
+            if f.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
             AppError::Conflict(format!("'{name}' already exists here"))
         }
         other => other.into(),
@@ -2282,8 +2281,14 @@ mod tests {
         );
 
         add_file(&conn, owner, "a", 60, false);
-        assert!(ensure_quota(&conn, TreeOwner::User(owner), 40).is_ok(), "60 + 40 == 100");
-        assert!(ensure_quota(&conn, TreeOwner::User(owner), 41).is_err(), "60 + 41 > 100");
+        assert!(
+            ensure_quota(&conn, TreeOwner::User(owner), 40).is_ok(),
+            "60 + 40 == 100"
+        );
+        assert!(
+            ensure_quota(&conn, TreeOwner::User(owner), 41).is_err(),
+            "60 + 41 > 100"
+        );
     }
 
     #[test]
@@ -2301,7 +2306,10 @@ mod tests {
         )
         .expect("trash");
 
-        assert!(ensure_quota(&conn, TreeOwner::User(owner), 10).is_ok(), "90 + 10 == 100");
+        assert!(
+            ensure_quota(&conn, TreeOwner::User(owner), 10).is_ok(),
+            "90 + 10 == 100"
+        );
         assert!(ensure_quota(&conn, TreeOwner::User(owner), 11).is_err());
     }
 

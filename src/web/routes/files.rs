@@ -95,7 +95,16 @@ pub async fn create_file(
         // An empty file is always created plaintext: only a client-side
         // encrypt-on-save (a later phase) can put ciphertext behind a row it
         // also knows the wrapped key for.
-        .create_file(user.id(), req.parent_id, req.group, req.name, 0, None, 0, None)
+        .create_file(
+            user.id(),
+            req.parent_id,
+            req.group,
+            req.name,
+            0,
+            None,
+            0,
+            None,
+        )
         .await?;
     // An empty blob on disk, so download and preview work right away.
     if let Err(e) = state.files.write_blob(&entry, Vec::new()).await {
@@ -186,8 +195,7 @@ pub async fn copy_entry(
         .ok_or(AppError::NotFound)?;
     let dst_name = entry.name.clone();
     let copied =
-        crate::webdav::copy_recursive(&state, user.id(), &entry, req.dest_parent, dst_name)
-            .await?;
+        crate::webdav::copy_recursive(&state, user.id(), &entry, req.dest_parent, dst_name).await?;
     Ok(Json(json!({ "entry": copied })))
 }
 
@@ -277,9 +285,7 @@ async fn upload_parts(
             }
             "file" => {
                 filename = field.file_name().map(|s| s.to_string());
-                mime = field
-                    .content_type()
-                    .map(|s| s.to_string());
+                mime = field.content_type().map(|s| s.to_string());
                 // A second file part would leave the first one's temp file
                 // without an owner; only the last one wins, as before.
                 if let Some(previous) = temp.take() {
@@ -366,23 +372,19 @@ pub(crate) async fn stream_field_to_temp(
     let mut sample = Vec::new();
     let mut size: i64 = 0;
     let pumped = async {
-        while let Some(chunk) = field
-            .chunk()
-            .await
-            .map_err(|_| {
-                // The body-limit layer refuses a body between the counted
-                // cap and its framing headroom by erroring the stream - the
-                // frame that crossed the line is dropped, not delivered, so
-                // this error *is* the over-limit answer, not a parse
-                // failure. A broken upload lands here too; the old buffered
-                // path answered 413 for both, and every other write path in
-                // this file still does.
-                AppError::PayloadTooLarge(format!(
-                    "file exceeds the upload limit of {} or was interrupted mid-stream",
-                    human_size(state.config.max_upload_bytes as i64)
-                ))
-            })?
-        {
+        while let Some(chunk) = field.chunk().await.map_err(|_| {
+            // The body-limit layer refuses a body between the counted
+            // cap and its framing headroom by erroring the stream - the
+            // frame that crossed the line is dropped, not delivered, so
+            // this error *is* the over-limit answer, not a parse
+            // failure. A broken upload lands here too; the old buffered
+            // path answered 413 for both, and every other write path in
+            // this file still does.
+            AppError::PayloadTooLarge(format!(
+                "file exceeds the upload limit of {} or was interrupted mid-stream",
+                human_size(state.config.max_upload_bytes as i64)
+            ))
+        })? {
             size += chunk.len() as i64;
             if size > state.config.max_upload_bytes as i64 {
                 return Err(AppError::PayloadTooLarge(format!(
@@ -907,8 +909,17 @@ pub async fn save_content(
     .await?;
 
     let pin_old = entry.size > 0;
-    let outcome =
-        save_streamed(&state, user.id(), &q, entry, temp.clone(), &sample, size, pin_old).await;
+    let outcome = save_streamed(
+        &state,
+        user.id(),
+        &q,
+        entry,
+        temp.clone(),
+        &sample,
+        size,
+        pin_old,
+    )
+    .await;
     if outcome.is_err() {
         // The temp file only ever disappears by being renamed into place.
         let _ = tokio::fs::remove_file(&temp).await;
@@ -926,6 +937,7 @@ pub async fn save_content(
 /// and the pin itself. The editor save passes `entry.size > 0` (pin unless
 /// the file was empty); the WOPI save passes the session rule of
 /// concepts/office.md section 6 (decision 12).
+#[allow(clippy::too_many_arguments)] // the save phases, not a public API
 pub(crate) async fn save_streamed(
     state: &SharedState,
     user_id: i64,
@@ -976,9 +988,10 @@ pub(crate) async fn save_streamed(
             // record nobody in their own tree can open (5.5). On a group
             // row the F5 "owner" is the manager role (concepts/groups.md
             // section 5): the creator being a member grants nothing extra.
-            let same_record = entry.enc_key.as_ref().is_some_and(|current| {
-                BASE64.decode(current.trim()).is_ok_and(|c| c == key)
-            });
+            let same_record = entry
+                .enc_key
+                .as_ref()
+                .is_some_and(|current| BASE64.decode(current.trim()).is_ok_and(|c| c == key));
             let key_owner = match entry.owner_group_id {
                 Some(group_id) => matches!(
                     state.db.group_role_of(user_id, group_id).await?,
@@ -1115,9 +1128,9 @@ pub(crate) async fn stream_body_to_temp(
                 AppError::Internal(anyhow::anyhow!("writing temp body {path:?}: {e}"))
             })?;
         }
-        file.flush().await.map_err(|e| {
-            AppError::Internal(anyhow::anyhow!("flushing temp body {path:?}: {e}"))
-        })?;
+        file.flush()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("flushing temp body {path:?}: {e}")))?;
         Ok::<(), AppError>(())
     }
     .await;

@@ -197,7 +197,7 @@ fn split_origin(origin: &str) -> Result<(String, String), AppError> {
 fn host_without_port(authority: &str) -> String {
     if let Some(end) = authority.find(']') {
         // Bracketed IPv6 authority: keep through the closing bracket.
-        if end + 1 <= authority.len() {
+        if end < authority.len() {
             return authority[..=end].to_string();
         }
     }

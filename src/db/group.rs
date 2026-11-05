@@ -124,9 +124,8 @@ impl Db {
     /// Every group with members and consumption - the admin dialog's table.
     pub async fn list_groups(&self) -> Result<Vec<GroupInfo>, AppError> {
         self.run(move |conn| {
-            let mut stmt = conn.prepare(&format!(
-                "SELECT g.id FROM groups g ORDER BY g.name COLLATE NOCASE"
-            ))?;
+            let mut stmt =
+                conn.prepare("SELECT g.id FROM groups g ORDER BY g.name COLLATE NOCASE")?;
             let ids: Vec<i64> = stmt
                 .query_map([], |r| r.get(0))?
                 .collect::<Result<Vec<_>, _>>()?;

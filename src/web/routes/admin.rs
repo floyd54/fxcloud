@@ -43,7 +43,7 @@ pub async fn list_users(
 ///   the very dialog they are standing in, with no way back in);
 /// * no change may leave the instance without a single active administrator
 ///   - deactivating or demoting the last one is refused, because nobody would
-///   be left to undo it.
+///     be left to undo it.
 ///
 /// Returns the updated row so the dialog can refresh in place.
 pub async fn update_user(

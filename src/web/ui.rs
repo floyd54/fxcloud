@@ -43,7 +43,10 @@ pub async fn index(
     if !is_logged_in(&state, &headers).await {
         return Ok(Redirect::to("/login").into_response());
     }
-    serve_asset("index.html", state.config.office_url.as_deref().unwrap_or(""))
+    serve_asset(
+        "index.html",
+        state.config.office_url.as_deref().unwrap_or(""),
+    )
 }
 
 /// GET /login – the login/register page. Sends authenticated users home.
@@ -93,7 +96,7 @@ fn serve_asset(path: &str, office: &str) -> Result<Response, AppError> {
         let html = String::from_utf8_lossy(&data)
             .replace("{{version}}", VERSION)
             .replace("{{office}}", office);
-        data = html.into_bytes().into();
+        data = html.into_bytes();
     }
 
     Ok((

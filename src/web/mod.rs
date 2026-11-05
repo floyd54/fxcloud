@@ -77,7 +77,10 @@ fn csp_for(config: &crate::config::Config) -> HeaderValue {
             "frame-src 'self' blob:; ",
             &format!("frame-src 'self' blob: {origin}; "),
         )
-        .replace("form-action 'self'; ", &format!("form-action 'self' {origin}; "));
+        .replace(
+            "form-action 'self'; ",
+            &format!("form-action 'self' {origin}; "),
+        );
     // The origin was validated as `scheme://host[:port]` at config load,
     // so this cannot produce an unparseable header; the fallback keeps the
     // baseline policy rather than dropping it.
@@ -235,11 +238,11 @@ pub fn build_router(state: SharedState) -> Router {
     // overview, revoke. Every handler takes `AuthUser`, so these are the
     // *owner's* links only - the visitor surface lives under /api/public.
     let api = api
-        .route("/links", post(routes::links::create).get(routes::links::list))
         .route(
-            "/links/{id}",
-            axum::routing::delete(routes::links::revoke),
-        );
+            "/links",
+            post(routes::links::create).get(routes::links::list),
+        )
+        .route("/links/{id}", axum::routing::delete(routes::links::revoke));
 
     // Public links, visitor side (section 7): no session, no cookie - the
     // bearer token *is* the credential, so `AuthUser` never appears here.

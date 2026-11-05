@@ -96,7 +96,13 @@ pub async fn create_batch(
         let file_id = item.file_id;
         match state
             .db
-            .create_share(user.id(), file_id, req.username.clone(), perms, item.envelope)
+            .create_share(
+                user.id(),
+                file_id,
+                req.username.clone(),
+                perms,
+                item.envelope,
+            )
             .await
         {
             Ok(_) => out.success(file_id),

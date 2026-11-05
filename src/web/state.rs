@@ -229,12 +229,7 @@ impl AppState {
 
     /// Remember what this office session just saved (the fresh row's
     /// `modified_at`), so its next save can skip the pin.
-    pub fn office_record_write(
-        &self,
-        file_id: i64,
-        opened_at: i64,
-        modified_at: DateTime<Utc>,
-    ) {
+    pub fn office_record_write(&self, file_id: i64, opened_at: i64, modified_at: DateTime<Utc>) {
         let mut writes = self.office_writes.lock().unwrap_or_else(|p| p.into_inner());
         if writes.len() >= 4096 {
             // Anti-flood line (the caps in `AuthLimiter` have the same
@@ -381,7 +376,7 @@ impl AppState {
         lock.failures = lock.failures.saturating_add(1);
         lock.last_failure = now;
         if lock.failures >= AUTH_LOCK_AFTER {
-            let step = u32::from(lock.failures - AUTH_LOCK_AFTER).min(24);
+            let step = (lock.failures - AUTH_LOCK_AFTER).min(24);
             let window = AUTH_LOCK_BASE_SECS.saturating_mul(1_i64 << step);
             lock.locked_until = Some(now + Duration::seconds(window.min(AUTH_LOCK_MAX_SECS)));
         }

@@ -18,8 +18,8 @@ use crate::error::AppError;
 use crate::models::{GroupKeyEnvelope, GroupKeyPutRequest, MyGroup, PendingGroupKey};
 use crate::web::state::SharedState;
 
-/// One envelope carries exactly one wrapped key record (ENCRYPTION.md 5.5)
-/// - a folder key, never a subtree. The cap mirrors the share envelope's
+/// One envelope carries exactly one wrapped key record (ENCRYPTION.md 5.5):
+/// a folder key, never a subtree. The cap mirrors the share envelope's
 /// (routes/shares.rs): the blob is opaque here by design, so a sane size is
 /// the only thing the server can enforce, and a larger one is refused with
 /// 400 rather than stored as a parking spot for data it is not meant to

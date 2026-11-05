@@ -530,7 +530,7 @@ impl FileService {
                 // The rows never moved: take the fresh link away again
                 // (best effort - a leftover link keeps content readable).
                 if let Some((_, new)) = &relocation {
-                    self.delete_blobs(&[new.clone()]).await;
+                    self.delete_blobs(std::slice::from_ref(new)).await;
                 }
                 return Err(e);
             }

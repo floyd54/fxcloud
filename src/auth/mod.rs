@@ -194,7 +194,10 @@ impl FromRequestParts<SharedState> for AuthUser {
         state: &SharedState,
     ) -> Result<Self, Self::Rejection> {
         let token = token_from_cookie_header(
-            parts.headers.get(axum::http::header::COOKIE).and_then(|v| v.to_str().ok()),
+            parts
+                .headers
+                .get(axum::http::header::COOKIE)
+                .and_then(|v| v.to_str().ok()),
         )
         .ok_or(AppError::Unauthorized)?;
 
