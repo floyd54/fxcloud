@@ -175,6 +175,13 @@ pub struct UserKeys {
     /// DECISION 3 the login password and the storage secret are one event,
     /// so this is the only path left if that secret is forgotten.
     pub wrapped_ark_recovery: String,
+    /// The recovery key itself, wrapped under the passphrase KEK (phase 4,
+    /// ENCRYPTION.md 5.7): lets a passphrase holder show the key again.
+    /// `None` for rows set up before this column - those issue a new key
+    /// instead. A passphrase holder could already unwrap the ARK, so the
+    /// server storing it this way adds no new power.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wrapped_recovery: Option<String>,
     /// Salt for the client-side Argon2id run.
     pub kdf_salt: String,
     /// Argon2id m/t/p and suite ids, as sent at setup.
@@ -194,6 +201,10 @@ pub struct SetupKeysRequest {
     pub wrapped_ark: String,
     pub wrapped_root_key: String,
     pub wrapped_ark_recovery: String,
+    /// The recovery key wrapped under the passphrase KEK (phase 4). Optional
+    /// so a client cached from before the column still sets up; a missing
+    /// value stores NULL and the UI offers "issue a new key" instead.
+    pub wrapped_recovery: Option<String>,
     pub kdf_salt: String,
     pub kdf_params: serde_json::Value,
     pub fingerprint: String,
@@ -209,6 +220,18 @@ pub struct RewrapKeysRequest {
     pub wrapped_ark: String,
     pub kdf_salt: String,
     pub kdf_params: serde_json::Value,
+}
+
+/// PUT /api/keys/recovery payload - issue a new recovery key (phase 4).
+///
+/// Both envelopes move together: the new key wrapped under the recovery
+/// KEK (what reopens the ARK when the passphrase is gone) and the new key
+/// wrapped under the passphrase KEK (what lets the owner show it again).
+/// The old key stops working the moment the server stores these.
+#[derive(Debug, Deserialize)]
+pub struct RotateRecoveryRequest {
+    pub wrapped_ark_recovery: String,
+    pub wrapped_recovery: String,
 }
 
 /// One entry of `GET /api/keys/<username>` - the public half only.

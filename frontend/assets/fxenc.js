@@ -1213,6 +1213,35 @@
     return (await res.json()).entry;
   }
 
+  // ---- recovery key on demand (5.7, phase 4) ----------------------------
+
+  /**
+   * Show the stored recovery key again. `null` for a row set up before the
+   * column existed - the UI answers those with "issue a new key" instead.
+   */
+  async function recoveryView(passphrase) {
+    if (!state.keys) return null;
+    return FX().viewRecovery(state.keys, passphrase, derive);
+  }
+
+  /**
+   * Issue a new recovery key: the passphrase opens the ARK first, both
+   * envelopes are produced here and the PUT stores them - the old key dies
+   * with that request. Returns the new key as hex.
+   */
+  async function recoveryRotate(passphrase) {
+    if (!state.keys) throw new Error(t("recovery.none"));
+    const out = await FX().rotateRecovery(state.keys, passphrase, derive);
+    await http(
+      "/api/keys/recovery",
+      jsonCall("PUT", {
+        wrapped_ark_recovery: out.wrapped_ark_recovery,
+        wrapped_recovery: out.wrapped_recovery,
+      })
+    );
+    return out.recoveryHex;
+  }
+
   // ------------------------------------------------------------------------
   // Wiring
   // ------------------------------------------------------------------------
@@ -1350,6 +1379,8 @@
     requestKeys: requestKeys,
     encryptUpload: encryptUpload,
     migrateTree: migrateTree,
+    recoveryView: recoveryView,
+    recoveryRotate: recoveryRotate,
     readText: readText,
     writeText: writeText,
     download: download,

@@ -267,6 +267,8 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/keys/setup", post(routes::keys::setup))
         .route("/keys/me", get(routes::keys::get_me))
         .route("/keys/me", put(routes::keys::put_me))
+        // Issue a new recovery key (ENCRYPTION.md 5.7, phase 4).
+        .route("/keys/recovery", put(routes::keys::put_recovery))
         .route("/keys/{username}", get(routes::keys::get_public));
 
     // User administration. Every handler takes the `AdminUser` extractor, so

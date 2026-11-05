@@ -2090,6 +2090,11 @@ RC=$(reqsave PUT /api/keys/me "$JA" "$ROOT/k.json" \
 [ "$RC" = "409" ] && ok "PUT /api/keys/me before setup -> 409 (nothing to rewrap)" \
   || bad "rewrap unset: $RC $(cat "$ROOT/k.json")"
 
+RC=$(reqsave PUT /api/keys/recovery "$JA" "$ROOT/rot.json" \
+  '{"wrapped_ark_recovery":"bmV3","wrapped_recovery":"bmV3"}')
+[ "$RC" = "409" ] && ok "PUT /api/keys/recovery before setup -> 409" \
+  || bad "rotate unset: $RC $(cat "$ROOT/rot.json")"
+
 RC=$(reqsave PUT /api/keys/me "$JA" "$ROOT/k.json" \
   '{"wrapped_ark":"YXJr","kdf_salt":"c2FsdA==","kdf_params":{"kdf":"argon2id","m":8192,"t":3,"p":1}}')
 [ "$RC" = "400" ] && grep -q "m >= 65536" "$ROOT/k.json" \
@@ -2131,6 +2136,15 @@ FP=$("$NODE" "$FXTOOL" setup 'storage-pass-1' "$FXP" "$FXS" 2>"$ROOT/fx.err")
 [ -n "$FP" ] && ok "client generated key material (fingerprint ${FP:0:8}...)" \
   || bad "fxtool setup failed: $(cat "$ROOT/fx.err")"
 
+# fxtool runs the real generateAccount, so its payload carries the optional
+# phase4 field. Drop it here: this is the client cached from before the
+# column - the row must store NULL and say so (the rotation below adds a
+# copy back).
+perl -MJSON::PP -0777 -e '
+  my $j = decode_json(do { local $/; <STDIN> });
+  delete $j->{wrapped_recovery};
+  print encode_json($j);' < "$FXP" > "$FXP.old" && mv "$FXP.old" "$FXP"
+
 RC=$(reqsave POST /api/keys/setup "$JA" "$ROOT/k.json" "$(cat "$FXP")")
 [ "$RC" = "200" ] && ok "POST /api/keys/setup -> 200" || bad "setup: $RC $(cat "$ROOT/k.json")"
 
@@ -2165,6 +2179,24 @@ perl -MJSON::PP -0777 -e '
 ' < "$ROOT/mine.json" \
   && ok "GET /api/keys/me returns the whole wrapped record" \
   || bad "keys/me shape: $(cat "$ROOT/mine.json")"
+
+note "recovery key on demand (phase4): NULL for old rows, rotation moves both"
+# A client that predates the column sends no copy, and none is invented.
+grep -q '"wrapped_recovery"' "$ROOT/mine.json" \
+  && bad "keys/me invents a wrapped_recovery the client never sent" \
+  || ok "a setup without the optional field stores NULL (field absent)"
+RC=$(reqsave PUT /api/keys/recovery "$JA" "$ROOT/rot.json" \
+  '{"wrapped_ark_recovery":"bmV3LXJlYw==","wrapped_recovery":"bmV3LXJldw=="}')
+[ "$RC" = "200" ] && ok "PUT /api/keys/recovery -> 200" || bad "rotate: $RC $(cat "$ROOT/rot.json")"
+RC=$(reqsave GET /api/keys/me "$JA" "$ROOT/mine.json")
+[ "$RC" = "200" ] || bad "keys/me after rotate: $RC"
+grep -q '"wrapped_ark_recovery":"bmV3LXJlYw==' "$ROOT/mine.json" \
+  && ok "the new recovery envelope is stored" || bad "ark_recovery: $(cat "$ROOT/mine.json")"
+grep -q '"wrapped_recovery":"bmV3LXJldw==' "$ROOT/mine.json" \
+  && ok "the showable copy is stored too" || bad "wrapped_recovery: $(cat "$ROOT/mine.json")"
+RC=$(reqsave PUT /api/keys/recovery "$JA" "$ROOT/rot.json" \
+  '{"wrapped_ark_recovery":"","wrapped_recovery":""}')
+[ "$RC" = "400" ] && ok "empty recovery envelopes -> 400" || bad "empty rotate: $RC"
 
 note "public key lookup exposes the public half and nothing else"
 RC=$(reqsave GET /api/keys/alice "$JA" "$ROOT/pub.json")

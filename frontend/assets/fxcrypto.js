@@ -68,6 +68,10 @@
     privkey: utf8("fx1:privkey:v1"),
     rootkey: utf8("fx1:rootkey:v1"),
     recoveryKek: utf8("fx1:recovery-kek:v1"),
+    // The recovery key again, wrapped under the passphrase KEK (5.7,
+    // phase 4): a purpose tag of its own, so this blob can never be
+    // mistaken for the ARK's or for any child key.
+    recoveryView: utf8("fx1:recovery-view:v1"),
   };
 
   // ---- small byte helpers ---------------------------------------------
@@ -609,6 +613,11 @@
     var recovery = randomBytes(KEY_LEN);
     var recoveryKek = await deriveRecoveryKek(recovery, salt);
     var wrappedRecovery = await wrap(recoveryKek, ark, AAD.arkRecovery);
+    // Phase 4 (5.7): the same key, wrapped under the passphrase KEK, so a
+    // passphrase holder can show it again. That holder could already unwrap
+    // the ARK - this copy adds no new power, only a second way back to a
+    // value that is otherwise shown exactly once.
+    var wrappedRecoveryView = await wrap(kek, recovery, AAD.recoveryView);
 
     return {
       payload: {
@@ -617,6 +626,7 @@
         wrapped_ark: b64encode(wrappedArk),
         wrapped_root_key: b64encode(wrappedRoot),
         wrapped_ark_recovery: b64encode(wrappedRecovery),
+        wrapped_recovery: b64encode(wrappedRecoveryView),
         kdf_salt: b64encode(salt),
         kdf_params: Object.assign({}, KDF_FLOOR),
         fingerprint: await fingerprint(kp.publicBlob),
@@ -700,6 +710,42 @@
   }
 
   // ---- recovery key file ------------------------------------------------
+
+  /**
+   * The recovery key again (5.7, phase 4): the passphrase-derived KEK
+   * opens the copy the server stores for exactly this purpose. A
+   * passphrase holder can already unwrap the ARK, so storing it this way
+   * adds no new power - it only makes the once-shown value recoverable
+   * from the secret the user still has. `null` for a row set up before
+   * the column existed.
+   */
+  async function viewRecovery(keys, passphrase, derive) {
+    if (!keys.wrapped_recovery) return null;
+    var params = keys.kdf_params || KDF_FLOOR;
+    var kek = await kdfer(derive)(passphrase, b64decode(keys.kdf_salt), params);
+    var recovery = await unwrap(kek, b64decode(keys.wrapped_recovery), AAD.recoveryView);
+    return toHex(recovery);
+  }
+
+  /**
+   * Issue a new recovery key (5.7): open the ARK with the passphrase, mint
+   * a fresh key, wrap it both ways - under the recovery KEK (the path that
+   * reopens the ARK when the passphrase is gone) and under the passphrase
+   * KEK (the path that shows it again). The caller PUTs both envelopes;
+   * from that moment the old key opens nothing. O(1): the ARK does not move.
+   */
+  async function rotateRecovery(keys, passphrase, derive) {
+    var params = keys.kdf_params || KDF_FLOOR;
+    var kek = await kdfer(derive)(passphrase, b64decode(keys.kdf_salt), params);
+    var ark = await unwrap(kek, b64decode(keys.wrapped_ark), AAD.ark);
+    var recovery = randomBytes(KEY_LEN);
+    var recoveryKek = await deriveRecoveryKek(recovery, b64decode(keys.kdf_salt));
+    return {
+      wrapped_ark_recovery: b64encode(await wrap(recoveryKek, ark, AAD.arkRecovery)),
+      wrapped_recovery: b64encode(await wrap(kek, recovery, AAD.recoveryView)),
+      recoveryHex: toHex(recovery),
+    };
+  }
 
   /**
    * The downloadable record (5.7). Plain ASCII on purpose: it has to survive
@@ -839,6 +885,8 @@
     generateAccount: generateAccount,
     unlockAccount: unlockAccount,
     openWithRecovery: openWithRecovery,
+    viewRecovery: viewRecovery,
+    rotateRecovery: rotateRecovery,
     rewrapAccount: rewrapAccount,
     recoveryFile: recoveryFile,
   };

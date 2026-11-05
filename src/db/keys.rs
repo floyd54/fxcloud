@@ -78,6 +78,11 @@ fn row_to_keys(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserKeys> {
         wrapped_ark: BASE64.encode(row.get::<_, Vec<u8>>("wrapped_ark")?),
         wrapped_root_key: BASE64.encode(row.get::<_, Vec<u8>>("wrapped_root_key")?),
         wrapped_ark_recovery: BASE64.encode(row.get::<_, Vec<u8>>("wrapped_ark_recovery")?),
+        // Nullable: rows set up before phase4 carry no stored recovery key
+        // and answer `None` - the UI offers "issue a new key" for those.
+        wrapped_recovery: row
+            .get::<_, Option<Vec<u8>>>("wrapped_recovery")?
+            .map(|b| BASE64.encode(b)),
         kdf_salt: BASE64.encode(row.get::<_, Vec<u8>>("kdf_salt")?),
         kdf_params: params_value,
         fingerprint: row.get("fingerprint")?,
@@ -87,7 +92,7 @@ fn row_to_keys(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserKeys> {
 }
 
 const KEY_COLS: &str = "user_id, public_key, private_key_wrapped, wrapped_ark, wrapped_root_key, \
-     wrapped_ark_recovery, kdf_salt, kdf_params, fingerprint, created_at, updated_at";
+     wrapped_ark_recovery, kdf_salt, kdf_params, fingerprint, created_at, updated_at, wrapped_recovery";
 
 impl Db {
     /// Store an account's key material at encryption setup.
@@ -109,6 +114,13 @@ impl Db {
         let wrapped_ark = blob("wrapped_ark", &req.wrapped_ark)?;
         let wrapped_root_key = blob("wrapped_root_key", &req.wrapped_root_key)?;
         let wrapped_ark_recovery = blob("wrapped_ark_recovery", &req.wrapped_ark_recovery)?;
+        // Optional: a client cached from before phase4 simply stores NULL,
+        // which the UI answers with "issue a new key".
+        let wrapped_recovery = req
+            .wrapped_recovery
+            .as_deref()
+            .map(|v| blob("wrapped_recovery", v))
+            .transpose()?;
         let kdf_salt = blob("kdf_salt", &req.kdf_salt)?;
         if req.fingerprint.trim().is_empty() {
             return Err(AppError::BadRequest("fingerprint is empty".into()));
@@ -139,9 +151,9 @@ impl Db {
             let now = Utc::now().to_rfc3339();
             conn.execute(
                 "INSERT INTO user_keys (user_id, public_key, private_key_wrapped, wrapped_ark,
-                                        wrapped_root_key, wrapped_ark_recovery, kdf_salt,
-                                        kdf_params, fingerprint, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                                        wrapped_root_key, wrapped_ark_recovery, wrapped_recovery,
+                                        kdf_salt, kdf_params, fingerprint, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
                 params![
                     user_id,
                     public_key,
@@ -149,6 +161,7 @@ impl Db {
                     wrapped_ark,
                     wrapped_root_key,
                     wrapped_ark_recovery,
+                    wrapped_recovery,
                     kdf_salt,
                     kdf_params,
                     fingerprint,
@@ -202,6 +215,41 @@ impl Db {
                     kdf_params,
                     Utc::now().to_rfc3339()
                 ],
+            )?;
+            if changed == 0 {
+                return Err(AppError::Conflict(
+                    "encryption is not set up for this account".into(),
+                ));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Issue a new recovery key (ENCRYPTION.md phase 4): both envelopes
+    /// move together - the new key wrapped under the recovery KEK reopens
+    /// the ARK when the passphrase is gone, the new key wrapped under the
+    /// passphrase KEK lets the owner show it again. The old key stops
+    /// working the moment these land. O(1), like a passphrase change: the
+    /// ARK itself does not move.
+    pub async fn rotate_recovery_keys(
+        &self,
+        user_id: i64,
+        wrapped_ark_recovery: String,
+        wrapped_recovery: String,
+    ) -> Result<(), AppError> {
+        if wrapped_ark_recovery.trim().is_empty() || wrapped_recovery.trim().is_empty() {
+            return Err(AppError::BadRequest("recovery envelopes are empty".into()));
+        }
+        let ark_recovery = blob("wrapped_ark_recovery", &wrapped_ark_recovery)?;
+        let recovery = blob("wrapped_recovery", &wrapped_recovery)?;
+        self.run(move |conn| {
+            let changed = conn.execute(
+                "UPDATE user_keys
+                    SET wrapped_ark_recovery = ?2, wrapped_recovery = ?3,
+                        updated_at = ?4
+                  WHERE user_id = ?1",
+                params![user_id, ark_recovery, recovery, Utc::now().to_rfc3339()],
             )?;
             if changed == 0 {
                 return Err(AppError::Conflict(

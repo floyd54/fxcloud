@@ -2966,6 +2966,93 @@
     runMigrate(scope);
   }
 
+  // ---------- phase4: the recovery key on demand (ENCRYPTION.md 5.7) -----
+  /** "This account has encryption set up" - the badge's other half,
+   *  spelled without the enabled predicate: that name is pinned as the
+   *  old write-gate phrasing (DECISION 11) and this is not a write gate. */
+  function encryptionSetUp() {
+    const s = FXEnc.status();
+    return s === "locked" || s === "unlocked";
+  }
+
+  function setRecoveryStatus(text) {
+    document.getElementById("recovery-status").textContent = text || "";
+  }
+
+  function groupRecoveryHex(hex) {
+    return (hex.match(/.{1,16}/g) || []).join("\n");
+  }
+
+  /** Show a recovery key in the section and arm the download button. */
+  function showRecoveryHex(hex) {
+    const view = document.getElementById("recovery-view");
+    view.textContent = groupRecoveryHex(hex);
+    view.hidden = false;
+    const dl = document.getElementById("recovery-dl");
+    dl.hidden = false;
+    dl.onclick = () => {
+      const blob = new Blob([FX().recoveryFile(meData.username, hex)], {
+        type: "text/plain",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "fxcloud-recovery-key.txt";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    };
+  }
+
+  /** Show the stored key again: passphrase in, hex out (5.7 phase4). */
+  async function recoveryShow() {
+    const input = document.getElementById("recovery-pass");
+    if (!encryptionSetUp()) {
+      setRecoveryStatus(t("recovery.none"));
+      return;
+    }
+    if (!input.value) {
+      setRecoveryStatus(t("recovery.wrongPass"));
+      return;
+    }
+    try {
+      const hex = await FXEnc.recoveryView(input.value);
+      input.value = "";
+      if (!hex) {
+        // A row from before the column: there is no copy to show.
+        setRecoveryStatus(t("recovery.absent"));
+        return;
+      }
+      showRecoveryHex(hex);
+      setRecoveryStatus(t("recovery.shown"));
+    } catch (_) {
+      setRecoveryStatus(t("recovery.wrongPass"));
+    }
+  }
+
+  /** Issue a new key: the old one dies with the PUT (5.7 phase4). */
+  async function recoveryRegenerate() {
+    if (!encryptionSetUp()) {
+      setRecoveryStatus(t("recovery.none"));
+      return;
+    }
+    if (!window.confirm(t("recovery.confirm"))) return;
+    const input = document.getElementById("recovery-pass");
+    if (!input.value) {
+      setRecoveryStatus(t("recovery.wrongPass"));
+      return;
+    }
+    try {
+      const hex = await FXEnc.recoveryRotate(input.value);
+      input.value = "";
+      showRecoveryHex(hex);
+      setRecoveryStatus(t("recovery.rotated"));
+    } catch (_) {
+      setRecoveryStatus(t("recovery.wrongPass"));
+    }
+  }
+
   // Save the display name. The topbar label and the menu update at once -
   // the server answered with the saved row, so nothing here has to guess.
   async function saveDisplayName(name) {
@@ -4038,6 +4125,11 @@
   document.getElementById("migrate-modal").addEventListener("click", (e) => {
     if (e.target === migrateModal) closeMigrate();
   });
+  document.getElementById("recovery-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    recoveryShow();
+  });
+  document.getElementById("recovery-regen").addEventListener("click", recoveryRegenerate);
   document.getElementById("versions-close-btn").addEventListener("click", closeVersionsDialog);
   document.getElementById("versions-modal").addEventListener("click", (e) => {
     if (e.target === document.getElementById("versions-modal")) closeVersionsDialog();

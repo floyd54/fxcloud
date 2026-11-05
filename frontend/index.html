@@ -228,6 +228,20 @@
             </p>
             <button class="btn" type="button" id="set-migrate"
                     data-i18n="enc.migrate.title">Encrypt existing files</button>
+
+            <h4 data-i18n="recovery.title">Recovery key</h4>
+            <p class="settings-hint" data-i18n="recovery.hint">
+              Show the key again or issue a new one - both need your storage passphrase.
+            </p>
+            <form id="recovery-form" class="settings-form">
+              <label class="label" for="recovery-pass" data-i18n="recovery.passLabel">Storage passphrase</label>
+              <input type="password" id="recovery-pass" autocomplete="current-password" />
+              <button class="btn" type="submit" data-i18n="recovery.show">Show recovery key</button>
+              <button class="btn secondary" type="button" id="recovery-regen" data-i18n="recovery.regen">Issue a new one</button>
+            </form>
+            <p class="settings-hint" id="recovery-status"></p>
+            <pre class="enc-recovery" id="recovery-view" hidden></pre>
+            <button class="btn" type="button" id="recovery-dl" hidden data-i18n="recovery.download">Download</button>
           </section>
 
           <section class="settings-panel" data-settings-panel="appearance">

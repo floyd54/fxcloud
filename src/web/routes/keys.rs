@@ -10,7 +10,7 @@ use axum::Json;
 
 use crate::auth::AuthUser;
 use crate::error::AppError;
-use crate::models::{RewrapKeysRequest, SetupKeysRequest};
+use crate::models::{RewrapKeysRequest, RotateRecoveryRequest, SetupKeysRequest};
 use crate::web::state::SharedState;
 
 /// POST /api/keys/setup - publish an account's key material once.
@@ -61,6 +61,24 @@ pub async fn put_me(
     Json(req): Json<RewrapKeysRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     state.db.rewrap_keys(user.id(), req).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// PUT /api/keys/recovery - issue a new recovery key (phase 4).
+///
+/// The client produces both envelopes: it opens the ARK with the entered
+/// passphrase first, so only someone who knows that secret can rotate. The
+/// server stores them, which invalidates the old key - nothing else in the
+/// row moves (ENCRYPTION.md 5.7, O(1) like a passphrase change).
+pub async fn put_recovery(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<RotateRecoveryRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    state
+        .db
+        .rotate_recovery_keys(user.id(), req.wrapped_ark_recovery, req.wrapped_recovery)
+        .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

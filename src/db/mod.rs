@@ -225,6 +225,16 @@ impl Db {
                      WHERE name = 'enc_zone'",
                 ),
             ),
+            // The recovery key wrapped under the passphrase KEK (phase 4,
+            // ENCRYPTION.md 5.7) - nullable, rows set up earlier stay NULL.
+            (
+                "020_wrapped_recovery",
+                include_str!("../../migrations/020_wrapped_recovery.sql"),
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('user_keys')
+                     WHERE name = 'wrapped_recovery'",
+                ),
+            ),
         ];
         let conn = self.pool.get()?;
         for (name, sql, guard) in MIGRATIONS {
