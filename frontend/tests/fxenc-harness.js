@@ -157,6 +157,24 @@ globalThis.confirm = function () {
 // exactly this one key. A Map behind the same three methods is the stand-in;
 // anything fxenc.js asks for that this does not model throws, which is the
 // point - a silently missing control is how wiring bugs hide.
+// localStorage is modelled the same way for the opt-in device-unlock blob
+// (5.7, phase 4): one Map per API, no expiry - a test that wants a fresh
+// "device" clears it.
+const deviceStore = new Map();
+globalThis.localStorage = {
+  getItem: function (key) {
+    return deviceStore.has(key) ? deviceStore.get(key) : null;
+  },
+  setItem: function (key, value) {
+    deviceStore.set(key, String(value));
+  },
+  removeItem: function (key) {
+    deviceStore.delete(key);
+  },
+  clear: function () {
+    deviceStore.clear();
+  },
+};
 const parkedSecrets = new Map();
 globalThis.sessionStorage = {
   getItem: function (key) {

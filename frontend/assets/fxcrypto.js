@@ -58,7 +58,7 @@
   /**
    * Domain separation for the account-level wraps. The key record under a
    * folder gets `child_id || version` instead (5.4), which is what binds it
-   * to its row; these four have no row to bind to, so they are bound to their
+   * to its row; these five have no row to bind to, so they are bound to their
    * *purpose* instead - a blob written as "wrap the root key" cannot be
    * replayed as "wrap the private key".
    */
@@ -72,6 +72,9 @@
     // phase 4): a purpose tag of its own, so this blob can never be
     // mistaken for the ARK's or for any child key.
     recoveryView: utf8("fx1:recovery-view:v1"),
+    // The ARK wrapped under a device key (5.7, phase 4): what the opt-in
+    // auto-unlock keeps in localStorage instead of a password.
+    deviceArk: utf8("fx1:device-ark:v1"),
   };
 
   // ---- small byte helpers ---------------------------------------------
@@ -631,11 +634,14 @@
         kdf_params: Object.assign({}, KDF_FLOOR),
         fingerprint: await fingerprint(kp.publicBlob),
       },
-      // In-memory only from here on (DECISION 7): nothing below is written to
-      // localStorage or sessionStorage anywhere in this codebase. The single
-      // value that does cross a page load is the login password that
-      // login.js parks for one navigation; fxenc.js deletes it on its first
-      // read, and it opens this row rather than being the row's key material.
+      // In-memory only from here on (DECISION 7): nothing below is written
+      // to localStorage or sessionStorage by this function. What does cross
+      // page loads: the login password login.js parks for one navigation
+      // (deleted by fxenc.js on first read - it opens the row, it is not
+      // the row's key material), the public fingerprint map, and - with the
+      // account's switch on - the device blob fxenc.js writes after a real
+      // unlock (5.7): the ARK wrapped under a random device key, never the
+      // password.
       session: {
         ark: ark,
         rootKey: rootKey,
@@ -650,11 +656,10 @@
     };
   }
 
-  /** Open a stored account with the storage passphrase. */
-  async function unlockAccount(keys, passphrase, derive) {
-    var params = keys.kdf_params || KDF_FLOOR;
-    var kek = await kdfer(derive)(passphrase, b64decode(keys.kdf_salt), params);
-    var ark = await unwrap(kek, b64decode(keys.wrapped_ark), AAD.ark);
+  /** Everything that hangs off an opened ARK: root key, private key, the
+   *  public pair. The passphrase path and the device-unlock path (5.7,
+   *  phase 4) both end here - only how the ARK was obtained differs. */
+  async function sessionFromArk(keys, ark) {
     var rootKey = await unwrap(ark, b64decode(keys.wrapped_root_key), AAD.rootkey);
     var privPkcs8 = await unwrap(ark, b64decode(keys.private_key_wrapped), AAD.privkey);
     var publicBlob = b64decode(keys.public_key);
@@ -667,6 +672,14 @@
       publicBlob: publicBlob,
       suite: suite,
     };
+  }
+
+  /** Open a stored account with the storage passphrase. */
+  async function unlockAccount(keys, passphrase, derive) {
+    var params = keys.kdf_params || KDF_FLOOR;
+    var kek = await kdfer(derive)(passphrase, b64decode(keys.kdf_salt), params);
+    var ark = await unwrap(kek, b64decode(keys.wrapped_ark), AAD.ark);
+    return sessionFromArk(keys, ark);
   }
 
   /**
@@ -745,6 +758,30 @@
       wrapped_recovery: b64encode(await wrap(kek, recovery, AAD.recoveryView)),
       recoveryHex: toHex(recovery),
     };
+  }
+
+  /**
+   * The device-unlock blob (5.7, phase 4, DECISION 7): wrap the ARK under
+   * a fresh random device key. The browser keeps {deviceKey, wrappedArk}
+   * in localStorage while the account's switch is on - the login password
+   * itself is never stored. Honest about the trade: whoever can read this
+   * browser profile wholesale gets this account's keys for this device;
+   * that is what the switch opts into, and what "off" deletes. What it
+   * does not expose is the password, which a parked-password scheme would.
+   */
+  async function createDeviceBlob(ark) {
+    var deviceKey = randomBytes(KEY_LEN);
+    return {
+      deviceKey: toHex(deviceKey),
+      wrappedArk: b64encode(await wrap(deviceKey, ark, AAD.deviceArk)),
+    };
+  }
+
+  /** Open the device blob; throws on tamper or a foreign key - the caller
+   *  treats any throw as "no auto-unlock here" and falls back to asking. */
+  async function openDeviceBlob(deviceKeyHex, wrappedArkB64) {
+    var deviceKey = fromHex(deviceKeyHex);
+    return unwrap(deviceKey, b64decode(wrappedArkB64), AAD.deviceArk);
   }
 
   /**
@@ -888,6 +925,9 @@
     openWithRecovery: openWithRecovery,
     viewRecovery: viewRecovery,
     rotateRecovery: rotateRecovery,
+    sessionFromArk: sessionFromArk,
+    createDeviceBlob: createDeviceBlob,
+    openDeviceBlob: openDeviceBlob,
     rewrapAccount: rewrapAccount,
     recoveryFile: recoveryFile,
   };

@@ -118,6 +118,34 @@ async function main() {
     FX.unlockAccount(account.payload, "correct horse battery stapl")
   );
 
+  // ---------------------------------------------- device unlock (5.7, phase 4)
+
+  await check("device blob wraps and opens the ARK only with its own key", async () => {
+    const blob = await FX.createDeviceBlob(account.session.ark);
+    assert(blob.deviceKey.length === 64, "device key must be32 bytes as hex");
+    const ark = await FX.openDeviceBlob(blob.deviceKey, blob.wrappedArk);
+    assert(FX.equalBytes(ark, account.session.ark), "ARK roundtrip differs");
+    let refused = false;
+    try {
+      await FX.openDeviceBlob("00".repeat(32), blob.wrappedArk);
+    } catch (_) {
+      refused = true;
+    }
+    assert(refused, "a foreign device key must not open the blob");
+  });
+
+  await check("sessionFromArk rebuilds the session from the device path", async () => {
+    const blob = await FX.createDeviceBlob(account.session.ark);
+    const ark = await FX.openDeviceBlob(blob.deviceKey, blob.wrappedArk);
+    const session = await FX.sessionFromArk(account.payload, ark);
+    assert(FX.equalBytes(session.rootKey, account.session.rootKey), "root key differs");
+    assert(FX.equalBytes(session.publicBlob, account.session.publicBlob), "public blob differs");
+    assert(
+      session.privateKey != null && session.privateKey.type === "private",
+      "private key imported"
+    );
+  });
+
   // ------------------------------------------------------------ container
 
   const fileKey = FX.randomBytes(32);

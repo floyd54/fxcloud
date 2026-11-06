@@ -2839,6 +2839,9 @@
     document.getElementById("set-keep-days").value =
       meData.version_keep_days != null ? meData.version_keep_days : 180;
     markThemeChoice(meData.theme || "light");
+    // The auto-unlock switch (server-side flag; the blob it controls stays
+    // in this browser's localStorage - see setAutoUnlock below).
+    document.getElementById("set-auto-unlock").checked = !!meData.auto_unlock;
     setSettingsStatus("");
     activateSettingsTab("account");
     settingsModal.style.display = "flex";
@@ -4130,6 +4133,24 @@
     recoveryShow();
   });
   document.getElementById("recovery-regen").addEventListener("click", recoveryRegenerate);
+  // The switch saves server-side (it travels with the account) and takes
+  // effect for THIS tab at once: off drops the stored device blob, on
+  // stores one while the tab is unlocked.
+  document.getElementById("set-auto-unlock").addEventListener("change", async (e) => {
+    const on = e.target.checked;
+    try {
+      const res = await api("/api/me", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auto_unlock: on }),
+      });
+      meData = await res.json();
+      await FXEnc.setAutoUnlock(on);
+    } catch (err) {
+      e.target.checked = !on; // the checkbox must not outlie the server
+      alert(err.message);
+    }
+  });
   document.getElementById("versions-close-btn").addEventListener("click", closeVersionsDialog);
   document.getElementById("versions-modal").addEventListener("click", (e) => {
     if (e.target === document.getElementById("versions-modal")) closeVersionsDialog();

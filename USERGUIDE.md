@@ -353,6 +353,21 @@ The full design (threat model, key hierarchy, the DECISIONs) lives in
   above. WebDAV desktop clients do not encrypt: encrypted files are
   visible there as ciphertext and cannot be written through them.
 
+### Auto-unlock: open without the passphrase
+
+**Settings > Account > Auto-unlock** is a switch that travels with your
+account: once a device has unlocked once, that browser keeps a random
+device key with your wrapped account key (`localStorage`, never your
+password) and every later opening - reload, new tab, password **or
+passkey** login - starts unlocked. The passphrase is asked exactly once
+more per device, at the one deliberate moment: you switching the badge
+from **Unencrypted** to **Encrypted** inside a live tab. A brand-new
+device asks once, then it too is silent. **Off** deletes the stored
+unlock and returns to the strict behaviour: keys live in the current tab
+only. The trade-off, openly: whoever can read this browser profile
+wholesale gets the keys of this account on this device - which is why
+the switch is off by default (ENCRYPTION.md 5.7, DECISION 7).
+
 ### Encrypt existing files
 
 **Settings > Account > Encrypt existing files** walks the whole tree in

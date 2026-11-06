@@ -437,10 +437,11 @@ remembered; a later fingerprint that differs is spelled out before
 anything is sealed ("key changed: <now> (was <before>)") with the reason
 it matters and the advice to compare out of band, and confirming or
 declining it is the user's call. What is remembered lives in
-`localStorage["fxcloud.peerfp"]`, one username-to-fingerprint map: **the
-single exception to the "nothing in localStorage" rule of 11**, and it is
-public data by construction - a hash of a published key opens nothing, and
-no key material ever goes there.
+`localStorage["fxcloud.peerfp"]`, one username-to-fingerprint map: **one
+of the exceptions to the "nothing in localStorage" rule of 11** (the
+other is5.7's opt-in device blob), and it is public data by
+construction - a hash of a published key opens nothing, and no key
+material ever goes there.
 
 Fingerprint definition, so two independent implementations agree byte for
 byte: take the *published* key blob - one suite byte followed by the raw
@@ -495,6 +496,29 @@ and one round trip per remaining grantee (DECISION 4).
   opening one of the account's encrypted files asks for the passphrase
   again (DECISION 7 discusses the UX tradeoff, DECISION 11 the writing
   rule that follows from it).
+- **Auto-unlock behind the switch (phase 4, DECISION 7).** The account's
+  `auto_unlock` flag (settings, stored with the account) says: keep this
+  account open on devices that unlocked once. After a real unlock the
+  browser stores `{deviceKey, wrappedArk}` in localStorage - a random
+  device key and the ARK wrapped under it, **never the password** - and
+  every following load, sign-in (password or passkey) and new tab on that
+  device opens without a prompt. The switch off deletes the blob; a
+  device that never unlocked asks once. What the switch costs is named
+  in 11: whoever can read this browser profile wholesale gets this
+  account's keys on this device - which is why it is off by default: the
+  decision is per account, the blob is per device.
+
+**When the passphrase is asked** (with the switch on, all of daily life
+is silent):
+
+| Moment | Passphrase prompt? |
+| --- | --- |
+| load, reload, sign-in (password **or** passkey), blob present, switch on | never |
+| badge **Unencrypted -> Encrypted** inside a live tab | **yes - the one moment** |
+| opening an encrypted file with no keys and no blob | once - and with the switch on the blob exists afterwards |
+| switch off | as v1: memory-only, each tab asks when it needs to |
+| passphrase change, recovery, first unlock on a new device | deliberate input, as before |
+
 - **Passkeys are not part of this.** A WebAuthn sign-in (API.md,
   *Passkeys*) carries no password at all, so there is nothing to park for
   the redirect: the handoff above stays password-only, and the pane asks
@@ -574,9 +598,17 @@ implementation must honor (each is a hard requirement, not a nice-to-have):
 
 `DECISION 7 - Unlock persistence.` In-memory only (recommended for v1:
 a stolen laptop with an unlocked tab is the threat, and re-prompting per
-tab is honest) vs. wrapping ARK with a device key stored in IndexedDB for
-"stay unlocked for 30 days". Device keys are explicitly future work; the
-ARK-wrapping design already accommodates them without format changes.
+tab is honest) vs. wrapping ARK with a device key for "stay unlocked for
+30 days". **Shipped since phase 4, behind the account's switch (021):**
+the device key lives in localStorage with the ARK wrapped under it -
+never the password - the switch travels with the account, and turning it
+off deletes the blob, which is exactly the v1 behaviour again. The
+ARK-wrapping design needed no format change; what the switch adds is an
+explicit per-device opt-in whose trade-off is named in 11 (whoever reads
+this browser profile gets this account's keys on this device) - off by
+default. The only passphrase prompt left is the explicit badge switch
+from Unencrypted to Encrypted inside a live tab: login, reload and new
+tabs are covered by the sign-in handoff or by the device blob.
 
 ---
 
@@ -803,20 +835,24 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   page instead of failing.
 - Keys live in **memory only** - one object in the page that holds the
   opened ARK, root key and private key. Nothing goes to localStorage,
-  sessionStorage, cookies or a cached response body, with **one documented
-  exception: `localStorage["fxcloud.peerfp"]`** (5.5, DECISION 6), a map of
-  username to *public* key fingerprint for trust-on-first-use - a hash of a
-  published key, useful to nobody who steals it, and never key material.
-  The single value that
-  does cross a page load is the login password itself, parked by
+  sessionStorage, cookies or a cached response body, with **two
+  documented exceptions** (5.5 DECISION 6 and5.7): the public
+  fingerprint map in `localStorage["fxcloud.peerfp"]` - a
+  username-to-fingerprint hash that opens nothing - and, while the
+  account's auto-unlock switch is on, the device blob
+  `localStorage["fxcloud.device_unlock.<user_id>"]`:
+  `{deviceKey, wrappedArk}`, the ARK wrapped under a random device key,
+  deleted again the moment the switch goes off. The one value that
+  crosses a page load otherwise is the login password itself, parked by
   `login.js` for the length of the redirect into the app and deleted by
   `fxenc.js` on its first read (5.7): the string the user has just typed,
   never the row's key material, and never for a row marked
   `secret: separate`. The worker keeps no state between messages: it is
   given bytes, it returns bytes, it forgets them. "Turn off" therefore
-  just drops the references, and because the handoff is consumed once, a
-  reload lands back on Unencrypted - each tab proves the passphrase
-  itself before it encrypts anything again.
+  just drops the references, and the handoff being consumed once means a
+  reload *without* the switch lands back on Unencrypted - each tab proves
+  the passphrase itself before it encrypts anything again (with the
+  switch on, the device blob proves it instead -5.7).
 - WASM dependency for Argon2id is the only new third-party crypto
   dependency; everything else is WebCrypto (audited by the browser
   vendor). No hand-rolled primitives.
@@ -942,7 +978,7 @@ security story beyond "content at rest is protected".
 | 4 | Re-key on revoke | explicit/optional action, not automatic | implement as recommended |
 | 5 | Key rotation on overwrite | no; explicit rotate action later | implement as recommended |
 | 6 | Malicious-server / key-substitution | fingerprints + TOFU now; signed keys later; reproducible builds out of scope | implement as recommended |
-| 7 | Unlock persistence | memory-only per tab in v1; device keys later | implement as recommended - plus the sign-in handoff of 5.7: for a `secret: login` row the login password is parked for the length of one redirect, taken once and cleared on read, so the tab that just signed in is not asked again. Nothing else is ever written, a `separate` row is never parked for, and a reload puts the badge back to Unencrypted |
+| 7 | Unlock persistence | memory-only per tab in v1; device keys later | **device keys since phase 4, behind the account's switch (021):** with the switch on the device keeps `{deviceKey, wrappedArk}` in localStorage (never the password) and load, reload and sign-in - passkey included - open without a prompt; switch off deletes the blob and returns to v1. The one prompt that remains is the explicit badge switch from Unencrypted to Encrypted in a live tab (the matrix in 5.7). Unchanged: the sign-in handoff of 5.7 - for a `secret: login` row the login password is parked for the length of one redirect, taken once and cleared on read; nothing else is ever written, a `separate` row is never parked for, and without the switch a reload puts the badge back to Unencrypted |
 | 8 | ZIP | client-side for encrypted, server-side stays for plaintext | implement as recommended |
 | 9 | WebDAV | hide/deny-write encrypted files in v1; sync agent later | **must work flawlessly.** Split: interim = encrypted files visible read-only as ciphertext + `PUT` rejected after `FXE1` magic check (never blind); target = `fxcloud sync` agent, promoted to committed phase 5. Detail in 7 + 12 |
 | 10 | Test strategy for client crypto | WebCrypto round-trip harness in CI + API visibility tests | implement as recommended |

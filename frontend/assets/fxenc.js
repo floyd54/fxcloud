@@ -12,12 +12,14 @@
  *   - the two-phase encrypted upload and decrypt-on-download.
  *
  * Key material lives in `state.session` and nowhere else: no localStorage,
- * no sessionStorage, no cookies, no cached response body (DECISION 7). The
- * single exception is the sign-in handoff below: login.js parks the login
- * password for the length of one page load so the tab that just signed in
- * is not asked for it again, and this file deletes it on its first read. A
- * reload still puts the tab back to `locked` - each tab proves the
- * passphrase itself.
+ * no sessionStorage, no cookies, no cached response body (DECISION 7).
+ * Two exceptions exist, both documented: the TOFU fingerprint map (5.5)
+ * and - while the account's auto-unlock switch is on - the device-unlock
+ * blob (5.7). The sign-in handoff below parks the login password for the
+ * length of one page load so the tab that just signed in is not asked for
+ * it again, and this file deletes it on its first read. Without the
+ * switch a reload still puts the tab back to `locked` - each tab proves
+ * the passphrase itself.
  */
 (function () {
   "use strict";
@@ -156,6 +158,84 @@
     return heavy("deriveKek", [password, salt, params]).then((r) => r.bytes);
   }
 
+  // ---- device unlock (5.7, phase 4, DECISION 7) ---------------------------
+  // localStorage keeps ONE entry per account key row - {deviceKey,
+  // wrappedArk} - written only while the account's server-side switch is
+  // on and only right after a real unlock. The login password itself is
+  // never stored. Honest about the trade: whoever can read this browser
+  // profile wholesale gets this account's keys on this device; that is
+  // what the switch opts into and what "off" deletes. A prompt happens
+  // only when the user switches the badge from Unencrypted to Encrypted -
+  // the one passphrase moment (never on load, login or reload).
+  const DEVICE_BLOB_KEY = "fxcloud.device_unlock.";
+
+  function deviceBlobId(keys) {
+    return DEVICE_BLOB_KEY + keys.user_id;
+  }
+
+  /** After every successful unlock: refresh the stored blob while the
+   *  switch is on. Best effort - storage that refuses (private mode,
+   *  quota) simply means auto-unlock does not engage on the next load. */
+  async function maybeStoreDeviceKey() {
+    if (!state.autoUnlock || !state.session || !state.keys) return;
+    try {
+      const blob = await FX().createDeviceBlob(state.session.ark);
+      localStorage.setItem(
+        deviceBlobId(state.keys),
+        JSON.stringify({
+          v: 1,
+          deviceKey: blob.deviceKey,
+          wrappedArk: blob.wrappedArk,
+        })
+      );
+    } catch (_) {
+      /* no storage available: fall back to asking */
+    }
+  }
+
+  /**
+   * Auto-unlock from the stored blob. Returns false whenever anything is
+   * absent, stale or tampered - and never prompts by itself: a missing
+   * or dead blob just leaves the pane as the fallback, so the one prompt
+   * that remains is the user's explicit badge switch.
+   */
+  async function adoptDeviceUnlock() {
+    if (!state.keys) return false;
+    try {
+      const raw = localStorage.getItem(deviceBlobId(state.keys));
+      if (!raw) return false;
+      const blob = JSON.parse(raw);
+      if (!blob || blob.v !== 1 || !blob.deviceKey || !blob.wrappedArk) {
+        return false;
+      }
+      const ark = await FX().openDeviceBlob(blob.deviceKey, blob.wrappedArk);
+      state.session = await FX().sessionFromArk(state.keys, ark);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * The switch: ON keeps a fresh blob while unlocked, OFF deletes what is
+   * stored - the next load goes back to memory-only. The current tab
+   * keeps its keys either way; the switch only decides whether the NEXT
+   * one needs the passphrase.
+   */
+  async function setAutoUnlock(enabled) {
+    state.autoUnlock = !!enabled;
+    if (!state.keys) return;
+    if (!state.autoUnlock) {
+      try {
+        localStorage.removeItem(deviceBlobId(state.keys));
+      } catch (_) {
+        /* nothing stored or no storage: off is off */
+      }
+      return;
+    }
+    if (state.session) await maybeStoreDeviceKey();
+  }
+
   // ------------------------------------------------------------------------
   // State
   // ------------------------------------------------------------------------
@@ -167,6 +247,10 @@
     fingerprint: null,
     username: null,
     recoveryHex: null, // only between setup and the "saved" pane
+    // The account's auto-unlock switch (GET /api/me): when on, a device
+    // that holds its device blob opens the key row without the storage
+    // passphrase (5.7, phase 4). Server-side flag, local blob (setAutoUnlock).
+    autoUnlock: false,
     // Mounts someone shared with me (GET /api/shares/incoming) - rows and
     // sealed blobs, useful while still locked; their envelopes are opened
     // once the private key exists.
@@ -312,10 +396,25 @@
     try {
       const body = await http("/api/keys/me").then((r) => r.json());
       adoptKeys(body.keys, "locked");
-      // Awaited rather than fired: app.js draws the folder as soon as init()
-      // resolves, so a listing rendered before this finished would show every
-      // encrypted row still locked.
-      await adoptHandoff(parked);
+      // The auto-unlock switch travels with the account (GET /api/me); a
+      // failing fetch defaults to OFF and must never look like "no
+      // encryption" - the pane stays the fallback either way.
+      try {
+        const me = await http("/api/me").then((r) => r.json());
+        state.autoUnlock = !!me.auto_unlock;
+      } catch (_) {
+        state.autoUnlock = false;
+      }
+      if (state.autoUnlock && (await adoptDeviceUnlock())) {
+        state.status = "unlocked";
+        await refreshShareKeys();
+        emit();
+      } else if (state.status !== "unlocked") {
+        // Awaited rather than fired: app.js draws the folder as soon as init()
+        // resolves, so a listing rendered before this finished would show every
+        // encrypted row still locked.
+        await adoptHandoff(parked);
+      }
     } catch (e) {
       // 404 = no key row yet. Anything else (offline, 5xx) also lands here:
       // showing "setup" is the honest default, and a genuine key row will
@@ -405,6 +504,9 @@
       // after this resolves already knows which mounts it can open.
       await refreshShareKeys();
       emit();
+      // Signing in is a real unlock: with the switch on, this device is
+      // good for every following load without the passphrase.
+      await maybeStoreDeviceKey();
       return true;
     } catch (_) {
       state.session = null;
@@ -570,6 +672,8 @@
       $("enc-unlock-pass").value = "";
       await refreshShareKeys();
       emit();
+      // The switch decides whether this unlock lasts past the tab.
+      await maybeStoreDeviceKey();
       closeModal();
       settleGate(true);
     } catch (e) {
@@ -1381,6 +1485,7 @@
     migrateTree: migrateTree,
     recoveryView: recoveryView,
     recoveryRotate: recoveryRotate,
+    setAutoUnlock: setAutoUnlock,
     readText: readText,
     writeText: writeText,
     download: download,
