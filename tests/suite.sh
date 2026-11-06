@@ -585,6 +585,25 @@ ME=$(req GET /api/me "$JA")
 [ "$(jget "$ME" theme)" = "dark" ] && ok "the refused theme changed nothing" || bad "theme clobbered: $ME"
 sqlite3 "$DATA/fxcloud.db" "UPDATE users SET theme='light' WHERE username='alice';" >/dev/null
 
+# The auto-unlock switch (phase4, ENCRYPTION.md5.7): server-side so it
+# travels with the account; the device blob it controls stays in the
+# browser and never leaves it.
+RC=$(reqcode PUT /api/me "$JA" '{"auto_unlock":true}')
+ME=$(req GET /api/me "$JA")
+echo "$ME" | grep -q '"auto_unlock":true' \
+  && ok "PUT /api/me saves auto_unlock=true" || bad "auto_unlock save (rc=$RC): $ME"
+AUTO_DB=$(sqlite3 "$DATA/fxcloud.db" "SELECT auto_unlock FROM users WHERE username='alice';")
+[ "$AUTO_DB" = "1" ] && ok "auto_unlock stored as1/0 in the DB" || bad "users.auto_unlock is '$AUTO_DB'"
+RC=$(reqcode PUT /api/me "$JA" '{"auto_unlock":"yes"}')
+[ "$RC" = "422" ] && ok "a non-boolean auto_unlock is refused (422)" || bad "expected422, got $RC"
+RC=$(reqcode PUT /api/me "$JA" '{"auto_unlock":false}')
+ME=$(req GET /api/me "$JA")
+echo "$ME" | grep -q '"auto_unlock":false' \
+  && ok "auto_unlock switches back off" || bad "switch off: $ME"
+RC=$(reqcode PUT /api/me "$JA" '{}')
+[ "$RC" = "400" ] && ok "an empty PUT /api/me still refuses (nothing to update)" || bad "empty PUT: $RC"
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET auto_unlock=0 WHERE username='alice';" >/dev/null
+
 RC=$(reqcode PUT /api/me "$JA" '{"display_name":"Alice Cooper"}')
 ME=$(req GET /api/me "$JA")
 [ "$RC" = "200" ] && [ "$(jget "$ME" display_name)" = "Alice Cooper" ] \

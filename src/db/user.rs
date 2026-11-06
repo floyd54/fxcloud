@@ -35,6 +35,9 @@ fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         is_admin: row.get("is_admin")?,
         version_keep_n: row.get("version_keep_n")?,
         version_keep_days: row.get("version_keep_days")?,
+        // Guarded by migration 021_user_auto_unlock, same story as
+        // is_admin above: a skipped migration fails loudly here.
+        auto_unlock: row.get("auto_unlock")?,
     })
 }
 
@@ -43,7 +46,7 @@ fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
 /// absent: the sign-in path selects it separately and it never leaves the
 /// auth layer.
 const USER_COLUMNS: &str = "id, username, display_name, is_active, created_at, quota_bytes, \
-                            theme, is_admin, version_keep_n, version_keep_days";
+                            theme, is_admin, version_keep_n, version_keep_days, auto_unlock";
 
 impl Db {
     /// Look up a user by username, including their stored password hash.
@@ -92,6 +95,7 @@ impl Db {
         theme: Option<String>,
         version_keep_n: Option<i64>,
         version_keep_days: Option<i64>,
+        auto_unlock: Option<bool>,
     ) -> Result<User, AppError> {
         if let Some(theme) = &theme {
             if theme != "light" && theme != "dark" {
@@ -133,6 +137,12 @@ impl Db {
                 conn.execute(
                     "UPDATE users SET version_keep_days = ?2 WHERE id = ?1",
                     params![id, days],
+                )?;
+            }
+            if let Some(auto) = auto_unlock {
+                conn.execute(
+                    "UPDATE users SET auto_unlock = ?2 WHERE id = ?1",
+                    params![id, auto],
                 )?;
             }
             let mut stmt =
@@ -389,5 +399,8 @@ pub fn insert_user(
         is_admin,
         version_keep_n,
         version_keep_days,
+        // Creation default (migration 021): nobody auto-unlocks a brand
+        // new account before its owner has ever seen the switch.
+        auto_unlock: false,
     })
 }

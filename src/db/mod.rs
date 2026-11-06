@@ -235,6 +235,16 @@ impl Db {
                      WHERE name = 'wrapped_recovery'",
                 ),
             ),
+            // The auto-unlock switch (ENCRYPTION.md 5.7): a flag column,
+            // so the pragma guard every column addition carries here.
+            (
+                "021_user_auto_unlock",
+                include_str!("../../migrations/021_user_auto_unlock.sql"),
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('users')
+                     WHERE name = 'auto_unlock'",
+                ),
+            ),
         ];
         let conn = self.pool.get()?;
         for (name, sql, guard) in MIGRATIONS {

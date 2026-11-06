@@ -212,7 +212,8 @@ pub async fn update_me(
     let no_fields = req.display_name.is_none()
         && req.theme.is_none()
         && req.version_keep_n.is_none()
-        && req.version_keep_days.is_none();
+        && req.version_keep_days.is_none()
+        && req.auto_unlock.is_none();
     let display_name = req.display_name.map(|d| d.trim().to_string());
     if let Some(name) = &display_name {
         if name.is_empty() {
@@ -235,6 +236,7 @@ pub async fn update_me(
             req.theme,
             req.version_keep_n,
             req.version_keep_days,
+            req.auto_unlock,
         )
         .await?;
     Ok(Json(updated))

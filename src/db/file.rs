@@ -2527,7 +2527,7 @@ mod tests {
     async fn count_retention_keeps_the_newest_versions_and_returns_the_pruned() {
         let s = scratch();
         let (owner, file_id) = seed_file(&s, "doc.txt", 10, 1_000_000);
-        s.db.update_settings(owner, None, None, Some(2), None)
+        s.db.update_settings(owner, None, None, Some(2), None, None)
             .await
             .expect("set count bound");
 
@@ -2553,7 +2553,7 @@ mod tests {
     async fn count_retention_zero_keeps_the_whole_history() {
         let s = scratch();
         let (owner, file_id) = seed_file(&s, "doc.txt", 10, 1_000_000);
-        s.db.update_settings(owner, None, None, Some(0), None)
+        s.db.update_settings(owner, None, None, Some(0), None, None)
             .await
             .expect("disable the count bound");
 
@@ -2576,7 +2576,7 @@ mod tests {
         let s = scratch();
         let (owner, file_id) = seed_file(&s, "doc.txt", 10, 1_000_000);
         // Bound off: the test decides what "whole history" means.
-        s.db.update_settings(owner, None, None, Some(0), None)
+        s.db.update_settings(owner, None, None, Some(0), None, None)
             .await
             .expect("disable the count bound");
         for n in 0..3i64 {
@@ -2659,7 +2659,7 @@ mod tests {
         }
 
         // Bound off: the sweep touches nothing.
-        s.db.update_settings(owner, None, None, None, Some(0))
+        s.db.update_settings(owner, None, None, None, Some(0), None)
             .await
             .expect("disable the age bound");
         let refs = s.db.sweep_versions().await.expect("sweep");
@@ -2667,7 +2667,7 @@ mod tests {
 
         // Bound on: a row from 2000 is older than a day, and comes back as
         // the blob to unlink.
-        s.db.update_settings(owner, None, None, None, Some(1))
+        s.db.update_settings(owner, None, None, None, Some(1), None)
             .await
             .expect("set the age bound");
         let refs = s.db.sweep_versions().await.expect("sweep");

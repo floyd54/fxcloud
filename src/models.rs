@@ -41,6 +41,13 @@ pub struct User {
     pub version_keep_n: i64,
     #[serde(default = "default_version_keep_days")]
     pub version_keep_days: i64,
+    /// Auto-unlock on a device that holds its device blob (migration
+    /// `021_user_auto_unlock`, phase 4 persistence of DECISION 7): the
+    /// switch travels with the account, the blob never leaves the browser
+    /// (ENCRYPTION.md 5.7). Default off - opening without the storage
+    /// passphrase stays a decision the user makes per device.
+    #[serde(default)]
+    pub auto_unlock: bool,
 }
 
 fn default_theme() -> String {
@@ -407,6 +414,10 @@ pub struct UpdateMeRequest {
     /// Age bound for versions in days (`version_keep_days`, 0 = unbound).
     #[serde(default)]
     pub version_keep_days: Option<i64>,
+    /// Auto-unlock switch (phase 4): persisted when present, so the
+    /// settings dialog's checkbox saves independently like every section.
+    #[serde(default)]
+    pub auto_unlock: Option<bool>,
 }
 
 /// Password change from the user menu (`PUT /api/me/password`).
