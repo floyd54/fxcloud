@@ -952,8 +952,9 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
 | 2 | Text editor round-trip (**shipped**: decrypt on open, encrypt on save, and a file created while encryption is on stored encrypted from its first second), client-side preview for images/video/audio/PDF/HTML (**shipped**: the tab decrypts and renders from a Blob URL, section 7), client-side ZIP - still one download per row rather than one archive (the server's ZIP refuses ciphertext, so an encrypted selection decrypts each row in the tab and saves it; a real in-browser ZIP writer stays open) | makes daily use possible |
 | 3 | Sharing: key exchange, envelopes, fingerprints, revoke | **done** - shipped in this release: folder-key hierarchy filled in lazily (5.4), share-time subtree migration and one envelope per share row (5.5), fingerprint shown while picking + TOFU with a changed-key warning (DECISION 6), owner-only swap of a key record, re-bind-before-move. Folder re-key on revoke stays phase 6 (DECISION 4) | G3 satisfied |
 | 4 | Migration tool ("Encrypt existing files"), per-folder encrypt toggle, recovery-key UX refinements | **shipped**: the client-side batch job with `history=drop` (10), the encryption-zone write gate (10, decision 14), and the recovery key shown again / reissued from the settings (5.7, decision 15) | G5 satisfied |
-| 5 | **`fxcloud sync` agent** - local daemon doing encrypt/decrypt between Finder/Explorer and the unchanged DAV API; this is what makes WebDAV *flawless* (DECISION 9), so it is a committed deliverable, not "later, independent" | largest single item; own milestone |
+| 5 | **`fxcloud sync` agent** - local daemon doing encrypt/decrypt between Finder/Explorer and the unchanged DAV API; this is what makes WebDAV *flawless* (DECISION 9), so it is a committed deliverable, not "later, independent". Built as a shared Rust crypto core (one implementation of FXE1, the chunking, the key records) that phase 7 links through FFI | largest single item; own milestone |
 | 6 | Folder re-key, key rotation action, (optional) metadata encryption | later, independent |
+| 7 | **Native mobile apps (Android, iOS)** - the same client-side crypto as the tab, but keys held in the app (Keychain / Android Keystore) and the crypto core of phase 5 linked through FFI; same unchanged REST API, no server change. The mobile web UI stays the zero-install path and is verified on real devices first; the agent architecture does not port - iOS runs no background daemon and phones mount nothing | UI per platform + store distribution (Apple $99/yr, Play $25) |
 
 Phase 5 moved from "later, independent" to a committed phase because
 DECISION 9 sets flawless WebDAV as a requirement, and no browser-side
@@ -962,6 +963,17 @@ encryption has to happen in a local component. The interim that shipped
 with phase 1 - encrypted rows stay visible over WebDAV as ciphertext, and
 `PUT` is checked against the `FXE1` magic instead of being blindly
 accepted or blindly rejected - is the bridge, not the destination.
+
+Phase 7 (native mobile apps) follows the same reasoning from the other
+side: a cloud product without phone access is not a product, but the
+agent cannot run on a phone (no mounts, no background daemon on iOS).
+The app therefore takes the browser tab's role - keys in the app, same
+REST API - and its condition is the phase 5 crypto core: written once
+as a shared Rust library, reached from Swift/Kotlin via FFI, so the
+format never gets implemented twice. Until phase 7 exists, the
+responsive web UI is the mobile answer, and it is verified on real
+devices before native work starts (mobile-web gap list lives in the
+commit history of this file's phase notes).
 
 Each phase ships independently; nothing before phase 3 changes the
 security story beyond "content at rest is protected".
