@@ -224,6 +224,10 @@ tbody tr:hover { background: var(--row-hover); }
 tbody tr { cursor: pointer; }
 
 .name-cell { display: flex; align-items: center; gap: 12px; }
+/* A long file name must wrap inside its cell instead of stretching the
+   table past .panel (whose overflow: hidden would then clip it): the
+   inner column may shrink, and unbreakable strings break anywhere. */
+.name-cell > div { min-width: 0; overflow-wrap: anywhere; }
 .icon {
   width: 34px;
   height: 34px;
@@ -450,6 +454,29 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
     color: var(--muted);
   }
   .actions-col { width: auto; }
+
+  /* The topbar holds five items in one fixed-height row; a phone cannot.
+     The quota lives in Settings > Storage and the version in Settings
+     too, so both drop here. The row wraps instead of overflowing: a long
+     display name or a long badge word in another language must not push
+     the whole page sideways. */
+  .topbar {
+    height: auto;
+    min-height: 56px;
+    flex-wrap: wrap;
+    padding: 6px 12px;
+    gap: 8px;
+  }
+  .topbar .storage { display: none; }
+  .topbar .brand { font-size: 17px; }
+  .topbar .brand .brand-version { display: none; }
+  #user-label {
+    display: inline-block;
+    max-width: 40vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 /* ---------- Sharing ---------- */
@@ -562,6 +589,7 @@ tr.previewable { cursor: pointer; }
 .editor-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap; /* status + meta + buttons share a phone-width row */
   gap: 12px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
@@ -1452,4 +1480,23 @@ textarea#enc-rcv-key:focus {
   width: 100%;
   border: 0;
   background: #fff;
+}
+
+/* ---------- Touch ---------- */
+/* A finger is not a pointer. Two rules live here, both gated on the
+   primary input device so a mouse-driven desktop keeps the current
+   compact look: (1) tap targets grow towards the platform guidelines
+   (Apple 44px, Material 48px) - row menu, kebab, checkboxes, buttons;
+   (2) iOS Safari zooms the viewport into any focused field below 16px,
+   the classic mobile bug, so every field gets its 16px on touch
+   devices. No em-based sizing exists below, so the override is safe. */
+@media (pointer: coarse) {
+  .btn { padding: 13px 16px; }
+  .bulkbar .btn { padding: 11px 14px; }
+  .editor-toolbar .btn { padding: 9px 14px; }
+  .topbar button { padding: 10px 14px; }
+  .kebab { padding: 10px 12px; }
+  .row-menu-item { padding: 11px 12px; }
+  .check-col input { width: 22px; height: 22px; }
+  input, textarea, select { font-size: 16px !important; }
 }
