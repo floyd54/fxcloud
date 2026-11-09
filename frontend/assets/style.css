@@ -25,7 +25,14 @@ body {
 
 /* ---------- Top navigation ---------- */
 .topbar {
-  height: 56px;
+  /* Height is auto with a 56px floor and the row may wrap: with a fixed
+     height and no wrap, viewports too narrow for all five items pushed
+     the last one - the user menu, the only way to Settings and Sign out -
+     past the right edge, unreachable until the phone was rotated. Desktop
+     fits one line and looks exactly as before. */
+  height: auto;
+  min-height: 56px;
+  flex-wrap: wrap;
   background: var(--accent);
   color: #fff;
   display: flex;
@@ -455,18 +462,16 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
   }
   .actions-col { width: auto; }
 
-  /* The topbar holds five items in one fixed-height row; a phone cannot.
-     The quota lives in Settings > Storage and the version in Settings
-     too, so both drop here. The row wraps instead of overflowing: a long
-     display name or a long badge word in another language must not push
-     the whole page sideways. */
-  .topbar {
-    height: auto;
-    min-height: 56px;
-    flex-wrap: wrap;
-    padding: 6px 12px;
-    gap: 8px;
-  }
+  /* The topbar holds five items in one row; a phone cannot. The quota
+     lives in Settings > Storage and the version in Settings too, so both
+     drop here (the row itself may wrap - see the base rule), and a long
+     display name ellipsizes instead of widening the row. The spacer is
+     retired on phones: it only exists to push the right cluster along,
+     and with margin-left on the menu the user menu stays pinned right -
+     on one line or on its own wrapped line. */
+  .topbar { padding: 6px 12px; gap: 8px; }
+  .topbar .spacer { display: none; }
+  .topbar .user-menu { margin-left: auto; }
   .topbar .storage { display: none; }
   .topbar .brand { font-size: 17px; }
   .topbar .brand .brand-version { display: none; }
