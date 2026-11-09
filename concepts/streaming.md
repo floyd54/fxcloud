@@ -102,8 +102,8 @@ only the memory profile and the new range support on download.
 ## 5. S3 - out of scope (noted, not planned)
 
 Resumable uploads (upload IDs / PATCH), WebDAV versioning extensions,
-CDN-oriented range caching. The `fxcloud sync` agent (ENCRYPTION phase
-5) owns large-file sync anyway.
+CDN-oriented range caching. The `fxcloud sync` agent (ENCRYPTION.md
+phases, phase 8, demand-gated) owns large-file sync anyway.
 
 ## 6. Security
 

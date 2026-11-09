@@ -440,7 +440,7 @@ async fn put_finish(
                     StatusCode::CONFLICT,
                     "Encrypted file: this row only accepts an FXE1 container. A \
                          desktop client cannot produce one - write through the web \
-                         client, or use the fxcloud sync agent.",
+                         client.",
                 )
                     .into_response());
             }
