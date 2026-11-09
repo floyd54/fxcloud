@@ -65,6 +65,20 @@ pub async fn asset(AxumPath(path): AxumPath<String>) -> Result<Response, AppErro
     serve_asset(&format!("assets/{path}"), "")
 }
 
+/// GET /sw.js – the service worker (PWA install). Must live at the root so
+/// its default scope is the whole origin, and mime_guess answers
+/// `text/javascript`, which browsers require to accept a worker at all.
+pub async fn service_worker() -> Result<Response, AppError> {
+    serve_asset("sw.js", "")
+}
+
+/// GET /manifest.webmanifest – the PWA manifest (installability: name,
+/// icons, start_url, display). mime_guess maps `.webmanifest` to
+/// `application/manifest+json`, the type install prompts expect.
+pub async fn manifest() -> Result<Response, AppError> {
+    serve_asset("manifest.webmanifest", "")
+}
+
 /// Serve an embedded asset, filling the server-side template slots.
 ///
 /// `office` is the engine base URL when office editing is configured and

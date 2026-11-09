@@ -360,6 +360,8 @@ pub fn build_router(state: SharedState) -> Router {
         // UI pages & embedded assets
         .route("/", get(ui::index))
         .route("/login", get(ui::login_page))
+        .route("/sw.js", get(ui::service_worker))
+        .route("/manifest.webmanifest", get(ui::manifest))
         .route("/assets/{*path}", get(ui::asset))
         // Public-link visitor page: the embedded shell (public.rs) that the
         // /api/public/* routes then fill in. No session, no redirect.

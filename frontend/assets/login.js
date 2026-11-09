@@ -1,6 +1,13 @@
 (function () {
   "use strict";
 
+  // PWA: the install prompt belongs to this page too - a visitor who has
+  // just signed in is exactly the person who adds fxcloud to their home
+  // screen. Same secure-context guard and same swallow as app.js.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }
+
   const tabLogin = document.getElementById("tab-login");
   const tabRegister = document.getElementById("tab-register");
   const tabPasskey = document.getElementById("tab-passkey");

@@ -4353,6 +4353,13 @@
   // ---------- init ----------
   updateSortHeaders();
   setHiddenToggle();
+  // PWA: register the service worker that makes the app installable. The
+  // guard is the secure-context check (navigator.serviceWorker only exists
+  // on https/localhost); failure is swallowed - no install prompt beats a
+  // broken page every time, and sw.js changes nothing about traffic anyway.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }
   loadMe()
     .then(() => loadMyGroups())
     .then(() => FXEnc.init(meName))

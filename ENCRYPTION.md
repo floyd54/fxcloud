@@ -856,6 +856,12 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
 - WASM dependency for Argon2id is the only new third-party crypto
   dependency; everything else is WebCrypto (audited by the browser
   vendor). No hand-rolled primitives.
+- The service worker (`sw.js`, PWA installability) is deliberately a
+  **no-op on traffic and a non-user of Cache Storage**: it passes
+  same-origin requests through with `fetch()` and calls no Cache API at
+  all, so an installed app can never serve you a stale shell or keep
+  response bytes where a worker could be robbed of them. The suite
+  fails if it ever grows a `caches.` reference.
 - The server never links against a crypto library beyond what login
   already uses (argon2 for passwords). It gains BLOB columns and copy
   logic - envelope rows are copied when a share is copied, dropped by

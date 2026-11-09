@@ -54,6 +54,10 @@ with sharing, quotas and version history. New to fxcloud? The
   optional, needs an engine sidecar, off unless configured
   ([concepts/office.md](concepts/office.md), setup in
   [INSTALL.md](INSTALL.md#office-integration-optional)).
+- **Install as an app (PWA)** - manifest, icons and a service worker that
+  deliberately caches nothing: "Install app" / "Add to Home Screen" on
+  phone or desktop, launch from its own icon
+  ([USERGUIDE.md](USERGUIDE.md#3-signing-in)).
 
 ## Install
 

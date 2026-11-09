@@ -90,6 +90,20 @@ The sign-in page has three tabs:
 Sessions last 7 days by default (`FXCLOUD_SESSION_TTL`, sliding while
 in use).
 
+### Install as an app
+
+fxcloud installs like any other web app: in Chrome/Edge use **Install
+app** in the address bar, on iPhone/iPad Safari use **Share >
+Add to Home Screen**, on Android Chrome the **menu > Add to home
+screen**. The app then opens from its own icon in a window without
+browser chrome - same account, same session, nothing to configure.
+
+Two honest notes: the install is just a launcher (there is no offline
+mode - fxcloud is a client of your server), and the service worker that
+enables the install **never caches anything** by design, so an installed
+app always shows exactly what the server serves
+([ENCRYPTION.md](ENCRYPTION.md), section 11).
+
 ## 4. Your files
 
 The file explorer works like a desktop file manager, in the browser:

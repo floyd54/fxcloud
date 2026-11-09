@@ -2727,10 +2727,12 @@ for SRC in "$REPO/frontend/assets/i18n.js" \
            "$REPO/frontend/assets/hashwasm-argon2.js" \
            "$REPO/frontend/assets/webauthn-client.js" \
            "$REPO/frontend/assets/login.js" \
+           "$REPO/frontend/sw.js" \
            "$REPO/frontend/tests/fxtool.js" \
            "$REPO/frontend/tests/crypto-roundtrip.js" \
            "$REPO/frontend/tests/fxenc-harness.js" \
-           "$REPO/frontend/tests/webauthn.js"; do
+           "$REPO/frontend/tests/webauthn.js" \
+           "$REPO/frontend/tests/gen-icons.js"; do
   js_parse "$SRC" \
     && ok "$(basename "$SRC") parses ($PARSE)" \
     || bad "$(basename "$SRC") has a syntax error"
@@ -4316,6 +4318,50 @@ done
 grep -q 'docker build' "$REPO/.github/workflows/test.yml" \
   && ok "CI builds the image so the instructions stay honest" \
   || bad "test.yml does not build the Dockerfile"
+
+note "PWA: manifest, service worker, icons"
+MCT=$(curl -s -o "$ROOT/manifest.json" -w '%{content_type}' "$BASE/manifest.webmanifest")
+grep -q '"display": "standalone"' "$ROOT/manifest.json" \
+  && grep -q '"start_url": "/"' "$ROOT/manifest.json" \
+  && grep -q 'icon-maskable-512' "$ROOT/manifest.json" \
+  && [ "$MCT" = "application/manifest+json" ] \
+  && ok "the manifest is standalone, rooted at / and served as manifest+json ($MCT)" \
+  || bad "manifest: type=$MCT body=$(head -c60 "$ROOT/manifest.json")"
+SCT=$(curl -s -o "$ROOT/sw.out" -w '%{content_type}' "$BASE/sw.js")
+grep -q 'addEventListener("fetch"' "$ROOT/sw.out" \
+  && [ "$SCT" = "text/javascript" ] \
+  && ok "the service worker is served as text/javascript and listens" \
+  || bad "sw.js: type=$SCT"
+# Security invariant of sw.js (the file says why): the worker exists only to
+# make the app installable, so any Cache API use in it is a regression.
+if grep -qE 'caches\.(open|match|put|delete)|CacheStorage' "$REPO/frontend/sw.js"; then
+  bad "sw.js touches the Cache API - it must never cache (ENCRYPTION.md 11)"
+else
+  ok "sw.js never touches the Cache API - installability without a cache"
+fi
+for ICO in icon-32.png icon-192.png icon-512.png icon-maskable-512.png apple-touch-icon-180.png; do
+  IMGC=$(curl -s -o "$ROOT/ico.out" -w '%{content_type}' "$BASE/assets/icons/$ICO")
+  PNG_OK=0
+  [ "$(head -c4 "$ROOT/ico.out" | od -An -tx1 | tr -d ' \n')" = "89504e47" ] && PNG_OK=1
+  [ "$IMGC" = "image/png" ] && [ "$PNG_OK" = "1" ] \
+    && ok "icon $ICO is a real PNG over HTTP" || bad "icon $ICO: type=$IMGC png=$PNG_OK"
+done
+"$NODE" "$REPO/frontend/tests/gen-icons.js" --check \
+  && ok "the committed icons match the generator exactly" \
+  || bad "icons drifted from gen-icons.js - re-run it"
+grep -q 'rel="manifest"' "$REPO/frontend/index.html" \
+  && grep -q 'rel="manifest"' "$REPO/frontend/login.html" \
+  && ok "app and login page both link the manifest (install from either)" \
+  || bad "a page is missing the manifest link"
+grep -q 'apple-touch-icon' "$REPO/frontend/index.html" \
+  && ! grep -q 'rel="manifest"' "$REPO/frontend/visitor.html" \
+  && ok "iOS gets its touch icon; the share page offers no install" \
+  || bad "visitor.html links the manifest or the touch icon is missing"
+A_REG=$(grep -c 'serviceWorker.register' "$REPO/frontend/assets/app.js")
+L_REG=$(grep -c 'serviceWorker.register' "$REPO/frontend/assets/login.js")
+[ "$A_REG" = "1" ] && [ "$L_REG" = "1" ] \
+  && ok "both pages register the worker (install prompt wherever you are)" \
+  || bad "service worker registration: app.js=$A_REG login.js=$L_REG"
 
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true
