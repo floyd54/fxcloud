@@ -3226,10 +3226,11 @@ IDX=$REPO/frontend/index.html
 UP=$'\u2b06'             # upload glyph (U+2B06), escaped so the suite stays ASCII
 FLD=$'\U1F4C1'      # folder emoji
 BASKET=$'\U1F5D1'   # wastebasket emoji
-grep -q "class=\"btn\" id=\"upload-folder-btn\" data-i18n=\"files.uploadFolder\">${UP} Upload folder</button>" "$IDX" \
+grep -q 'id="upload-folder-btn" data-i18n-title="files.uploadFolder" data-i18n-aria="files.uploadFolder"><span class="btn-ico"' "$IDX" \
+  && grep -q 'data-i18n="files.uploadFolder">Upload folder</span>' "$IDX" \
   && ok "upload folder is a primary button like upload file" \
   || bad "upload folder is not styled like upload file"
-grep -q 'class="btn secondary" id="trash-btn" data-i18n="files.trash">Trash</button>' "$IDX" \
+grep -q 'class="btn secondary" id="trash-btn" data-i18n="files.trash" data-i18n-title="files.trash" data-i18n-aria="files.trash">Trash</button>' "$IDX" \
   && ok "the trash button is a plain secondary label" \
   || bad "the trash button still carries an icon"
 grep -q "${FLD}\|${BASKET}" "$IDX" \
@@ -3256,6 +3257,26 @@ perl -0777 -e '
 ' "$IDX" \
   && ok "every primary toolbar button carries an icon, every secondary one is plain" \
   || bad "icons do not line up with the button hierarchy"
+# Icon-only phones (<=640px): label and glyph live in separate spans so
+# the label can hide, and every toolbar button carries a title - that is
+# the tooltip on desktop and the long-press tooltip on touch.
+ICO_N=$(grep -c 'class="btn-ico"' "$IDX")
+LBL_N=$(grep -c 'class="btn-label"' "$IDX")
+[ "$ICO_N" -ge 5 ] && [ "$LBL_N" -ge 5 ] \
+  && ok "primary toolbar buttons split glyph and label ($ICO_N/$LBL_N)" \
+  || bad "icon/label spans missing: icons=$ICO_N labels=$LBL_N"
+TF=$(grep -c 'data-i18n-title="files\.\(new\|newFolder\|upload\|uploadFolder\|trash\|emptyTrash\)"' "$IDX")
+TG=$(grep -c 'data-i18n-title="group.newFolder"' "$IDX")
+[ "$TF" = "6" ] && [ "$TG" = "1" ] \
+  && ok "every file-action toolbar button carries a hover/long-press title" \
+  || bad "toolbar titles: files=$TF group=$TG"
+grep -qE '"files\.(new|newFolder|upload|uploadFolder)": "(\\uff0b|\\u2b06)' "$REPO/frontend/assets/i18n.js" \
+  && bad "button glyphs live in the dictionary again - labels and icons must be split" \
+  || ok "labels are glyph-free in all three tables"
+grep -q '.toolbar .btn:not(.secondary) .btn-label' "$REPO/frontend/assets/style.css" \
+  && grep -q '.toolbar .btn .btn-ico' "$REPO/frontend/assets/style.css" \
+  && ok "phones get the icon-only toolbar (labels hide at <=640px)" \
+  || bad "the icon-only toolbar CSS is missing"
 
 # ---- user administration UI ----
 note "user administration UI"

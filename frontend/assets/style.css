@@ -145,6 +145,10 @@ body {
   transition: background 0.15s;
 }
 .btn:hover { background: var(--accent-dark); }
+/* Toolbar buttons split glyph and label: the label hides on phones
+   (icon-only row), the glyph keeps its place - the space the old
+   "＋ New file" string carried is this margin. */
+.btn-ico { margin-right: 5px; }
 .btn.secondary {
   background: var(--panel);
   color: var(--text);
@@ -461,6 +465,15 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
     color: var(--muted);
   }
   .actions-col { width: auto; }
+
+  /* Toolbar: icon-only. The labels hide, the glyphs (.btn-ico) carry the
+     meaning and the button's title is the tooltip - a long press on
+     touch, a hover with a mouse. Secondary buttons (trash view) keep
+     their labels: they are the only two buttons on that screen and the
+     longer German strings deserve the room. */
+  .toolbar .btn:not(.secondary) .btn-label { display: none; }
+  .toolbar .btn .btn-ico { margin-right: 0; font-size: 18px; }
+  .toolbar .btn { min-height: 44px; }
 
   /* The topbar holds five items in one row; a phone cannot. The quota
      lives in Settings > Storage and the version in Settings too, so both

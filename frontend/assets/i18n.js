@@ -47,10 +47,10 @@
     "lang.aria": "Sprache",
 
     // toolbar
-    "files.new": "\uff0b Neue Datei",
-    "files.newFolder": "\uff0b Neuer Ordner",
-    "files.upload": "\u2b06 Datei hochladen",
-    "files.uploadFolder": "\u2b06 Ordner hochladen",
+    "files.new": "Neue Datei",
+    "files.newFolder": "Neuer Ordner",
+    "files.upload": "Datei hochladen",
+    "files.uploadFolder": "Ordner hochladen",
     "files.trash": "Papierkorb",
     "files.emptyTrash": "Papierkorb leeren",
     "files.showHidden": "Versteckte anzeigen",
@@ -627,10 +627,10 @@
     "lang.aria": "Language",
 
     // toolbar
-    "files.new": "\uff0b New file",
-    "files.newFolder": "\uff0b New folder",
-    "files.upload": "\u2b06 Upload file",
-    "files.uploadFolder": "\u2b06 Upload folder",
+    "files.new": "New file",
+    "files.newFolder": "New folder",
+    "files.upload": "Upload file",
+    "files.uploadFolder": "Upload folder",
     "files.trash": "Trash",
     "files.emptyTrash": "Empty trash",
     "files.showHidden": "Show hidden",
@@ -1213,10 +1213,10 @@
     "lang.aria": "Hol",
 
     // toolbar
-    "files.new": "\uff0b che' chu'",
-    "files.newFolder": "\uff0b bIQroq chu'",
-    "files.upload": "\u2b06 che' laD",
-    "files.uploadFolder": "\u2b06 bIQroq laD",
+    "files.new": "che' chu'",
+    "files.newFolder": "bIQroq chu'",
+    "files.upload": "che' laD",
+    "files.uploadFolder": "bIQroq laD",
     "files.trash": "bIQtIq",
     "files.emptyTrash": "bIQtIq yIQaw",
     "files.showHidden": "nogh yItu'",

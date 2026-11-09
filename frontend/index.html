@@ -39,17 +39,17 @@
     <div class="breadcrumb" id="breadcrumb"></div>
 
     <div class="toolbar">
-      <button class="btn" id="new-file-btn" data-i18n="files.new">＋ New file</button>
-      <button class="btn" id="new-folder-btn" data-i18n="files.newFolder">＋ New folder</button>
+      <button class="btn" id="new-file-btn" data-i18n-title="files.new" data-i18n-aria="files.new"><span class="btn-ico" aria-hidden="true">＋</span><span class="btn-label" data-i18n="files.new">New file</span></button>
+      <button class="btn" id="new-folder-btn" data-i18n-title="files.newFolder" data-i18n-aria="files.newFolder"><span class="btn-ico" aria-hidden="true">＋</span><span class="btn-label" data-i18n="files.newFolder">New folder</span></button>
       <!-- Only shown in the root listing, and only for members of a group
            (renderToolbar decides): a group's top-level folder is the one
            thing a member bootstraps themselves (concepts/groups.md section 6). -->
       <button class="btn" id="new-group-btn" type="button" style="display:none"
-              data-i18n="group.newFolder">＋ New group folder</button>
-      <button class="btn" id="upload-btn" data-i18n="files.upload">⬆ Upload file</button>
-      <button class="btn" id="upload-folder-btn" data-i18n="files.uploadFolder">⬆ Upload folder</button>
-      <button class="btn secondary" id="trash-btn" data-i18n="files.trash">Trash</button>
-      <button class="btn secondary" id="empty-trash-btn" style="display:none" data-i18n="files.emptyTrash">Empty trash</button>
+              data-i18n-title="group.newFolder" data-i18n-aria="group.newFolder"><span class="btn-ico" aria-hidden="true">＋</span><span class="btn-label" data-i18n="group.newFolder">New group folder</span></button>
+      <button class="btn" id="upload-btn" data-i18n-title="files.upload" data-i18n-aria="files.upload"><span class="btn-ico" aria-hidden="true">⬆</span><span class="btn-label" data-i18n="files.upload">Upload file</span></button>
+      <button class="btn" id="upload-folder-btn" data-i18n-title="files.uploadFolder" data-i18n-aria="files.uploadFolder"><span class="btn-ico" aria-hidden="true">⬆</span><span class="btn-label" data-i18n="files.uploadFolder">Upload folder</span></button>
+      <button class="btn secondary" id="trash-btn" data-i18n="files.trash" data-i18n-title="files.trash" data-i18n-aria="files.trash">Trash</button>
+      <button class="btn secondary" id="empty-trash-btn" style="display:none" data-i18n="files.emptyTrash" data-i18n-title="files.emptyTrash" data-i18n-aria="files.emptyTrash">Empty trash</button>
       <input type="file" id="file-input" style="display:none" multiple />
       <input type="file" id="folder-input" webkitdirectory multiple style="display:none" />
       <div class="grow"></div>
