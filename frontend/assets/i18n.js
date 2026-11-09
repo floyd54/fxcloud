@@ -230,6 +230,7 @@
     "preview.encEditHint":
       "diese Datei ist verschl\u00fcsselt - Verschl\u00fcsselung \u00fcber das Abzeichen aktivieren, um sie zu bearbeiten",
     "preview.newTab": "In neuem Tab \u00f6ffnen",
+    "preview.pdfNoEmbed": "Dieser Browser kann PDFs nicht in der Seite anzeigen - in einem neuen Tab \u00f6ffnen.",
     "preview.prev": "Vorheriges",
     "preview.next": "N\u00e4chstes",
     "editor.loading": "l\u00e4dt...",
@@ -813,6 +814,7 @@
     "preview.encEditHint":
       "this file is encrypted - turn encryption on from the badge to edit it",
     "preview.newTab": "Open in new tab",
+    "preview.pdfNoEmbed": "This browser cannot show PDFs inside the page - open it in a new tab instead.",
     "preview.prev": "Previous",
     "preview.next": "Next",
     "editor.loading": "loading...",
@@ -1385,6 +1387,7 @@
     "preview.encEditHint":
       "che'vam chuS - choHmeH chuSQang yIchu'",
     "preview.newTab": "tab chu' poS",
+    "preview.pdfNoEmbed": "This browser cannot show PDFs inside the page - open it in a new tab instead.",
     "preview.prev": "Qav",
     "preview.next": "wav'",
     "editor.loading": "laD...",

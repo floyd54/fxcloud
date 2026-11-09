@@ -857,11 +857,16 @@ roughly doubles the UI work, so it stays out of v1 (NG1).
   dependency; everything else is WebCrypto (audited by the browser
   vendor). No hand-rolled primitives.
 - The service worker (`sw.js`, PWA installability) is deliberately a
-  **no-op on traffic and a non-user of Cache Storage**: it passes
-  same-origin requests through with `fetch()` and calls no Cache API at
-  all, so an installed app can never serve you a stale shell or keep
-  response bytes where a worker could be robbed of them. The suite
-  fails if it ever grows a `caches.` reference.
+  **no-op on traffic and a non-user of Cache Storage**: it passes this
+  origin's **static assets under /assets/** through with `fetch()` and
+  calls no Cache API at all - API traffic, page navigations and blob:
+  URLs (the decrypted PDF preview frame) never reach the worker, so no
+  platform quirk of `respondWith()` can attach to them (Android
+  Chrome's PDF and download handling is exactly where such quirks
+  live). An installed app can therefore never serve a stale shell or
+  keep response bytes where a worker could be robbed of them; the
+  suite fails if it ever grows a `caches.` reference or drops a scope
+  guard.
 - The server never links against a crypto library beyond what login
   already uses (argon2 for passwords). It gains BLOB columns and copy
   logic - envelope rows are copied when a share is copied, dropped by

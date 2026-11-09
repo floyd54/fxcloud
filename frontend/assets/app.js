@@ -1395,6 +1395,19 @@
     previewUrl = null;
   }
 
+  // Android's Chromium cannot render PDFs inside an <iframe> (only
+  // top-level tabs): the frame stays blank or the navigation is handed
+  // to the download manager - which is exactly the "PDF preview is
+  // broken on my Android phone" report, while desktop and iOS (WebKit)
+  // embed fine. Instead of a frame that cannot work there, the lightbox
+  // offers an explicit open button: the tap IS the user gesture
+  // window.open needs, and a top-level PDF - blob: or http - renders in
+  // Chrome's own viewer on Android.
+  function pdfNeedsNewTab() {
+    const ua = navigator.userAgent;
+    return /Android/.test(ua) && /Chrome\/|EdgA|SamsungBrowser|OPR\//.test(ua);
+  }
+
   function previewElement(kind, src, name) {
     let el;
     if (kind === "image") {
@@ -1409,6 +1422,20 @@
       el = document.createElement("audio");
       el.controls = true;
       el.src = src;
+    } else if (kind === "pdf" && pdfNeedsNewTab()) {
+      el = document.createElement("div");
+      el.className = "pdf-open";
+      const hint = document.createElement("p");
+      hint.className = "empty-small";
+      hint.textContent = t("preview.pdfNoEmbed");
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "btn";
+      open.textContent = t("preview.newTab");
+      open.addEventListener("click", () => window.open(src, "_blank"));
+      el.appendChild(hint);
+      el.appendChild(open);
+      return el; // semantic preview-pdf class does not fit a fallback block
     } else {
       // PDF (the browser's own viewer) and HTML both render in a frame.
       el = document.createElement("iframe");

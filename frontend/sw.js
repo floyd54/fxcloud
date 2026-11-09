@@ -12,14 +12,18 @@
  * - The frontend ships without fingerprinted filenames and is served with
  *   no-cache on purpose; a shell cached here would pin an installed app to
  *   old JS after a release while everyone else already moved on.
- * - An end-to-end encrypted cloud client without a network has nothing
- *   truthful to show - the browser's own offline page is the honest
- *   answer, not a stale shell with buttons that only fail.
  *
- * So every request passes straight through: behaviour is byte-identical to
- * having no worker at all, only the install offer changes. skipWaiting and
- * clients.claim keep the worker from demanding an extra reload, which also
- * keeps it invisible.
+ * Scope - and this is the load-bearing part: ONLY same-origin static files
+ * under /assets/ are passed through. Everything the product actually runs
+ * on - API calls, downloads, page navigations, and blob: URLs such as the
+ * decrypted PDF preview frame - never reaches this worker at all, so no
+ * platform-specific quirk of respondWith() (Android Chrome's download and
+ * PDF handling in particular) can ever attach to them. The passthrough on
+ * static files exists so the fetch handler demonstrably handles a request;
+ * it is byte-equivalent to the browser doing it (verified against a real
+ * Chromium with fetch-event logging), and there is no Cache API call
+ * anywhere below. The suite fails if this scope widens or if a caches.
+ * reference appears.
  */
 self.addEventListener("install", function () {
   self.skipWaiting();
@@ -28,11 +32,14 @@ self.addEventListener("activate", function (event) {
   event.waitUntil(self.clients.claim());
 });
 self.addEventListener("fetch", function (event) {
-  // Same-origin only: anything else (the office iframe, cross-origin
-  // links) keeps the browser's native handling and never touches this
-  // worker's CSP. For our own requests respondWith(fetch()) is a pure
-  // passthrough - no cache API call anywhere above, so what the browser
-  // receives is what a page without a worker would receive.
-  if (new URL(event.request.url).origin !== self.location.origin) return;
+  var url;
+  try {
+    url = new URL(event.request.url);
+  } catch (e) {
+    return; // unparsable URL: browser's problem, not ours
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return; // blob:, data:, ...
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.indexOf("/assets/") !== 0) return;
   event.respondWith(fetch(event.request));
 });

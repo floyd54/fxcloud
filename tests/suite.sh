@@ -3130,6 +3130,12 @@ grep -q 'setAttribute("sandbox", "")' "$UI" \
 grep -q 'URL\.revokeObjectURL(previewUrl)' "$UI" \
   && ok "closing the lightbox releases the decrypted blob URL" \
   || bad "a decrypted preview URL outlives the lightbox"
+# Android's Chromium cannot render PDFs inside frames (only top-level);
+# the fallback must exist or the preview is a blank frame there.
+grep -q 'function pdfNeedsNewTab' "$UI" && grep -q 'window\.open(src, "_blank")' "$UI" \
+  && grep -q '"preview.pdfNoEmbed"' "$UI" \
+  && ok "Android gets an open-PDF button instead of a blank frame" \
+  || bad "the Android PDF fallback is missing from app.js"
 
 # ---- file list sorting ----
 note "file list sorting (name / date / size, both directions)"
@@ -4339,6 +4345,14 @@ if grep -qE 'caches\.(open|match|put|delete)|CacheStorage' "$REPO/frontend/sw.js
 else
   ok "sw.js never touches the Cache API - installability without a cache"
 fi
+# Scope invariant: only same-origin static assets may ever be passed
+# through - API traffic, navigations and blob: URLs (the decrypted PDF
+# frame) must stay on the browser's native path on every platform.
+grep -q 'url.protocol !== "http:"' "$REPO/frontend/sw.js" \
+  && grep -q 'url.protocol !== "https:"' "$REPO/frontend/sw.js" \
+  && grep -q '"/assets/"' "$REPO/frontend/sw.js" \
+  && ok "sw.js scope: same-origin http(s) and /assets/ only - everything else native" \
+  || bad "sw.js lost its protocol or /assets/ scope guard"
 for ICO in icon-32.png icon-192.png icon-512.png icon-maskable-512.png apple-touch-icon-180.png; do
   IMGC=$(curl -s -o "$ROOT/ico.out" -w '%{content_type}' "$BASE/assets/icons/$ICO")
   PNG_OK=0

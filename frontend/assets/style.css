@@ -559,6 +559,18 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
   border: 0;
   background: #fff;
 }
+/* Android's Chromium cannot render PDFs inside a frame (app.js
+   pdfNeedsNewTab): the lightbox explains that and offers the open
+   button instead of showing a blank frame. */
+.preview-body .pdf-open {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 420px;
+  text-align: center;
+}
+.preview-body .pdf-open .empty-small { padding-top: 0; }
 /* Gallery arrows: dark discs over the panel edges, one step per click.
    app.js hides them at the ends of the gallery (`hidden` attribute). */
 .preview-nav {
