@@ -38,24 +38,28 @@
   <main class="container">
     <div class="breadcrumb" id="breadcrumb"></div>
 
+    <!-- Toolbar icons: inline SVG, currentColor, gallery-arrow stroke
+         style. Keep coordinates explicitly separated ("M12 9.5", not
+         "M129.5") - Chromium reads the latter as one number, drops the
+         whole path silently, and the icon renders empty (verified by
+         screenshot, not by any parser we run). -->
     <div class="toolbar">
-      <button class="btn" id="new-file-btn" data-i18n-title="files.new" data-i18n-aria="files.new"><span class="btn-ico" aria-hidden="true">＋</span><span class="btn-label" data-i18n="files.new">New file</span></button>
-      <button class="btn" id="new-folder-btn" data-i18n-title="files.newFolder" data-i18n-aria="files.newFolder"><span class="btn-ico" aria-hidden="true">＋</span><span class="btn-label" data-i18n="files.newFolder">New folder</span></button>
+      <button class="btn" id="new-file-btn" data-i18n-title="files.new" data-i18n-aria="files.new"><span class="btn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2.5" width="13" height="19" rx="2"/><path d="M12 9.5v6M9 12.5h6"/></svg></span><span class="btn-label" data-i18n="files.new">New file</span></button>
+      <button class="btn" id="new-folder-btn" data-i18n-title="files.newFolder" data-i18n-aria="files.newFolder"><span class="btn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.5h6.5l2.5 3H19A2.5 2.5 0 0 1 21.5 12v6.5A2.5 2.5 0 0 1 19 21H5A2.5 2.5 0 0 1 2.5 18.5z"/><path d="M12 11.5v6M9 14.5h6"/></svg></span><span class="btn-label" data-i18n="files.newFolder">New folder</span></button>
       <!-- Only shown in the root listing, and only for members of a group
            (renderToolbar decides): a group's top-level folder is the one
            thing a member bootstraps themselves (concepts/groups.md section 6). -->
       <button class="btn" id="new-group-btn" type="button" style="display:none"
-              data-i18n-title="group.newFolder" data-i18n-aria="group.newFolder"><span class="btn-ico" aria-hidden="true">＋</span><span class="btn-label" data-i18n="group.newFolder">New group folder</span></button>
-      <button class="btn" id="upload-btn" data-i18n-title="files.upload" data-i18n-aria="files.upload"><span class="btn-ico" aria-hidden="true">⬆</span><span class="btn-label" data-i18n="files.upload">Upload file</span></button>
-      <button class="btn" id="upload-folder-btn" data-i18n-title="files.uploadFolder" data-i18n-aria="files.uploadFolder"><span class="btn-ico" aria-hidden="true">⬆</span><span class="btn-label" data-i18n="files.uploadFolder">Upload folder</span></button>
-      <button class="btn secondary" id="trash-btn" data-i18n="files.trash" data-i18n-title="files.trash" data-i18n-aria="files.trash">Trash</button>
-      <button class="btn secondary" id="empty-trash-btn" style="display:none" data-i18n="files.emptyTrash" data-i18n-title="files.emptyTrash" data-i18n-aria="files.emptyTrash">Empty trash</button>
+              data-i18n-title="group.newFolder" data-i18n-aria="group.newFolder"><span class="btn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.5h6.5l2.5 3H19A2.5 2.5 0 0 1 21.5 12v6.5A2.5 2.5 0 0 1 19 21H5A2.5 2.5 0 0 1 2.5 18.5z"/><circle cx="12" cy="12.4" r="2.3"/><path d="M8.4 18.6Q12 21.6 15.6 18.6"/></svg></span><span class="btn-label" data-i18n="group.newFolder">New group folder</span></button>
+      <button class="btn" id="upload-btn" data-i18n-title="files.upload" data-i18n-aria="files.upload"><span class="btn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2.5" width="13" height="19" rx="2"/><path d="M12 16v-7.5M8.5 12L12 8.5l3.5 3.5"/></svg></span><span class="btn-label" data-i18n="files.upload">Upload file</span></button>
+      <button class="btn" id="upload-folder-btn" data-i18n-title="files.uploadFolder" data-i18n-aria="files.uploadFolder"><span class="btn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.5h6.5l2.5 3H19A2.5 2.5 0 0 1 21.5 12v6.5A2.5 2.5 0 0 1 19 21H5A2.5 2.5 0 0 1 2.5 18.5z"/><path d="M12 17v-7M8.5 13.5L12 10l3.5 3.5"/></svg></span><span class="btn-label" data-i18n="files.uploadFolder">Upload folder</span></button>
+      <button class="btn secondary" id="trash-btn" data-i18n-title="files.trash" data-i18n-aria="files.trash"><span class="btn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5h16M9.5 7.5V5.5h5V7.5M5.5 7.5L7.5 19.5M18.5 7.5L16.5 19.5M7.5 19.5h9M10 11v4.5M14 11v4.5"/></svg></span><span class="btn-label" data-i18n="files.trash">Trash</span></button>
+      <button class="btn secondary" id="empty-trash-btn" style="display:none" data-i18n-title="files.emptyTrash" data-i18n-aria="files.emptyTrash"><span class="btn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5h16M9.5 7.5V5.5h5V7.5M5.5 7.5L7.5 19.5M18.5 7.5L16.5 19.5M7.5 19.5h9M10 11v4.5M14 11v4.5M17.5 2.5l4 4M21.5 2.5l-4 4"/></svg></span><span class="btn-label" data-i18n="files.emptyTrash">Empty trash</span></button>
       <input type="file" id="file-input" style="display:none" multiple />
       <input type="file" id="folder-input" webkitdirectory multiple style="display:none" />
       <div class="grow"></div>
       <button class="btn secondary" id="hidden-toggle" type="button" aria-pressed="false"
-              title="Show files and folders whose name starts with a dot"
-              data-i18n="files.showHidden" data-i18n-title="files.showHiddenHint">Show hidden</button>
+              data-i18n-title="files.showHiddenHint" data-i18n-aria="files.showHidden"><span class="btn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12Q12 4.8 21 12Q12 19.2 3 12z"/><circle cx="12" cy="12" r="3.25"/></svg></span><span class="btn-label" data-i18n="files.showHidden">Show hidden</span></button>
     </div>
 
     <div class="dropzone" id="dropzone">

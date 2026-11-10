@@ -3230,9 +3230,10 @@ grep -q 'id="upload-folder-btn" data-i18n-title="files.uploadFolder" data-i18n-a
   && grep -q 'data-i18n="files.uploadFolder">Upload folder</span>' "$IDX" \
   && ok "upload folder is a primary button like upload file" \
   || bad "upload folder is not styled like upload file"
-grep -q 'class="btn secondary" id="trash-btn" data-i18n="files.trash" data-i18n-title="files.trash" data-i18n-aria="files.trash">Trash</button>' "$IDX" \
-  && ok "the trash button is a plain secondary label" \
-  || bad "the trash button still carries an icon"
+grep -q 'class="btn secondary" id="trash-btn" data-i18n-title="files.trash" data-i18n-aria="files.trash"><span class="btn-ico"' "$IDX" \
+  && grep -q 'data-i18n="files.trash">Trash</span>' "$IDX" \
+  && ok "the trash button carries an icon and keeps its label for desktop" \
+  || bad "the trash button lost its icon or label"
 grep -q "${FLD}\|${BASKET}" "$IDX" \
   && bad "index.html still mixes loose emoji into the buttons" \
   || ok "the two icons that broke the hierarchy are gone"
@@ -3244,36 +3245,45 @@ perl -0777 -e '
     if ($i < 0) { $bad++; next; }
     my $rest = substr($html, $i);
     my $block = substr($rest, 0, index($rest, "\n    </div>"));
+    my $is_toolbar = ($open eq q{<div class="toolbar">});
     while ($block =~ /<button class="(btn[^"]*)"[^>]*>(.*?)<\/button>/sg) {
-      my ($cls, $label) = ($1, $2);
+      my ($cls, $inner) = ($1, $2);
       $n++;
-      (my $plain = $label) =~ s/\xE2\x80\xA6//g;  # dialog ellipsis, not an icon
-      my $glyph = ($plain =~ /[^\x00-\x7F]/) ? 1 : 0;
-      my $want  = ($cls eq "btn") ? 1 : 0;
-      $bad++ if $glyph != $want;
+      if ($is_toolbar) {
+        # Every toolbar button: an inline SVG icon (eight distinct
+        # symbols, no glyph pairs) plus the label span that hides on
+        # phones - the icon alone has to carry the meaning there.
+        $bad++ unless $inner =~ /<svg\b/;
+        $bad++ unless $inner =~ /class="btn-label"/;
+      } else {
+        (my $plain = $inner) =~ s/\xE2\x80\xA6//g;  # dialog ellipsis, not an icon
+        my $glyph = ($plain =~ /[^\x00-\x7F]/) ? 1 : 0;
+        my $want  = ($cls eq "btn") ? 1 : 0;
+        $bad++ if $glyph != $want;
+      }
     }
   }
   exit(($bad || !$n) ? 1 : 0);
 ' "$IDX" \
-  && ok "every primary toolbar button carries an icon, every secondary one is plain" \
-  || bad "icons do not line up with the button hierarchy"
+  && ok "every toolbar button carries an SVG icon and a label; the bulkbar keeps its glyph hierarchy" \
+  || bad "toolbar icon/label structure or bulkbar hierarchy broken"
 # Icon-only phones (<=640px): label and glyph live in separate spans so
 # the label can hide, and every toolbar button carries a title - that is
 # the tooltip on desktop and the long-press tooltip on touch.
 ICO_N=$(grep -c 'class="btn-ico"' "$IDX")
 LBL_N=$(grep -c 'class="btn-label"' "$IDX")
-[ "$ICO_N" -ge 5 ] && [ "$LBL_N" -ge 5 ] \
-  && ok "primary toolbar buttons split glyph and label ($ICO_N/$LBL_N)" \
-  || bad "icon/label spans missing: icons=$ICO_N labels=$LBL_N"
-TF=$(grep -c 'data-i18n-title="files\.\(new\|newFolder\|upload\|uploadFolder\|trash\|emptyTrash\)"' "$IDX")
+[ "$ICO_N" = "8" ] && [ "$LBL_N" = "8" ] \
+  && ok "every toolbar button splits icon and label ($ICO_N/$LBL_N)" \
+  || bad "icon/label spans: icons=$ICO_N labels=$LBL_N (want8/8)"
+TF=$(grep -c 'data-i18n-title="files\.\(new\|newFolder\|upload\|uploadFolder\|trash\|emptyTrash\|showHiddenHint\)"' "$IDX")
 TG=$(grep -c 'data-i18n-title="group.newFolder"' "$IDX")
-[ "$TF" = "6" ] && [ "$TG" = "1" ] \
+[ "$TF" = "7" ] && [ "$TG" = "1" ] \
   && ok "every file-action toolbar button carries a hover/long-press title" \
-  || bad "toolbar titles: files=$TF group=$TG"
+  || bad "toolbar titles: files=$TF group=$TG (want7/1)"
 grep -qE '"files\.(new|newFolder|upload|uploadFolder)": "(\\uff0b|\\u2b06)' "$REPO/frontend/assets/i18n.js" \
   && bad "button glyphs live in the dictionary again - labels and icons must be split" \
   || ok "labels are glyph-free in all three tables"
-grep -q '.toolbar .btn:not(.secondary) .btn-label' "$REPO/frontend/assets/style.css" \
+grep -q '.toolbar .btn .btn-label' "$REPO/frontend/assets/style.css" \
   && grep -q '.toolbar .btn .btn-ico' "$REPO/frontend/assets/style.css" \
   && ok "phones get the icon-only toolbar (labels hide at <=640px)" \
   || bad "the icon-only toolbar CSS is missing"

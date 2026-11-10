@@ -145,10 +145,11 @@ body {
   transition: background 0.15s;
 }
 .btn:hover { background: var(--accent-dark); }
-/* Toolbar buttons split glyph and label: the label hides on phones
-   (icon-only row), the glyph keeps its place - the space the old
-   "＋ New file" string carried is this margin. */
-.btn-ico { margin-right: 5px; }
+/* Toolbar buttons split icon and label: the label hides on phones
+   (icon-only row), the icon keeps its place - an inline SVG at text
+   height, currentColor so it follows the button's state colors. */
+.btn-ico { margin-right: 5px; display: inline-flex; align-items: center; }
+.btn-ico svg { width: 17px; height: 17px; display: block; }
 .btn.secondary {
   background: var(--panel);
   color: var(--text);
@@ -466,13 +467,13 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
   }
   .actions-col { width: auto; }
 
-  /* Toolbar: icon-only. The labels hide, the glyphs (.btn-ico) carry the
-     meaning and the button's title is the tooltip - a long press on
-     touch, a hover with a mouse. Secondary buttons (trash view) keep
-     their labels: they are the only two buttons on that screen and the
-     longer German strings deserve the room. */
-  .toolbar .btn:not(.secondary) .btn-label { display: none; }
-  .toolbar .btn .btn-ico { margin-right: 0; font-size: 18px; }
+  /* Toolbar: icon-only for EVERY button - the eight symbols are distinct
+     (page/folder x plus/arrow, trash, trash+X, eye), so a row of squares
+     needs no labels; the button's title is the tooltip - a long press on
+     touch, a hover with a mouse. */
+  .toolbar .btn .btn-label { display: none; }
+  .toolbar .btn .btn-ico { margin-right: 0; }
+  .toolbar .btn .btn-ico svg { width: 20px; height: 20px; }
   .toolbar .btn { min-height: 44px; }
 
   /* The topbar holds five items in one row; a phone cannot. The quota
