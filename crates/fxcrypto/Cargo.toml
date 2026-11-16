@@ -1,0 +1,19 @@
+[package]
+name = "fxcrypto"
+version = "0.1.0"
+edition = "2021"
+description = "fxcloud client-side crypto core (FXE1 container format) - deliberately NOT a dependency of the server binary"
+license = "AGPL-3.0-or-later"
+
+# Client-side only: this crate must never enter the fxcloud server's
+# dependency graph (the server stays key-blind; ENCRYPTION.md 8). The
+# suite pins that with a dependency-section grep.
+
+[dependencies]
+aes-gcm = "0.10"
+rand = "0.8"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"

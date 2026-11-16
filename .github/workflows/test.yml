@@ -34,10 +34,10 @@ jobs:
       # first build. Both keep review honest - an unformatted chain or a new
       # lint stops the build instead of accumulating into drift.
       - name: Formatting
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       # The suite reads and updates the throwaway database directly to set up
       # quota and trash states that no HTTP endpoint would produce.
@@ -49,7 +49,7 @@ jobs:
           fi
 
       - name: Unit tests
-        run: cargo test
+        run: cargo test --workspace
 
       # Builds the debug binary itself (so its version badge always matches
       # Cargo.toml) and then runs every integration check.

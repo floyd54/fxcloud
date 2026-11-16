@@ -64,3 +64,6 @@ sha2 = "0.11.1"
 lto = true
 codegen-units = 1
 strip = true
+
+[workspace]
+members = ["crates/fxcrypto"]

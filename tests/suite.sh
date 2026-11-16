@@ -99,8 +99,8 @@ fi
 if [ -n "${FXCLOUD_TEST_BIN:-}" ]; then
   [ -x "$BIN" ] || { echo "FXCLOUD_TEST_BIN=$BIN is not executable" >&2; exit 2; }
 else
-  echo "building (cargo build) ..."
-  (cd "$REPO" && cargo build) || { echo "cargo build failed" >&2; exit 2; }
+  echo "building (cargo build --workspace) ..."
+  (cd "$REPO" && cargo build --workspace) || { echo "cargo build failed" >&2; exit 2; }
 fi
 
 FAIL=0
@@ -2732,7 +2732,8 @@ for SRC in "$REPO/frontend/assets/i18n.js" \
            "$REPO/frontend/tests/crypto-roundtrip.js" \
            "$REPO/frontend/tests/fxenc-harness.js" \
            "$REPO/frontend/tests/webauthn.js" \
-           "$REPO/frontend/tests/gen-icons.js"; do
+           "$REPO/frontend/tests/gen-icons.js" \
+           "$REPO/frontend/tests/gen-fx1-vectors.js"; do
   js_parse "$SRC" \
     && ok "$(basename "$SRC") parses ($PARSE)" \
     || bad "$(basename "$SRC") has a syntax error"
@@ -4398,6 +4399,20 @@ done
 "$NODE" "$REPO/frontend/tests/gen-icons.js" --check \
   && ok "the committed icons match the generator exactly" \
   || bad "icons drifted from gen-icons.js - re-run it"
+# FXE1 golden vectors: the committed file must still pass the REAL JS
+# reader - --check runs frontend/assets/fxcrypto.js against every case,
+# the doctored rejects included (crates/fxcrypto pins the Rust twin).
+"$NODE" "$REPO/frontend/tests/gen-fx1-vectors.js" --check \
+  && ok "every committed FXE1 vector decrypts (or rejects) exactly as committed" \
+  || bad "fx1-vectors.json drifted from fxcrypto.js - regenerate it deliberately"
+# Key-blindness is structural, not a promise: the server binary must
+# never link the client crypto core (ENCRYPTION.md 8), so its
+# [dependencies] section may not name this crate.
+if awk '/^\[dependencies\]/{f=1;next} /^\[/{f=0} f && /fxcrypto/' "$REPO/Cargo.toml" | grep -q .; then
+  bad "the fxcrypto crate appears in the server's [dependencies]"
+else
+  ok "the server never links the client crypto core (key-blind, suite-pinned)"
+fi
 grep -q 'rel="manifest"' "$REPO/frontend/index.html" \
   && grep -q 'rel="manifest"' "$REPO/frontend/login.html" \
   && ok "app and login page both link the manifest (install from either)" \
