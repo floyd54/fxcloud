@@ -23,12 +23,17 @@ RUN apk add --no-cache build-base
 WORKDIR /src
 
 # Warm the dependency layer first: while src/ stays unchanged only fxcloud
-# itself is rebuilt, the crates below are cached.
+# itself is rebuilt, the crates below are cached. The workspace resolves
+# every member at manifest-load time, so each member needs its manifest
+# (and a dummy target) here - the real sources arrive with `COPY . .`
+# below, and --workspace also warms the member's own dependencies.
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src \
+COPY crates/fxcrypto/Cargo.toml crates/fxcrypto/Cargo.toml
+RUN mkdir -p src crates/fxcrypto/src \
     && echo 'fn main() {}' > src/main.rs \
-    && cargo build --release \
-    && rm -rf src
+    && echo 'pub fn warm() {}' > crates/fxcrypto/src/lib.rs \
+    && cargo build --release --workspace \
+    && rm -rf src crates
 
 # The frontend and the migrations are embedded into the binary (RustEmbed),
 # so they only have to exist by the time fxcloud itself is compiled.
