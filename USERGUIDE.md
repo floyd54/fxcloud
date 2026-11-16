@@ -104,6 +104,13 @@ enables the install **never caches anything** by design, so an installed
 app always shows exactly what the server serves
 ([ENCRYPTION.md](ENCRYPTION.md), section 11).
 
+Right after installing, check that JavaScript is enabled for the app:
+on some devices freshly installed web apps start with it **off** and
+the install dialog offers no switch (reported on a Google Pixel). The
+symptom is a dead login page - see
+[Troubleshooting](#15-troubleshooting); long-press the icon >
+Settings > JavaScript fixes it.
+
 ## 4. Your files
 
 The file explorer works like a desktop file manager, in the browser:
@@ -567,3 +574,18 @@ the passphrase is forgotten, the recovery key from setup recovers it.
 **Sync client writes fail on encrypted files**: desktop clients do not
 encrypt; WebDAV serves those files as ciphertext, read-only. Use the web
 UI for encrypted content.
+
+**Login page is dead: the Passkey / Create account tabs do not react,
+the page shows English although your browser is German, and submitting
+just brings the mask back without any error**: JavaScript is switched
+off for fxcloud. On some devices this is the default for freshly
+installed web apps and the install dialog offers no switch (reported on
+a Google Pixel; a Samsung did not offer the setting at all) - the page
+script is what wires the tabs and intercepts the form, so without it
+the browser falls back to a plain reload. Fix: long-press the fxcloud
+icon, open **Settings**, enable **JavaScript** (or Chrome > Settings >
+Site settings > JavaScript), reopen the app. A different cause with a
+partial overlap: if the tabs DO react and the page is in your language
+but signing in still loops back to the mask, the session cookie is
+being dropped instead - check the address bar says `https://` and clear
+the site's data in the browser settings.

@@ -384,6 +384,19 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
   border-bottom-color: var(--accent);
   font-weight: 600;
 }
+/* Shown only when JavaScript is off - the one visitor who cannot run the
+   i18n dictionaries, so the text is bilingual and static (login page and
+   app both carry it). Theme-aware: it appears in the dark theme too. */
+.noscript-warn {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: rgba(217, 59, 59, 0.1);
+  color: var(--danger);
+  font-size: 14px;
+  line-height: 1.45;
+}
 
 .field { margin-bottom: 16px; }
 .field label {

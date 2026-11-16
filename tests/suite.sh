@@ -3569,6 +3569,10 @@ UI=$REPO/frontend/assets/app.js
 grep -q 'id="tab-passkey"' "$LHTML" && grep -q 'id="passkey-form"' "$LHTML" \
   && ok "the login page carries a passkey tab with its own form" \
   || bad "login.html has no passkey tab/form"
+grep -q '<noscript>' "$LHTML" && grep -q 'noscript-warn' "$LHTML" \
+  && grep -q 'noscript-warn' "$REPO/frontend/index.html" \
+  && ok "a visitor without JavaScript gets told why nothing works (bilingual noscript)" \
+  || bad "login/app page lacks the noscript fallback"
 grep -q 'src="/assets/webauthn-client.js"' "$LHTML" \
   && ok "the login page loads the WebAuthn marshalling helper" \
   || bad "login.html does not load webauthn-client.js"
