@@ -705,6 +705,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fxcffi"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "fxcrypto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fxcloud"
 version = "0.2.7"
 dependencies = [

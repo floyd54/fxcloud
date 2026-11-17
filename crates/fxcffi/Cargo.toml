@@ -1,0 +1,23 @@
+[package]
+name = "fxcffi"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI over the fxcloud client crypto core - the surface native apps (phase 7) call"
+license = "AGPL-3.0-or-later"
+
+# Client-side only, like fxcrypto: this crate must never enter the
+# fxcloud server's dependency graph (the server stays key-blind;
+# ENCRYPTION.md 8) - the suite pins that with a dependency-section grep.
+
+[lib]
+# staticlib for iOS and for the suite's C smoke test, cdylib for the
+# Android .so, rlib so in-process tests can link the same code.
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+fxcrypto = { path = "../fxcrypto" }
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"

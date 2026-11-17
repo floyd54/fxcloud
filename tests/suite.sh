@@ -4412,11 +4412,24 @@ done
 "$NODE" "$REPO/frontend/tests/gen-key-vectors.js" --check \
   && ok "every committed key vector opens (or rejects) exactly as committed" \
   || bad "fx-keys-vectors.json drifted from fxcrypto.js - regenerate it deliberately"
+# The C ABI itself (phase 5 slice 3): compile c/smoke.c against the
+# SHIPPED header and the built static library with -Werror, then run it -
+# a header that lies about layout, names or ownership fails here, and so
+# does a boundary that cannot roundtrip bytes both ways.
+cc -std=c99 -Wall -Wextra -Werror \
+  -I "$REPO/crates/fxcffi/include" \
+  "$REPO/crates/fxcffi/c/smoke.c" \
+  "$REPO/target/debug/libfxcffi.a" \
+  -lpthread -ldl -lm -o "$ROOT/fxcffi-smoke" \
+  && "$ROOT/fxcffi-smoke" \
+  && ok "C smoke: header + staticlib roundtrip through the real C ABI" \
+  || bad "C smoke failed (header, link or roundtrip)"
 # Key-blindness is structural, not a promise: the server binary must
 # never link the client crypto core (ENCRYPTION.md 8), so its
-# [dependencies] section may not name this crate.
-if awk '/^\[dependencies\]/{f=1;next} /^\[/{f=0} f && /fxcrypto/' "$REPO/Cargo.toml" | grep -q .; then
-  bad "the fxcrypto crate appears in the server's [dependencies]"
+# [dependencies] section may not name either crate - fxcffi is the C ABI
+# shell over the same keys, same blindness applies.
+if awk '/^\[dependencies\]/{f=1;next} /^\[/{f=0} f && /fxcrypto|fxcffi/' "$REPO/Cargo.toml" | grep -q .; then
+  bad "the fxcrypto/fxcffi crates appear in the server's [dependencies]"
 else
   ok "the server never links the client crypto core (key-blind, suite-pinned)"
 fi

@@ -29,9 +29,11 @@ WORKDIR /src
 # below, and --workspace also warms the member's own dependencies.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/fxcrypto/Cargo.toml crates/fxcrypto/Cargo.toml
-RUN mkdir -p src crates/fxcrypto/src \
+COPY crates/fxcffi/Cargo.toml crates/fxcffi/Cargo.toml
+RUN mkdir -p src crates/fxcrypto/src crates/fxcffi/src \
     && echo 'fn main() {}' > src/main.rs \
     && echo 'pub fn warm() {}' > crates/fxcrypto/src/lib.rs \
+    && echo 'pub fn warm() {}' > crates/fxcffi/src/lib.rs \
     && cargo build --release --workspace \
     && rm -rf src crates
 
