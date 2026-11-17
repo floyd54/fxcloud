@@ -1219,6 +1219,50 @@
   }
 
   /**
+   * Re-seal every share row of `sourceId` to `key` - one round trip per
+   * *remaining* grantee (5.6): a revoked row is gone and is never
+   * re-sealed, and a grantee without a published key gets no envelope
+   * (5.5: no grantee key, no envelope - they land in `failed`). Shared
+   * by the subtree re-key and the single-file rotation.
+   *
+   * Returns how many envelopes were replaced; failures append usernames
+   * to `failed`. `pubCache` memoises the key lookup per username.
+   */
+  async function resealOutgoing(sourceId, key, failed, pubCache) {
+    let grantees = 0;
+    let rows = [];
+    try {
+      rows = (await http("/api/shares/outgoing?file_id=" + sourceId).then((r) => r.json()))
+        .shares || [];
+    } catch (err) {
+      return grantees;
+    }
+    for (const row of rows) {
+      try {
+        let pub = pubCache.get(row.username);
+        if (pub === undefined) {
+          const kres = await http("/api/keys/" + encodeURIComponent(row.username)).then((r) =>
+            r.json()
+          );
+          pub = (kres.key && kres.key.public_key) || null;
+          pubCache.set(row.username, pub);
+        }
+        if (!pub) {
+          failed.push(row.username);
+          continue;
+        }
+        const aad = FX().shareEnvelopeAad(sourceId, row.username);
+        const env = await FX().eciesSeal(FX().b64decode(pub), key, aad);
+        await http("/api/shares/" + row.id, jsonCall("PUT", { envelope: env }));
+        grantees++;
+      } catch (err) {
+        failed.push(row.username);
+      }
+    }
+    return grantees;
+  }
+
+  /**
    * Re-key a folder subtree (ENCRYPTION.md 5.6, DECISION 4): every
    * encrypted folder below `folderId` (it included) gets a fresh key,
    * each child record is re-wrapped under its parent's NEW key, and each
@@ -1345,36 +1389,65 @@
       // (c) Re-seal this folder's envelopes to the new key - one round
       // trip per *remaining* grantee (5.6): the revoked row is already
       // gone, so it is never re-sealed.
-      let rows = [];
-      try {
-        rows = (await http("/api/shares/outgoing?file_id=" + f.id).then((r) => r.json())).shares || [];
-      } catch (err) {
-        rows = [];
-      }
-      for (const row of rows) {
-        try {
-          let pub = pubCache.get(row.username);
-          if (pub === undefined) {
-            const kres = await http("/api/keys/" + encodeURIComponent(row.username)).then((r) =>
-              r.json()
-            );
-            pub = (kres.key && kres.key.public_key) || null;
-            pubCache.set(row.username, pub);
-          }
-          if (!pub) {
-            res.failed.push(row.username); // no grantee key, no envelope (5.5)
-            continue;
-          }
-          const aad = FX().shareEnvelopeAad(f.id, row.username);
-          const env = await FX().eciesSeal(FX().b64decode(pub), k.new, aad);
-          await http("/api/shares/" + row.id, jsonCall("PUT", { envelope: env }));
-          res.grantees++;
-        } catch (err) {
-          res.failed.push(row.username);
-        }
-      }
+      res.grantees += await resealOutgoing(f.id, k.new, res.failed, pubCache);
       res.folders++;
     }
+    return res;
+  }
+
+  /**
+   * Rotate one file's key - DECISION 5's explicit action (a save never
+   * rotates, the owner does, on purpose): download the container,
+   * decrypt it under the current key, encrypt it under a fresh one and
+   * promote row + content in a single PUT with `history=drop`.
+   *
+   * The history goes with it on purpose, not as a side effect: a version
+   * carries no key of its own (versioning.md E2 - one file key lives
+   * across all versions), so every old version was written under the old
+   * key and could never open again. The confirmation before this call
+   * says exactly that. The file's share envelopes are re-sealed to the
+   * new key afterwards - the grantee's envelope is why a rotation is not
+   * a local affair.
+   *
+   * Cancel is honoured before the PUT, so a cancelled run changes
+   * nothing. Returns { rotated, grantees, failed, cancelled }.
+   */
+  async function rotateFileKey(entry, opts) {
+    if (!(await requestKeys())) throw new Error(t("enc.migrate.cancelled"));
+    const cancelled = opts && opts.cancelled || function () {
+      return false;
+    };
+    const res = { rotated: 0, grantees: 0, failed: [], cancelled: false };
+    const pubCache = new Map();
+
+    const oldKey = await resolveFileKey(entry);
+    const body = new Uint8Array(
+      await (await http("/api/files/download?id=" + entry.id)).arrayBuffer()
+    );
+    const plain = await heavy("decryptBytes", [entry.id, oldKey, body], [body.buffer]);
+    const newKey = FX().randomBytes(32);
+    const out = await heavy("encryptBytes", [entry.id, newKey, plain.bytes], [plain.bytes.buffer]);
+    if (cancelled()) {
+      res.cancelled = true;
+      return res;
+    }
+    const parentKey = await ensureChainKey(entry.parent_id);
+    const wrapped = await FX().wrapChildKey(parentKey, entry.id, newKey);
+    await http(
+      "/api/files/content?id=" +
+        entry.id +
+        "&enc=1&key=" +
+        encodeURIComponent(wrapped) +
+        "&history=drop",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: out.bytes,
+      }
+    );
+    folderKeys.set(entry.id, newKey);
+    res.rotated = 1;
+    res.grantees = await resealOutgoing(entry.id, newKey, res.failed, pubCache);
     return res;
   }
 
@@ -1644,6 +1717,7 @@
     encryptUpload: encryptUpload,
     migrateTree: migrateTree,
     rekeyTree: rekeyTree,
+    rotateFileKey: rotateFileKey,
     recoveryView: recoveryView,
     recoveryRotate: recoveryRotate,
     setAutoUnlock: setAutoUnlock,

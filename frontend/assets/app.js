@@ -626,6 +626,20 @@
         items.push([t("bulk.download"), () => downloadFile(entry.id, entry.name, entry)]);
         items.push([t("versions.history"), () => openVersionsDialog(entry, perms)]);
       }
+      // DECISION 5: a save never rotates the key - the owner rotates it
+      // explicitly, history and all (versioning.md E2: one file key
+      // lives across all versions, so the old ones cannot open again -
+      // the confirm text says so before anything runs).
+      if (!entry.is_dir && entry.enc_version > 0 && isOwner && (perms & PERM_UPDATE)) {
+        items.push([
+          t("enc.rotate.menu"),
+          () => {
+            if (window.confirm(t("enc.rotate.confirm", { name: entry.name }))) {
+              openRotate(entry);
+            }
+          },
+        ]);
+      }
       if (isOwner) {
         items.push([t("bulk.share"), () => openShareDialog([entry])]);
       }
@@ -3091,6 +3105,69 @@
       runRekey(scope);
     };
     runRekey(scope);
+  }
+
+  // ---------- phase6: explicit file-key rotation (DECISION5) -------------
+
+  function showRotateSummary(res) {
+    const summary = migrateEl("migrate-summary");
+    let text = t("enc.rotate.done", {
+      rotated: String(res.rotated),
+      grantees: String(res.grantees),
+      failed: String(res.failed.length),
+    });
+    if (res.failed.length) {
+      const names =
+        res.failed.slice(0, 6).join(", ") + (res.failed.length > 6 ? " (...)" : "");
+      text += " " + t("enc.migrate.failed", { names: names });
+    }
+    summary.textContent = text;
+    summary.hidden = false;
+  }
+
+  async function runRotate(entry) {
+    migrateCancel = false;
+    migrateRunning = true;
+    setMigrateMode("running");
+    migrateEl("migrate-summary").hidden = true;
+    migrateEl("migrate-status").textContent = t("enc.rotate.running");
+    try {
+      const res = await FXEnc.rotateFileKey(entry, { cancelled: () => migrateCancel });
+      if (migrateModal.style.display === "none") return;
+      migrateEl("migrate-status").textContent = res.cancelled
+        ? t("enc.migrate.cancelled")
+        : t("enc.migrate.idle");
+      showRotateSummary(res);
+      setMigrateMode("idle");
+    } catch (e) {
+      if (migrateModal.style.display !== "none") {
+        migrateEl("migrate-status").textContent = e.message;
+        setMigrateMode("idle");
+      }
+    } finally {
+      migrateRunning = false;
+      loadFiles(currentParent).catch(() => {});
+    }
+  }
+
+  async function openRotate(entry) {
+    if (migrateRunning) return;
+    if (!(await FXEnc.requestKeys())) return;
+    migrateEl("migrate-title").dataset.i18n = "enc.rotate.title";
+    migrateEl("migrate-title").textContent = t("enc.rotate.title");
+    migrateEl("migrate-scope").textContent = entry.name;
+    migrateEl("migrate-summary").hidden = true;
+    migrateEl("migrate-status").textContent = t("enc.migrate.idle");
+    migrateModal.style.display = "flex";
+    document.addEventListener("keydown", migrateOnKey);
+    migrateEl("migrate-primary").onclick = () => {
+      if (migrateRunning) {
+        migrateCancel = true;
+        return;
+      }
+      runRotate(entry);
+    };
+    runRotate(entry);
   }
 
   // ---------- phase4: the recovery key on demand (ENCRYPTION.md 5.7) -----

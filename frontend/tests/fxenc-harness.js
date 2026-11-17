@@ -911,6 +911,36 @@ async function main() {
     }
   });
 
+  // ---- phase6: the explicit file-key rotation (DECISION5) ---------------
+  if (upEntry) {
+    const beforeBytes = await rawGet("/api/files/download?id=" + upEntry.id, true);
+    await step("rotateFileKey promotes the row under a fresh key", async () => {
+      const res = await FXEnc.rotateFileKey(upEntry, {});
+      if (!res || res.rotated !== 1) throw new Error("rotated=" + (res && res.rotated));
+      if (res.failed.length) throw new Error("failed: " + res.failed.join(", "));
+    });
+    const afterBytes = await rawGet("/api/files/download?id=" + upEntry.id, true);
+    expect(
+      "rotation replaced the container with a different FXE1 one",
+      magicOf(afterBytes) === "FXE1" && !bytesEqual(afterBytes, beforeBytes),
+      "magic=" + magicOf(afterBytes) + " same=" + bytesEqual(afterBytes, beforeBytes)
+    );
+    await step("a tab without the old cache opens the rotated row", async () => {
+      // Locking drops folderKeys, so this resolve walks the server's
+      // record fresh: it only works if row and bytes agree.
+      FXEnc.lockNow();
+      element("enc-unlock-pass").value = PASSPHRASE;
+      await element("enc-unlock-go").press();
+      if (!FXEnc.unlocked()) throw new Error("re-unlock failed: " + FXEnc.status());
+      await FXEnc.download(upEntry);
+      if (!lastBlob) throw new Error("no blob captured");
+      const got = new Uint8Array(await lastBlob.arrayBuffer());
+      if (!bytesEqual(got, PLAIN)) {
+        throw new Error("got " + got.length + " bytes, want " + PLAIN.length);
+      }
+    });
+  }
+
   console.log(
     "DONE " + passed + " passed, " + failures.length + " failed" +
       (failures.length ? " (" + failures.join("; ") + ")" : "")
