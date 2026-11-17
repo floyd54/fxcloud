@@ -4447,6 +4447,20 @@ L_REG=$(grep -c 'serviceWorker.register' "$REPO/frontend/assets/login.js")
   && ok "both pages register the worker (install prompt wherever you are)" \
   || bad "service worker registration: app.js=$A_REG login.js=$L_REG"
 
+# Supply-chain tripwire: the frontend may SHIP vendored code (hashwasm
+# carries its own license header in this repo) but must never LOAD code,
+# styles or data from another origin - no CDN, no analytics, no tag
+# manager, nothing. Checked in the pages, the scripts, the stylesheet
+# and the landing HTML the installer seeds.
+if grep -rnE "<(script|link)[^>]*(src|href)=(\"|')?https?://" "$REPO/frontend"/*.html \
+  || grep -rnE "fetch\(\s*('|\\\")?https?://|importScripts\(\s*('|\\\")?https?://" "$REPO/frontend" \
+  || grep -nE "@import[^;]*https?://|url\(\s*('|\\\")?https?://" "$REPO/frontend/assets/style.css" \
+  || grep -nE "<script[^>]*src=(\"|')?https?://" "$REPO/install.sh"; then
+  bad "external script/style/fetch reference in the frontend or installer"
+else
+  ok "the frontend loads nothing from another origin (vendored only, no CDN)"
+fi
+
 note "server log (errors?)"
 grep -iE 'panic|error' "$ROOT/server.log" | head -20 || true
 
