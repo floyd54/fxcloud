@@ -601,6 +601,13 @@
               () => openRekey(entry.id, t("enc.migrate.folder", { name: entry.name })),
             ]);
           }
+          // Names at rest (N1): the flag toggles with a walk - wrap
+          // first, flip after (N13); the server enforces owner/manager
+          // the same way it does for the zone.
+          items.push([
+            t("names.menu", { state: entry.names_enc ? t("zone.on") : t("zone.off") }),
+            () => openNamesWalk(entry),
+          ]);
           items.push([
             t("zone.menu", { state: entry.enc_zone ? t("zone.on") : t("zone.off") }),
             () => toggleZone(entry),
@@ -858,6 +865,24 @@
   }
 
   // ---------- data loading ----------
+  /** The server's own order, restored after decryption (N2/N8): a
+   *  flagged listing arrives sorted by blob - the server sorts what it
+   *  cannot read - which is no order a human asked for. Mirrors the
+   *  server's sort_entries: folders first, then name, case-insensitive. */
+  function sortByName(entries) {
+    entries.sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      const x = a.name.toLowerCase();
+      const y = b.name.toLowerCase();
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+  }
+
+  // The current folder's names-at-rest flag (concepts/names.md N1): the
+  // crumb trail ends at the folder itself, so its last crumb carries the
+  // answer the create and rename flows read.
+  let currentNamesEnc = false;
+
   async function loadFiles(parent) {
     const url = parent == null ? "/api/files" : `/api/files?parent=${parent}`;
     const [listRes, crumbRes] = await Promise.all([
@@ -866,6 +891,15 @@
         ? Promise.resolve({ breadcrumbs: [{ id: null, name: "Home" }] })
         : api(`/api/files/breadcrumb?id=${parent}`).then((r) => r.json()),
     ]);
+    // Names at rest (N2): decrypt what the server can only store as
+    // blobs - crumbs first (they render below), then the listing; the
+    // flag itself survives decryption and feeds the create flows.
+    const hadBlobs = listRes.entries.some((e) => e.name_enc);
+    await FXEnc.decryptCrumbs(crumbRes.breadcrumbs);
+    await FXEnc.decryptNames(listRes.entries, parent);
+    if (hadBlobs) sortByName(listRes.entries);
+    const lastCrumb = crumbRes.breadcrumbs[crumbRes.breadcrumbs.length - 1];
+    currentNamesEnc = !!(lastCrumb && lastCrumb.names_enc);
     renderBreadcrumb(crumbRes.breadcrumbs);
     // Remember every folder on the way here that holds encrypted rows: the
     // copy guard needs to know about a subtree, not just the listing in
@@ -894,6 +928,14 @@
   async function loadTrash() {
     const listRes = await api("/api/files/trash").then((r) => r.json());
     trashView = true;
+    // Names at rest: a trashed row keeps its flag (the row is the row),
+    // so each name opens through its own parent chain - and the server's
+    // blob order is replaced with the name order it would have shown.
+    const hadBlobs = listRes.entries.some((e) => e.name_enc);
+    for (const e of listRes.entries) {
+      if (e.name_enc) await FXEnc.decryptName(e);
+    }
+    if (hadBlobs) sortByName(listRes.entries);
     // Navigating starts a fresh selection — the old one described real files.
     selected.clear();
     lastCheckIndex = null;
@@ -1085,11 +1127,24 @@
     const name = prompt(t("prompt.newFolder"));
     if (!name || !name.trim()) return;
     try {
-      await api("/api/files/folder", {
+      const real = name.trim();
+      // Names at rest (N3): under a flag the AAD needs the row id, which
+      // does not exist yet - create under a random temp, rename to the
+      // id-bound blob right after. Never a plaintext name to the server.
+      const temp = await FXEnc.newRowName(currentParent);
+      const res = await api("/api/files/folder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ parent_id: currentParent, name: name.trim() }),
-      });
+        body: JSON.stringify({ parent_id: currentParent, name: temp || real }),
+      }).then((r) => r.json());
+      if (temp) {
+        const wrapped = await FXEnc.wrappedNameFor(currentParent, res.entry.id, real);
+        await api("/api/files/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: res.entry.id, name: wrapped }),
+        });
+      }
       await loadFiles(currentParent);
     } catch (e) {
       alert(e.message);
@@ -1142,12 +1197,24 @@
     // unlocks here instead of leaving a plaintext row in the zone.
     if (!(await ensureZoneUnlocked(currentParent))) return;
     try {
+      // Names at rest (N3): two-phase under a flag - random temp, then
+      // the id-bound blob - so the server never sees the plaintext.
+      const temp = await FXEnc.newRowName(currentParent);
       const res = await api("/api/files/file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ parent_id: currentParent, name: name }),
+        body: JSON.stringify({ parent_id: currentParent, name: temp || name }),
       }).then((r) => r.json());
       let entry = res.entry;
+      if (temp) {
+        const wrapped = await FXEnc.wrappedNameFor(currentParent, entry.id, name);
+        await api("/api/files/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: entry.id, name: wrapped }),
+        });
+        entry.name = name;
+      }
 
       // The badge decides, and the badge is honest about it: an Encrypted
       // tab writes the empty container immediately, so the row is encrypted
@@ -1205,7 +1272,12 @@
       await api("/api/files/rename", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, name: name.trim() }),
+        // Names at rest (N2): the row exists, so the wrap binds its id -
+        // plaintext under an unflagged parent, blob under a flagged one.
+        body: JSON.stringify({
+          id,
+          name: await FXEnc.wrapRename(currentParent, id, name.trim()),
+        }),
       });
       await loadFiles(currentParent);
     } catch (e) {
@@ -2022,12 +2094,7 @@
         continue;
       }
       try {
-        const res = await api("/api/files/folder/ensure", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ parent_id: parentId, name: seg }),
-        });
-        const body = await res.json();
+        const body = await FXEnc.ensureFolder(parentId, seg);
         parentId = body.entry.id;
         cache.set(acc, parentId);
       } catch (e) {
@@ -2093,10 +2160,27 @@
             // Two-phase: reserve the row, encrypt against its id, fill it.
             await FXEnc.encryptUpload(item.file, parentId, fileName);
           } else {
+            // Names at rest (N3): under a flag the multipart filename
+            // goes in as a random temp and is renamed to the id-bound
+            // blob the moment the row exists.
+            const temp = await FXEnc.newRowName(parentId);
             const fd = new FormData();
             fd.append("parent", parentId == null ? "" : String(parentId));
-            fd.append("file", item.file, fileName);
-            await api("/api/files/upload", { method: "POST", body: fd });
+            fd.append("file", item.file, temp || fileName);
+            const res = await api("/api/files/upload", { method: "POST", body: fd });
+            if (temp) {
+              const created = await res.json();
+              const wrapped = await FXEnc.wrappedNameFor(
+                parentId,
+                created.entry.id,
+                fileName
+              );
+              await api("/api/files/rename", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: created.entry.id, name: wrapped }),
+              });
+            }
           }
         } catch (e) {
           failures.push(t("upload.itemFail", { path: item.path, msg: e.message }));
@@ -2305,6 +2389,30 @@
         }
       }
       closeTransferDialog();
+      // Names at rest (N6): the move carried bytes, not context - a blob
+      // under the old parent's key has to be re-wrapped under the new
+      // one, and a name crossing the flag line changes shape. The rows
+      // themselves were loaded decrypted, so `entry.name` is plaintext
+      // throughout; only the destination's flag decides what it becomes.
+      const destFlagged =
+        dest.id == null ? false : await FXEnc.folderNamesEnc(dest.id);
+      for (const entry of transfer.entries) {
+        if (!movedIds.has(entry.id)) continue;
+        const wasBlob = !!entry.name_enc;
+        if (!wasBlob && !destFlagged) continue; // plain -> plain: no-op
+        const want = destFlagged
+          ? await FXEnc.wrappedNameFor(dest.id, entry.id, entry.name)
+          : entry.name;
+        try {
+          await api("/api/files/rename", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: entry.id, name: want }),
+          });
+        } catch (e) {
+          alert(e.message);
+        }
+      }
       // 409 (name exists), 403 (missing permission), 400 (into itself, …)
       reportOutcome(out);
       await loadFiles(currentParent);
@@ -2484,12 +2592,19 @@
           await loadShareList();
           //5.6/DECISION4: the row is gone and API access stops, but the
           // folder key itself is still out there - offer the re-key
-          // explicitly, never run it silently.
+          // explicitly, never run it silently. A flagged source shows its
+          // name as a blob: open it first, the prompt speaks words.
+          let shown = s.source_name;
+          if (s.name_enc) {
+            shown = (
+              await FXEnc.decryptName({ id: s.file_id, name: shown, name_enc: s.name_enc })
+            ).name;
+          }
           if (
             s.is_dir &&
-            window.confirm(t("enc.rekey.afterRevoke", { name: s.source_name }))
+            window.confirm(t("enc.rekey.afterRevoke", { name: shown }))
           ) {
-            openRekey(s.file_id, t("enc.migrate.folder", { name: s.source_name }));
+            openRekey(s.file_id, t("enc.migrate.folder", { name: shown }));
           }
         } catch (e) {
           alert(e.message);
@@ -2789,10 +2904,25 @@
       }
       // One envelope per item, never per selection: each record is wrapped
       // to its own row id, so two rows never share a blob (5.5).
+      // Names at rest (N4): a flagged row whose content is not encrypted
+      // has no key to wrap its label under - the server refuses that
+      // shape too, but saying it here costs no round trip.
+      const bareFlagged = shareEntries.filter(
+        (e) => e.name_enc && !e.is_dir && !FXEnc.isEncrypted(e)
+      );
+      if (bareFlagged.length > 0) {
+        alert(t("share.namesNoKey"));
+        return;
+      }
       const items = [];
       for (const entry of shareEntries) {
         const envelope = pubkey ? await FXEnc.shareEnvelope(entry, username, pubkey) : null;
-        items.push({ file_id: entry.id, envelope: envelope || undefined });
+        const display_name = await FXEnc.shareLabel(entry, username);
+        items.push({
+          file_id: entry.id,
+          envelope: envelope || undefined,
+          display_name: display_name || undefined,
+        });
       }
       // One request for the whole selection (a single item is just an array
       // of one, so both paths stay identical).
@@ -3168,6 +3298,78 @@
       runRotate(entry);
     };
     runRotate(entry);
+  }
+
+  // ---------- phase6: the names-at-rest walk (concepts/names.md N13) ----
+
+  function showNamesSummary(res) {
+    const summary = migrateEl("migrate-summary");
+    let text = t("names.done", {
+      rows: String(res.rows),
+      failed: String(res.failed.length),
+    });
+    if (res.failed.length) {
+      const names =
+        res.failed.slice(0, 6).join(", ") + (res.failed.length > 6 ? " (...)" : "");
+      text += " " + t("enc.migrate.failed", { names: names });
+    }
+    summary.textContent = text;
+    summary.hidden = false;
+  }
+
+  async function runNames(entry, flag) {
+    migrateCancel = false;
+    migrateRunning = true;
+    setMigrateMode("running");
+    migrateEl("migrate-summary").hidden = true;
+    migrateEl("migrate-status").textContent = flag ? t("names.enc") : t("names.dec");
+    try {
+      const res = await FXEnc.setNamesEncrypted(entry.id, flag, {
+        onProgress: (p) => {
+          migrateEl("migrate-status").textContent = t("upload.at", {
+            i: p.i,
+            n: p.n,
+            path: p.name,
+          });
+        },
+        cancelled: () => migrateCancel,
+      });
+      if (migrateModal.style.display === "none") return;
+      migrateEl("migrate-status").textContent = res.cancelled
+        ? t("enc.migrate.cancelled")
+        : t("enc.migrate.idle");
+      showNamesSummary(res);
+      setMigrateMode("idle");
+    } catch (e) {
+      if (migrateModal.style.display !== "none") {
+        migrateEl("migrate-status").textContent = e.message;
+        setMigrateMode("idle");
+      }
+    } finally {
+      migrateRunning = false;
+      loadFiles(currentParent).catch(() => {});
+    }
+  }
+
+  async function openNamesWalk(entry) {
+    if (migrateRunning) return;
+    if (!(await FXEnc.requestKeys())) return;
+    migrateEl("migrate-title").dataset.i18n = "names.title";
+    migrateEl("migrate-title").textContent = t("names.title");
+    migrateEl("migrate-scope").textContent = t("enc.migrate.folder", { name: entry.name });
+    migrateEl("migrate-summary").hidden = true;
+    migrateEl("migrate-status").textContent = t("enc.migrate.idle");
+    migrateModal.style.display = "flex";
+    document.addEventListener("keydown", migrateOnKey);
+    const flag = !entry.names_enc;
+    migrateEl("migrate-primary").onclick = () => {
+      if (migrateRunning) {
+        migrateCancel = true;
+        return;
+      }
+      runNames(entry, flag);
+    };
+    runNames(entry, flag);
   }
 
   // ---------- phase4: the recovery key on demand (ENCRYPTION.md 5.7) -----

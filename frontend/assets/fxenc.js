@@ -1042,11 +1042,20 @@
   async function encryptUpload(file, parentId, fileName) {
     if (!(await requestKeys())) throw new Error(t("enc.err.uploadCancelled"));
 
+    // Names at rest (N3): two-phase under a flag - the AAD needs the row
+    // id, so the row is reserved under a random temp and renamed to the
+    // id-bound blob before anything is written into it.
+    const temp = await newRowName(parentId);
     const created = await http(
       "/api/files/file",
-      jsonCall("POST", { parent_id: parentId, name: fileName })
+      jsonCall("POST", { parent_id: parentId, name: temp || fileName })
     ).then((r) => r.json());
     const id = created.entry.id;
+    if (temp) {
+      const wrapped = await wrappedNameFor(parentId, id, fileName);
+      await http("/api/files/rename", jsonCall("POST", { id: id, name: wrapped }));
+      created.entry.name = fileName;
+    }
 
     try {
       const plain = new Uint8Array(await file.arrayBuffer());
@@ -1502,6 +1511,22 @@
     }
   }
 
+  /** A mount's label (N4): `display_name`, wrapped under the shared
+   *  node's key with the share AAD - the grantee opens it with the key
+   *  their envelope already carries. `state.username` is the grantee, the
+   *  same AAD the sharer sealed with. */
+  async function mountPlain(id, blob) {
+    const key = shareKeys.get(id);
+    if (key === undefined) return null;
+    try {
+      return new TextDecoder().decode(
+        await FX().unwrap(key, b64urlDecode(blob), FX().shareEnvelopeAad(id, state.username))
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   /** Decrypt one row's name in place (N2): the name lives under the
    *  PARENT's key, so the chain walk resolves it exactly like a record.
    *  Single-row version for trash, share rows and dialogs; listings use
@@ -1545,7 +1570,11 @@
     const key = parentId == null ? state.session.rootKey : await chainKey(parentId);
     for (const e of entries) {
       if (!e.name_enc) continue;
-      const plain = await namePlain(key, e.id, e.name);
+      // A mount row's name is the share's display label (N4): wrapped
+      // under the node's key with the share AAD, not under a parent.
+      const plain = shareKeys.has(e.id)
+        ? await mountPlain(e.id, e.name)
+        : await namePlain(key, e.id, e.name);
       if (plain !== null) e.name = plain;
     }
     return entries;
@@ -1566,6 +1595,13 @@
     } else {
       key = state.session.rootKey;
       start = 0;
+    }
+    // The mount crumb (start === 1) is skipped by the loop below - its
+    // record comes from the envelope - but its NAME still has to open:
+    // the share's display label, same key, different AAD (N4).
+    if (start === 1 && crumbs[0] && crumbs[0].name_enc) {
+      const plain = await mountPlain(crumbs[0].id, crumbs[0].name);
+      if (plain !== null) crumbs[0].name = plain;
     }
     for (let i = start; i < crumbs.length; i++) {
       const c = crumbs[i];

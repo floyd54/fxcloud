@@ -2230,7 +2230,7 @@ fn incoming_mounts(conn: &Connection, user_id: i64) -> Result<Vec<FileEntry>, Ap
     let mut stmt = conn.prepare(
         "SELECT f.id, f.owner_id, f.parent_id, s.display_name, f.is_dir, f.size, f.mime,
                 f.created_at, f.modified_at, u.username, s.permissions,
-                f.enc_version, f.enc_key
+                f.enc_version, f.enc_key, f.name_enc, f.names_enc
          FROM shares s
          JOIN files f ON f.id = s.source_id
          JOIN users  u ON u.id = s.owner_id
@@ -2260,12 +2260,13 @@ fn incoming_mounts(conn: &Connection, user_id: i64) -> Result<Vec<FileEntry>, Ap
                 subtree_bytes: None,
                 enc_version: r.get(11)?,
                 enc_key: r.get::<_, Option<Vec<u8>>>(12)?.map(|b| BASE64.encode(b)),
-                // A mount is a view of the shares table, not a folder row:
-                // it has no flag of its own (a path *below* a mount walks
-                // the real parent chain, where the flag lives).
+                // A mount IS the source row, viewed through the share (same
+                // id), so its names-at-rest state is the row's own: the
+                // grantee's listing decrypts labels with the node key and
+                // inherits the flag for creates below the mount (N1/N4).
                 enc_zone: 0,
-                name_enc: 0,
-                names_enc: 0,
+                name_enc: r.get(13)?,
+                names_enc: r.get(14)?,
                 deleted_at: None,
                 purge_at: None,
             })

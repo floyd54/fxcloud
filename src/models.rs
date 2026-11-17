@@ -596,6 +596,10 @@ pub struct OutgoingShare {
     pub grantee_username: String,
     pub permissions: i64,
     pub created_at: DateTime<Utc>,
+    /// The source row's names-at-rest state (concepts/names.md): the
+    /// listing shows `source_name` as stored - a blob for a flagged row -
+    /// so the client needs the flag to decrypt it before display.
+    pub name_enc: i64,
 }
 
 /// One incoming share (item someone shared with me), with context.

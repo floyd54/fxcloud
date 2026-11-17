@@ -46,6 +46,20 @@ impl Db {
                 )
                 .optional()?
                 .ok_or(AppError::NotFound)?;
+            // Names at rest (concepts/names.md N4): a flagged row's label
+            // must be wrapped under a key the grantee receives - that key
+            // travels in the envelope. Without one (plaintext content in a
+            // flagged folder) there is no key to wrap under, and deriving
+            // the label from the stored blob would show the grantee
+            // ciphertext - so the share is refused instead.
+            if name_enc != 0 && envelope.is_none() {
+                return Err(AppError::BadRequest(
+                    "this row stores its name encrypted and its content is \
+                     not encrypted - encrypt it before sharing (concepts/\
+                     names.md N4)"
+                        .into(),
+                ));
+            }
             if let Some(group_id) = source_group {
                 // Group files take no incoming shares, and v1 draws no
                 // re-share *out of* a group folder to individuals
@@ -144,6 +158,7 @@ impl Db {
                 grantee_username: grantee_username.trim().to_string(),
                 permissions: perms,
                 created_at: now,
+                name_enc,
             })
         })
         .await
@@ -193,7 +208,8 @@ impl Db {
     pub async fn list_outgoing(&self, owner_id: i64) -> Result<Vec<OutgoingShare>, AppError> {
         self.run(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT s.id, s.source_id, f.name, f.is_dir != 0, u.username, s.permissions, s.created_at
+                "SELECT s.id, s.source_id, f.name, f.is_dir != 0, u.username, s.permissions,
+                        s.created_at, f.name_enc
                  FROM shares s
                  JOIN files f ON f.id = s.source_id
                  JOIN users  u ON u.id = s.grantee_id
@@ -210,6 +226,7 @@ impl Db {
                         grantee_username: r.get(4)?,
                         permissions: r.get(5)?,
                         created_at: parse_ts(&r.get::<_, String>(6)?, 6)?,
+                        name_enc: r.get(7)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -555,7 +572,10 @@ mod tests {
                 flagged,
                 "grantee".into(),
                 crate::sharing::PERM_ALL,
-                None,
+                // The label rides with an envelope: that is the key the
+                // grantee opens it with (N4), and the server accepts a
+                // client label only in that shape.
+                Some("env-for-label".into()),
                 Some(label.to_string()),
             )
             .await
@@ -570,6 +590,21 @@ mod tests {
             .expect("label row")
         };
         assert_eq!(stored, label, "a client label is stored verbatim");
+
+        // A flagged row without an envelope has no key to wrap its label
+        // under (N4): the share itself is refused, not just the label.
+        let err =
+            s.db.create_share(
+                owner,
+                flagged,
+                "grantee".into(),
+                crate::sharing::PERM_ALL,
+                None,
+                None,
+            )
+            .await
+            .expect_err("flagged plaintext row refuses a keyless share");
+        assert!(matches!(err, AppError::BadRequest(_)));
 
         let err =
             s.db.create_share(

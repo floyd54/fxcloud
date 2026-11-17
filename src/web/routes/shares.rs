@@ -211,6 +211,10 @@ pub async fn outgoing(
             "permissions": s.permissions,
             "permission_names": perm_names(s.permissions),
             "created_at": s.created_at,
+            // Concepts/names.md: source_name is a blob for a flagged row -
+            // the client decrypts it for display (and for the revoke
+            // prompt) when this flag is set.
+            "name_enc": s.name_enc,
         })).collect::<Vec<_>>(),
     })))
 }
