@@ -315,6 +315,17 @@ pub async fn upload(
         if parent != link.source_id && !grants(link.permissions, PERM_READ) {
             return Err(AppError::Forbidden);
         }
+        // Names at rest (concepts/names.md N11): a visitor's browser has
+        // no keys and sends a plaintext filename - it cannot wrap one for
+        // a folder that demands wrapping, so the upload is refused rather
+        // than stored in a form the owner's app would fail to decrypt.
+        if parent_entry.names_enc != 0 {
+            return Err(AppError::BadRequest(
+                "this folder stores encrypted names - uploads through a \
+                 public link are refused here"
+                    .into(),
+            ));
+        }
 
         let mime = crate::files::resolve_mime(mime.as_deref(), &sample);
         let entry = state

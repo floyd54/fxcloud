@@ -1207,6 +1207,20 @@ pub async fn put_enc_zone(
     Ok(Json(json!({ "entry": entry })))
 }
 
+/// PUT /api/files/nameenc - raise or lower the names-at-rest flag on a
+/// folder (concepts/names.md N1). The client wraps every name below
+/// first (and unwraps before lowering it), then flips this: the cascade
+/// marks exactly the rows the walk just rewrote. The request shape is
+/// the zone's (`{id, flag}`) - same authority, same clamp.
+pub async fn put_name_enc(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Json(req): Json<crate::models::SetZoneRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let entry = state.db.set_name_enc(user.id(), req.id, req.flag).await?;
+    Ok(Json(json!({ "entry": entry })))
+}
+
 // ---------------------------------------------------------------------------
 // Batch operations (multi-selection)
 // ---------------------------------------------------------------------------

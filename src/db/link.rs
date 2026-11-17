@@ -475,7 +475,7 @@ fn row_to_link(row: &rusqlite::Row<'_>) -> rusqlite::Result<PublicLink> {
 /// `ENTRY_COLS` without reaching into that module (which stays untouched).
 const ENTRY_COLS_FOR_LINK: &str =
     "id, owner_id, owner_group_id, parent_id, name, is_dir, size, mime, \
-     created_at, modified_at, deleted_at, enc_version";
+     created_at, modified_at, deleted_at, enc_version, name_enc, names_enc";
 
 /// Map one `files` row (per [`ENTRY_COLS_FOR_LINK`]) into a [`FileEntry`].
 ///
@@ -508,6 +508,11 @@ fn row_to_entry_for_link(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry>
         // The visitor surface decides access from the link's mask; a zone
         // flag would be policy the visitor cannot act on.
         enc_zone: 0,
+        // The names-at-rest state is real, not policy: the upload branch
+        // refuses a drop into a folder whose names demand wrapping
+        // (concepts/names.md N11), so the flag has to be read here.
+        name_enc: row.get("name_enc")?,
+        names_enc: row.get("names_enc")?,
     })
 }
 

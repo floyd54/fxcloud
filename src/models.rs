@@ -160,6 +160,19 @@ pub struct FileEntry {
     /// the breadcrumbs, so one request answers "is this path a zone?".
     #[serde(default)]
     pub enc_zone: i64,
+    /// Names at rest (concepts/names.md N1): `1` means this row's `name`
+    /// is a blob wrapped under its parent's key. Inherited from the
+    /// parent's flag at create and at move, so the client always knows
+    /// from the row alone whether to decrypt.
+    #[serde(default)]
+    pub name_enc: i64,
+    /// The folder flag of the same feature: `1` means "the names of my
+    /// children are blobs". Set by the client's flag walk, cascaded to
+    /// every descendant folder, inherited by creates - office, links,
+    /// WebDAV and the copy guard read this on a parent; the row's own
+    /// state is `name_enc` above.
+    #[serde(default)]
+    pub names_enc: i64,
 }
 
 /// One account's encryption key material (ENCRYPTION.md section 6).
@@ -350,6 +363,15 @@ pub struct Breadcrumb {
     /// can ask "does any ancestor demand the key?" in the same request.
     #[serde(default)]
     pub enc_zone: i64,
+    /// The crumb's names-at-rest flag (concepts/names.md N1): the client
+    /// needs it per hop to decrypt the crumb's own name on the way down.
+    #[serde(default)]
+    pub name_enc: i64,
+    /// The crumb folder's flag (`names_enc`): "my children's names are
+    /// blobs" - the path answer the client needs before wrapping a new
+    /// name into this folder.
+    #[serde(default)]
+    pub names_enc: i64,
 }
 
 /// Payload for creating a new folder.
@@ -608,6 +630,13 @@ pub struct CreateShareRequest {
     /// for plaintext sources, which need no exchange.
     #[serde(default)]
     pub envelope: Option<String>,
+    /// The mount label for a name-enc source (concepts/names.md N4),
+    /// built by the sharer's browser as `wrap(nodeKey, name, share AAD)`
+    /// so the grantee can open it with the key their envelope already
+    /// carries. Absent for plaintext rows: the server derives the label
+    /// from the stored name, as it always did.
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 /// Payload to replace the envelope on a share the caller owns.
@@ -740,6 +769,9 @@ pub struct ShareItem {
     /// See `CreateShareRequest::envelope`.
     #[serde(default)]
     pub envelope: Option<String>,
+    /// See `CreateShareRequest::display_name`.
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 /// Payload to prepare a ZIP download of a selection.

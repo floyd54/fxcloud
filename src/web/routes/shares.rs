@@ -25,6 +25,28 @@ pub struct OutgoingQuery {
 /// a truncated envelope would arrive at the grantee as an undecodable file.
 const ENVELOPE_MAX_CHARS: usize = 8192;
 
+/// Size ceiling for a client-built mount label (concepts/names.md N4).
+///
+/// For a name-enc row the label is a wrapped blob - roughly1.37 times the
+/// plaintext name, base64 - so the ceiling sits well above the plain name
+/// limit. The server cannot open it and therefore only bounds its size,
+/// exactly like an envelope.
+const DISPLAY_NAME_MAX: usize = 1024;
+
+/// Reject mount labels the server should not be carrying.
+fn check_display_name(display_name: &Option<String>) -> Result<(), AppError> {
+    match display_name {
+        None => Ok(()),
+        Some(name) if name.is_empty() => Err(AppError::BadRequest(
+            "empty display name - send the wrapped label or no field at all".into(),
+        )),
+        Some(name) if name.len() > DISPLAY_NAME_MAX => Err(AppError::BadRequest(format!(
+            "display name is too large - up to {DISPLAY_NAME_MAX} characters"
+        ))),
+        Some(_) => Ok(()),
+    }
+}
+
 /// Reject envelopes the server should not be carrying.
 ///
 /// The blob is opaque here by design (5.5) - the server can neither read it
@@ -60,10 +82,18 @@ pub async fn create(
     Json(req): Json<CreateShareRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     check_envelope(&req.envelope)?;
+    check_display_name(&req.display_name)?;
     let perms = req.permissions.unwrap_or(PERM_ALL);
     let share = state
         .db
-        .create_share(user.id(), req.file_id, req.username, perms, req.envelope)
+        .create_share(
+            user.id(),
+            req.file_id,
+            req.username,
+            perms,
+            req.envelope,
+            req.display_name,
+        )
         .await?;
     Ok(Json(json!({
         "share": {
@@ -97,6 +127,7 @@ pub async fn create_batch(
     // envelopes or the request never reaches a single one of them.
     for item in &req.items {
         check_envelope(&item.envelope)?;
+        check_display_name(&item.display_name)?;
     }
     let perms = req.permissions.unwrap_or(PERM_ALL);
     let mut out = BatchOutcome::default();
@@ -111,6 +142,7 @@ pub async fn create_batch(
                 req.username.clone(),
                 perms,
                 item.envelope,
+                item.display_name,
             )
             .await
         {

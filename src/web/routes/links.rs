@@ -69,6 +69,21 @@ pub async fn create(
     Json(req): Json<CreatePublicLinkRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let perms = check_preset(req.permissions)?;
+    // Names at rest (concepts/names.md N11): an anonymous visitor has no
+    // key, so a link on a row whose name is a blob would show them
+    // ciphertext - refuse the mint instead of shipping a broken page.
+    let entry = state
+        .db
+        .entry_for_read(user.id(), req.file_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if entry.name_enc != 0 {
+        return Err(AppError::BadRequest(
+            "this row stores its name encrypted - public links are \
+             refused on it (concepts/names.md N11)"
+                .into(),
+        ));
+    }
     let (link, token) = state
         .db
         .create_public_link(

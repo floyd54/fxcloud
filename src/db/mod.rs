@@ -245,6 +245,17 @@ impl Db {
                      WHERE name = 'auto_unlock'",
                 ),
             ),
+            // The names-at-rest flag (concepts/names.md, phase 6 S3):
+            // per-folder opt-in, inherited by every row created or moved
+            // below a flagged parent.
+            (
+                "022_name_enc",
+                include_str!("../../migrations/022_name_enc.sql"),
+                Some(
+                    "SELECT COUNT(*) FROM pragma_table_info('files')
+                     WHERE name = 'name_enc'",
+                ),
+            ),
         ];
         let conn = self.pool.get()?;
         for (name, sql, guard) in MIGRATIONS {

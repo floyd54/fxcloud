@@ -42,6 +42,8 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
             .get::<_, Option<Vec<u8>>>("enc_key")?
             .map(|b| BASE64.encode(b)),
         enc_zone: row.get("enc_zone")?,
+        name_enc: row.get("name_enc")?,
+        names_enc: row.get("names_enc")?,
         deleted_at: deleted_at.as_deref().map(|s| parse_ts(s, 9)).transpose()?,
         purge_at: None,
     })
@@ -163,11 +165,22 @@ fn ensure_quota(conn: &Connection, principal: TreeOwner, additional: i64) -> Res
 }
 
 const ENTRY_COLS: &str = "id, owner_id, owner_group_id, parent_id, name, is_dir, size, mime, \
-                         created_at, modified_at, deleted_at, enc_version, enc_key, enc_zone";
+                         created_at, modified_at, deleted_at, enc_version, enc_key, enc_zone, \
+                         name_enc, names_enc";
 
 /// One breadcrumb step's columns as [`Db::breadcrumbs`] reads them:
-/// (name, parent_id, owner_id, owner_group_id, enc_key, enc_zone).
-type CrumbRow = (String, Option<i64>, i64, Option<i64>, Option<Vec<u8>>, i64);
+/// (name, parent_id, owner_id, owner_group_id, enc_key, enc_zone, name_enc,
+/// names_enc).
+type CrumbRow = (
+    String,
+    Option<i64>,
+    i64,
+    Option<i64>,
+    Option<Vec<u8>>,
+    i64,
+    i64,
+    i64,
+);
 
 /// Enforce the count bound on one file's history: keep the newest `keep`
 /// versions, collect and delete the rest. `keep <= 0` disables the bound
@@ -348,8 +361,10 @@ impl Db {
             let now = Utc::now().to_rfc3339();
             conn.execute(
                 "INSERT INTO files (owner_id, owner_group_id, parent_id, name, is_dir, size,
-                                    mime, created_at, modified_at)
-                 VALUES (?1, ?2, ?3, ?4, 1, 0, NULL, ?5, ?5)",
+                                    mime, created_at, modified_at, name_enc, names_enc)
+                 VALUES (?1, ?2, ?3, ?4, 1, 0, NULL, ?5, ?5,
+                         COALESCE((SELECT names_enc FROM files WHERE id = ?3),0),
+                         COALESCE((SELECT names_enc FROM files WHERE id = ?3),0))",
                 params![owner, owner_group_id, parent_id, name, now],
             )
             .map_err(|e| map_constraint(e, &name))?;
@@ -388,8 +403,11 @@ impl Db {
             let now = Utc::now().to_rfc3339();
             conn.execute(
                 "INSERT INTO files (owner_id, owner_group_id, parent_id, name, is_dir, size,
-                                    mime, created_at, modified_at, enc_version, enc_key)
-                 VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?7, ?8, ?9)",
+                                    mime, created_at, modified_at, enc_version, enc_key,
+                                    name_enc, names_enc)
+                 VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?7, ?8, ?9,
+                         COALESCE((SELECT names_enc FROM files WHERE id = ?3),0),
+                         COALESCE((SELECT names_enc FROM files WHERE id = ?3),0))",
                 params![
                     owner,
                     owner_group_id,
@@ -492,8 +510,10 @@ impl Db {
             let now = Utc::now().to_rfc3339();
             conn.execute(
                 "INSERT INTO files (owner_id, owner_group_id, parent_id, name, is_dir, size,
-                                    mime, created_at, modified_at)
-                 VALUES (?1, ?2, ?3, ?4, 1, 0, NULL, ?5, ?5)",
+                                    mime, created_at, modified_at, name_enc, names_enc)
+                 VALUES (?1, ?2, ?3, ?4, 1, 0, NULL, ?5, ?5,
+                         COALESCE((SELECT names_enc FROM files WHERE id = ?3),0),
+                         COALESCE((SELECT names_enc FROM files WHERE id = ?3),0))",
                 params![owner, owner_group_id, parent_id, name, now],
             )
             .map_err(|e| map_constraint(e, &name))?;
@@ -786,21 +806,25 @@ impl Db {
                 if hops > 64 {
                     return Err(AppError::NotFound);
                 }
-                let (name, parent, owner, group, enc_key, enc_zone): CrumbRow = conn.query_row(
-                    "SELECT name, parent_id, owner_id, owner_group_id, enc_key, enc_zone
+                let (name, parent, owner, group, enc_key, enc_zone, name_enc, names_enc): CrumbRow =
+                    conn.query_row(
+                        "SELECT name, parent_id, owner_id, owner_group_id, enc_key, enc_zone,
+                            name_enc, names_enc
                        FROM files WHERE id = ?1",
-                    params![cid],
-                    |r| {
-                        Ok((
-                            r.get(0)?,
-                            r.get(1)?,
-                            r.get(2)?,
-                            r.get(3)?,
-                            r.get(4)?,
-                            r.get(5)?,
-                        ))
-                    },
-                )?;
+                        params![cid],
+                        |r| {
+                            Ok((
+                                r.get(0)?,
+                                r.get(1)?,
+                                r.get(2)?,
+                                r.get(3)?,
+                                r.get(4)?,
+                                r.get(5)?,
+                                r.get(6)?,
+                                r.get(7)?,
+                            ))
+                        },
+                    )?;
                 top_owner = Some(owner);
                 top_group = group;
                 trail.push(Breadcrumb {
@@ -808,6 +832,8 @@ impl Db {
                     name,
                     enc_key: enc_key.map(|b| BASE64.encode(b)),
                     enc_zone,
+                    name_enc,
+                    names_enc,
                 });
                 current = parent;
             }
@@ -845,6 +871,12 @@ impl Db {
                     // No row either, so no zone: the root can never demand
                     // the key - only a real folder can carry the flag.
                     enc_zone: 0,
+                    // Nor a name to wrap: the root's own name is the
+                    // account's Home, never stored (concepts/names.md N1).
+                    name_enc: 0,
+                    // And no children whose names could be blobs: the root
+                    // is never flagged (the flag lives on real folders).
+                    names_enc: 0,
                 },
             );
             Ok(trail)
@@ -1139,6 +1171,9 @@ impl Db {
                          UPDATE files SET
                              parent_id = CASE WHEN id = ?1 THEN ?2 ELSE parent_id END,
                              name = CASE WHEN id = ?1 THEN ?3 ELSE name END,
+                             name_enc = CASE WHEN id = ?1
+                                 THEN COALESCE((SELECT names_enc FROM files WHERE id = ?2),0)
+                                 ELSE name_enc END,
                              modified_at = CASE WHEN id = ?1 THEN ?4 ELSE modified_at END,
                              owner_group_id = ?5,
                              owner_id = COALESCE(?6, owner_id)
@@ -1154,7 +1189,8 @@ impl Db {
                 let (user, group) = principal_params(src);
                 conn.execute(
                     &format!(
-                        "UPDATE files SET parent_id = ?1, name = ?2, modified_at = ?3
+                        "UPDATE files SET parent_id = ?1, name = ?2, modified_at = ?3,
+                             name_enc = COALESCE((SELECT names_enc FROM files WHERE id = ?1),0)
                          WHERE id = ?4 AND {PRINCIPAL_GUARD}"
                     ),
                     params![new_parent, new_name, now, id, user, group],
@@ -1549,6 +1585,27 @@ impl Db {
         .await
     }
 
+    /// How many rows in a subtree carry a wrapped name (concepts/names.md
+    /// N7). Count only: the names are blobs, so listing them in an error
+    /// message would show the user ciphertext.
+    pub async fn subtree_wrapped_count(&self, id: i64) -> Result<i64, AppError> {
+        self.run(move |conn| {
+            let count: i64 = conn.query_row(
+                "WITH RECURSIVE subtree(id) AS (
+                     SELECT id FROM files WHERE id = ?1
+                     UNION ALL
+                     SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+                 )
+                 SELECT COUNT(*) FROM files
+                  WHERE id IN (SELECT id FROM subtree) AND name_enc = 1",
+                params![id],
+                |r| r.get(0),
+            )?;
+            Ok(count)
+        })
+        .await
+    }
+
     /// Store a row's key record, replacing whatever it held (ENCRYPTION.md
     /// 5.5), without touching the row's bytes.
     ///
@@ -1675,6 +1732,80 @@ impl Db {
             conn.execute(
                 &format!("UPDATE files SET enc_zone = ?1 WHERE id = ?2 AND {PRINCIPAL_GUARD}"),
                 params![flag, id, user, group],
+            )?;
+            get_entry_by_id(conn, id)
+        })
+        .await
+    }
+
+    /// Raise or lower the names-at-rest flag on a folder (concepts/names.md
+    /// N1/N13): the folder's `names_enc` flips and every row below it is
+    /// marked to match - the folder itself excluded, because its own name
+    /// belongs to its parent's context. Same authority as the zone flag:
+    /// PERM_UPDATE, but only the owner (or group manager) may change it.
+    ///
+    /// The server cannot verify the wrap - it holds no keys - so the flag
+    /// is the client's promise, exactly the trust the encryption zone
+    /// rides on. The client wraps every name below *before* calling this
+    /// (and unwraps before lowering it), so no reader ever meets a mark
+    /// without the blob to match it.
+    pub async fn set_name_enc(
+        &self,
+        user_id: i64,
+        id: i64,
+        flag: i64,
+    ) -> Result<FileEntry, AppError> {
+        let flag = if flag == 0 { 0 } else { 1 };
+        self.run(move |conn| {
+            let principal = update_target(conn, user_id, id, crate::sharing::PERM_UPDATE)?;
+            let (user, group) = principal_params(principal);
+            let is_dir: bool = conn
+                .query_row(
+                    &format!("SELECT is_dir != 0 FROM files WHERE id = ?1 AND {PRINCIPAL_GUARD}"),
+                    params![id, user, group],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or(AppError::NotFound)?;
+            if !is_dir {
+                return Err(AppError::BadRequest(
+                    "only folders carry the encrypted-names flag".into(),
+                ));
+            }
+            let may_set = match principal {
+                TreeOwner::User(owner) => user_id == owner,
+                TreeOwner::Group(group_id) => matches!(
+                    group_role(conn, user_id, group_id)?,
+                    Some(role) if role == crate::sharing::ROLE_MANAGER
+                ),
+            };
+            if !may_set {
+                return Err(AppError::ForbiddenDetail(
+                    match principal {
+                        TreeOwner::User(_) => "only the row's owner may change its names flag",
+                        TreeOwner::Group(_) => {
+                            "only a group manager may change this folder's names flag"
+                        }
+                    }
+                    .into(),
+                ));
+            }
+            conn.execute(
+                &format!("UPDATE files SET names_enc = ?1 WHERE id = ?2 AND {PRINCIPAL_GUARD}"),
+                params![flag, id, user, group],
+            )?;
+            // The row marks follow the promise: everything below the flag
+            // carries wrapped names now (or carried them until the client
+            // unwrapped, on the way down).
+            conn.execute(
+                "WITH RECURSIVE subtree(id) AS (
+                     SELECT id FROM files WHERE id = ?1
+                     UNION ALL
+                     SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+                 )
+                 UPDATE files SET name_enc = ?2
+                  WHERE id IN (SELECT id FROM subtree) AND id != ?1",
+                params![id, flag],
             )?;
             get_entry_by_id(conn, id)
         })
@@ -2133,6 +2264,8 @@ fn incoming_mounts(conn: &Connection, user_id: i64) -> Result<Vec<FileEntry>, Ap
                 // it has no flag of its own (a path *below* a mount walks
                 // the real parent chain, where the flag lives).
                 enc_zone: 0,
+                name_enc: 0,
+                names_enc: 0,
                 deleted_at: None,
                 purge_at: None,
             })
@@ -2507,6 +2640,8 @@ mod tests {
             enc_version: 0,
             enc_key: None,
             enc_zone: 0,
+            name_enc: 0,
+            names_enc: 0,
         };
 
         let mut entries = vec![

@@ -12,7 +12,13 @@ impl Db {
     /// Share `source_id` (owned by `owner_id`) with `grantee_username`.
     ///
     /// The share is surfaced in the grantee's root under a display name derived
-    /// from the source name, uniquified against that user's root.
+    /// from the source name, uniquified against that user's root - unless the
+    /// caller brings its own label (concepts/names.md N4): for a row whose
+    /// name is a blob the client wraps the label under the shared node's
+    /// key, because the grantee can open that key and the server cannot
+    /// read the source name to derive anything from it. A client label is
+    /// stored verbatim: the uniquify suffix appends plaintext to a blob
+    /// and would break the grantee's unwrap.
     pub async fn create_share(
         &self,
         owner_id: i64,
@@ -20,21 +26,23 @@ impl Db {
         grantee_username: String,
         permissions: i64,
         envelope: Option<String>,
+        display_name: Option<String>,
     ) -> Result<OutgoingShare, AppError> {
         let perms = normalize(permissions);
         self.run(move |conn| {
             // Source must exist, be a personal row, and belong to the owner.
-            let (source_name, is_dir, row_owner, source_group): (
+            let (source_name, is_dir, row_owner, source_group, name_enc): (
                 String,
                 bool,
                 i64,
                 Option<i64>,
+                i64,
             ) = conn
                 .query_row(
-                    "SELECT name, is_dir != 0, owner_id, owner_group_id
+                    "SELECT name, is_dir != 0, owner_id, owner_group_id, name_enc
                        FROM files WHERE id = ?1",
                     params![source_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
                 .optional()?
                 .ok_or(AppError::NotFound)?;
@@ -96,7 +104,21 @@ impl Db {
                 params![owner_id],
                 |r| r.get(0),
             )?;
-            let display_name = uniquify_root_name(conn, grantee_id, &source_name, &owner_username)?;
+            let display_name = match display_name {
+                Some(label) => {
+                    // A client-built label only makes sense on a row whose
+                    // name is a blob; on a plaintext row the server's own
+                    // derivation is strictly better (and a blob label would
+                    // show the grantee ciphertext).
+                    if name_enc == 0 {
+                        return Err(AppError::BadRequest(
+                            "display_name applies only to rows with encrypted names".into(),
+                        ));
+                    }
+                    label
+                }
+                None => uniquify_root_name(conn, grantee_id, &source_name, &owner_username)?,
+            };
 
             let now = Utc::now();
             conn.execute(
@@ -466,6 +488,7 @@ mod tests {
                 "grantee".into(),
                 crate::sharing::PERM_ALL,
                 Some("env-old".into()),
+                None,
             )
             .await
             .expect("share created");
@@ -502,5 +525,64 @@ mod tests {
                 .await
                 .expect_err("revoked row");
         assert!(matches!(err, AppError::NotFound));
+    }
+
+    /// Concepts/names.md N4: a client-built mount label lands verbatim
+    /// (no uniquify suffix may touch a blob), and a plaintext row refuses
+    /// one - the server's own derivation is the only label there, so a
+    /// blob would show the grantee ciphertext.
+    #[tokio::test]
+    async fn client_labels_are_verbatim_and_guarded() {
+        let s = scratch();
+        let (owner, peer, flagged, plain) = {
+            let conn = s.db.pool.get().unwrap();
+            let o = user(&conn, "owner");
+            let g = user(&conn, "grantee");
+            let flagged = add_file(&conn, o, "proj");
+            conn.execute(
+                "UPDATE files SET name_enc = 1 WHERE id = ?1",
+                params![flagged],
+            )
+            .expect("flag the row");
+            let plain = add_file(&conn, o, "plain.txt");
+            (o, g, flagged, plain)
+        };
+
+        let label = "dGhpcyBpcyBhIGJsb2I=";
+        let share =
+            s.db.create_share(
+                owner,
+                flagged,
+                "grantee".into(),
+                crate::sharing::PERM_ALL,
+                None,
+                Some(label.to_string()),
+            )
+            .await
+            .expect("labelled share");
+        let stored: String = {
+            let conn = s.db.pool.get().unwrap();
+            conn.query_row(
+                "SELECT display_name FROM shares WHERE id = ?1",
+                params![share.id],
+                |r| r.get(0),
+            )
+            .expect("label row")
+        };
+        assert_eq!(stored, label, "a client label is stored verbatim");
+
+        let err =
+            s.db.create_share(
+                owner,
+                plain,
+                "grantee".into(),
+                crate::sharing::PERM_ALL,
+                None,
+                Some(label.to_string()),
+            )
+            .await
+            .expect_err("plaintext row refuses a blob label");
+        assert!(matches!(err, AppError::BadRequest(_)));
+        let _ = peer;
     }
 }

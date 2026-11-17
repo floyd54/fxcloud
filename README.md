@@ -42,7 +42,9 @@ with sharing, quotas and version history. New to fxcloud? The
   works directly ([concepts/groups.md](concepts/groups.md)).
 - **Encryption** - files are encrypted in the browser before they leave
   it; the server stores ciphertext and a wrapped key
-  ([ENCRYPTION.md](ENCRYPTION.md)).
+  ([ENCRYPTION.md](ENCRYPTION.md)). Names at rest wraps file names per
+  folder, so the server stores blobs where it used to read words
+  ([concepts/names.md](concepts/names.md)).
 - **Quotas** - 1 GiB per account by default, enforced with
   `507 Insufficient Storage`, usage shown in the topbar
   ([concepts/quotas.md](concepts/quotas.md)).

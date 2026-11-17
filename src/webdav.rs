@@ -143,6 +143,10 @@ async fn resolve(
 struct ParentTarget {
     id: Option<i64>,
     permissions: i64,
+    /// The names-at-rest folder flag (concepts/names.md N1): a move over
+    /// DAV must not land a plaintext name under a folder that demands
+    /// wrapping.
+    names_enc: i64,
 }
 
 /// Resolve a *parent* directory path for a create/move/copy operation.
@@ -160,6 +164,7 @@ async fn resolve_parent(
         return Ok(ParentTarget {
             id: None,
             permissions: crate::sharing::PERM_ALL,
+            names_enc: 0,
         });
     }
     match state.db.resolve_path(owner_id, segments.to_vec()).await {
@@ -168,6 +173,7 @@ async fn resolve_parent(
                 Ok(ParentTarget {
                     id: Some(e.id),
                     permissions: e.permissions,
+                    names_enc: e.names_enc,
                 })
             } else {
                 Err(conflict())
@@ -640,6 +646,13 @@ async fn move_resource(
     if !crate::sharing::grants(dest_parent.permissions, crate::sharing::PERM_CREATE) {
         return forbidden();
     }
+    // Names at rest (concepts/names.md N9): a flagged row's name is a
+    // blob only the app can re-wrap for a new parent, and a plaintext
+    // name must not land where the folder demands wrapping - either way
+    // MOVE over DAV would strand the row.
+    if src_entry.name_enc != 0 || dest_parent.names_enc != 0 {
+        return forbidden();
+    }
 
     let existing = match state.db.resolve_path(owner_id, dest.clone()).await {
         Ok(e) => e,
@@ -706,6 +719,34 @@ pub(crate) async fn copy_recursive(
             "{what} cannot be copied yet - a copy gets a new row id and would \
              need its key record re-wrapped under the destination key first; \
              download and upload it instead"
+        )));
+    }
+    // Names at rest (concepts/names.md N7): a copy either carries a blob
+    // the destination cannot read, or would land a plaintext name under a
+    // folder that demands wrapping. A copy re-wraps nothing, so both
+    // directions are refused whole, like the keyed rows above.
+    if let Some(dp) = dst_parent {
+        let dest_flagged = state
+            .db
+            .entry_for_read(owner_id, dp)
+            .await
+            .ok()
+            .flatten()
+            .map(|e| e.names_enc != 0)
+            .unwrap_or(false);
+        if dest_flagged {
+            return Err(AppError::Conflict(
+                "the destination folder stores encrypted names - a copy \
+                 cannot wrap them here; download and upload it instead"
+                    .into(),
+            ));
+        }
+    }
+    let wrapped = state.db.subtree_wrapped_count(src.id).await?;
+    if wrapped > 0 {
+        return Err(AppError::Conflict(format!(
+            "{wrapped} item(s) carry encrypted names - a copy would land \
+             them as unreadable blobs; download and upload them instead"
         )));
     }
     state.db.check_quota(owner_id, dst_parent, total).await?;

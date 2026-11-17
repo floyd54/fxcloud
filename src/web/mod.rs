@@ -226,6 +226,7 @@ pub fn build_router(state: SharedState) -> Router {
     // Policy: a folder that demands the key for new writes below it
     // (the phase4 write zone, ENCRYPTION.md 12).
     let api = api.route("/files/zone", put(routes::files::put_enc_zone));
+    let api = api.route("/files/nameenc", put(routes::files::put_name_enc));
     // Sharing
     let api = api
         .route("/shares", post(routes::shares::create))

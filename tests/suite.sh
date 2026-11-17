@@ -1797,6 +1797,15 @@ note "public links: what the server refuses"
 LONG=$(perl -e 'print "x" x 201')
 [ "$(reqcode POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":1,\"label\":\"$LONG\"}")" = "400" ] \
   && ok "a label over 200 characters is refused (400)" || bad "long label accepted"
+# Names at rest (concepts/names.md N11): a row whose name is a blob
+# refuses a public link - the anonymous visitor has no key. The flag is
+# set straight in the fixture (the API flag lives on folders) and
+# restored right after, so the checks below still see the plain row.
+sqlite3 "$DATA/fxcloud.db" "UPDATE files SET name_enc =1 WHERE id = $PUB"
+[ "$(reqcode POST /api/links "$JA" "{\"file_id\":$PUB,\"permissions\":1}")" = "400" ] \
+  && ok "a row with an encrypted name refuses a public link (400)" \
+  || bad "link minted on an encrypted name"
+sqlite3 "$DATA/fxcloud.db" "UPDATE files SET name_enc =0 WHERE id = $PUB"
 [ "$(reqcode POST /api/links "$JB" "{\"file_id\":$PUB,\"permissions\":1}")" = "404" ] \
   && ok "minting on someone else's folder is a 404" || bad "bob minted a link"
 RC=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
@@ -1986,6 +1995,17 @@ echo "$FMETA" | grep -q '"can_read":true' && echo "$FMETA" | grep -q '"can_creat
 [ "$(curl -s -o /dev/null -w '%{http_code}' -F "parent=$PSUB" -F "file=@$ROOT/src/vis.txt" \
   "$BASE/api/public/$FULLT/upload")" = "200" ] \
   && ok "a full visitor may upload into a subfolder" || bad "deep upload"
+# Names at rest (concepts/names.md N11): a visitor's browser sends a
+# plaintext filename and has no key to wrap one - a folder that demands
+# wrapping refuses the drop instead of storing a name the owner's app
+# could not decrypt. Flag down again, the checks below keep using PSUB.
+FLAGRC=$(reqcode PUT /api/files/nameenc "$JA" "{\"id\":$PSUB,\"flag\":1}")
+UPRC=$(curl -s -o /dev/null -w '%{http_code}' -F "parent=$PSUB" -F "file=@$ROOT/src/vis.txt" \
+  "$BASE/api/public/$FULLT/upload")
+[ "$FLAGRC" = "200" ] && [ "$UPRC" = "400" ] \
+  && ok "a visitor upload into an encrypted-names folder is refused (400)" \
+  || bad "visitor upload into flagged folder: flag=$FLAGRC upload=$UPRC"
+reqcode PUT /api/files/nameenc "$JA" "{\"id\":$PSUB,\"flag\":0}" >/dev/null
 # Containment hands back the row that was asked for: a file id as the
 # destination is a file, never the shared folder behind it.
 [ "$(curl -s -o /dev/null -w '%{http_code}' -F "parent=$PL" -F "file=@$ROOT/src/vis.txt" \
@@ -2495,6 +2515,28 @@ RC=$(reqcode PUT "/api/shares/$AID" "$JB" '{"envelope":"intruder"}')
 RC=$(reqcode PUT "/api/shares/$AID" "$JA" '{"envelope":""}')
 [ "$RC" = "400" ] && ok "an empty envelope is refused on re-seal" \
   || bad "empty re-seal answered $RC"
+
+note "names at rest: the flag goes up, children inherit it, it comes down"
+RC=$(reqcode PUT /api/files/nameenc "$JA" "{\"id\":$DOC,\"flag\":1}")
+FLAGUP=$(req GET "/api/files/info?id=$DOC" "$JA" | perl -MJSON::PP -0777 -e 'my $d = decode_json(do { local $/; <STDIN> }); print $d->{entry}{names_enc}')
+[ "$RC" = "200" ] && [ "$FLAGUP" = "1" ] \
+  && ok "the names flag goes up on the folder" \
+  || bad "flag up: RC=$RC flag=$FLAGUP"
+req POST /api/files/folder "$JA" "{\"name\":\"flagged-child\",\"parent_id\":$DOC}" >/dev/null
+CHILDINFO=$(req GET "/api/files?parent=$DOC" "$JA" | perl -MJSON::PP -0777 -e 'for my $e (@{decode_json(do { local $/; <STDIN> })->{entries} || []}) { if ($e->{name} eq "flagged-child") { print $e->{id} . " " . $e->{name_enc}; last } }')
+CHILDID=$(echo "$CHILDINFO" | cut -d' ' -f1)
+CHILDENC=$(echo "$CHILDINFO" | cut -d' ' -f2)
+[ -n "$CHILDID" ] && [ "$CHILDENC" = "1" ] \
+  && ok "a child created under the flag inherits name_enc" \
+  || bad "inheritance: id=$CHILDID enc=$CHILDENC"
+RC=$(reqcode PUT /api/files/nameenc "$JA" "{\"id\":$DOC,\"flag\":0}")
+FLAGDOWN=$(req GET "/api/files/info?id=$DOC" "$JA" | perl -MJSON::PP -0777 -e 'my $d = decode_json(do { local $/; <STDIN> }); print $d->{entry}{names_enc}')
+CHILDENC2=$(req GET "/api/files?parent=$DOC" "$JA" | perl -MJSON::PP -0777 -e 'for my $e (@{decode_json(do { local $/; <STDIN> })->{entries} || []}) { if ($e->{name} eq "flagged-child") { print $e->{name_enc}; last } }')
+[ "$RC" = "200" ] && [ "$FLAGDOWN" = "0" ] && [ "$CHILDENC2" = "0" ] \
+  && ok "lowering the flag clears the folder and its children" \
+  || bad "flag down: RC=$RC flag=$FLAGDOWN child=$CHILDENC2"
+req POST /api/files/batch/delete "$JA" "{\"ids\":[$CHILDID]}" >/dev/null
+reqcode POST /api/files/trash/purge "$JA" "{\"id\":$CHILDID}" >/dev/null
 
 # The body shape moved with the exchange: `items` names the row *and* its
 # envelope, so the retired field cannot silently be shared without one. The

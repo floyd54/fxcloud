@@ -129,6 +129,24 @@ fn verify_token(secret: &str, token: &str, file_id: i64) -> Result<OfficeClaims,
 /// the same `word`/`cell`/`slide` segments. Unknown types never reach here
 /// from the UI; the API refuses them so a hand-built session cannot smuggle
 /// one in.
+/// The name the office engine sees (concepts/names.md N10): the stored
+/// name, or - for a row whose name is a blob - a synthetic label built
+/// from the plaintext MIME, which is all `doc_kind` needs (an
+/// extension). The user's title never reaches the engine in that case;
+/// the file id keeps the label unique. Takes primitives so the rule is
+/// testable without assembling a whole [`FileEntry`].
+fn engine_label(id: i64, name: &str, mime: &Option<String>, name_enc: i64) -> String {
+    if name_enc == 0 {
+        return name.to_string();
+    }
+    let ext = mime
+        .as_deref()
+        .and_then(mime_guess::get_mime_extensions_str)
+        .and_then(|exts| exts.first().copied())
+        .unwrap_or("bin");
+    format!("enc-{id}.{ext}")
+}
+
 fn doc_kind(name: &str) -> Option<&'static str> {
     let ext = name.rsplit('.').next()?.to_ascii_lowercase();
     match ext.as_str() {
@@ -258,8 +276,13 @@ pub async fn start(
         ));
     }
     state.db.require_update(user.id(), entry.id).await?;
-    let kind = doc_kind(&entry.name)
-        .ok_or_else(|| AppError::BadRequest("this file type has no office editor".into()))?;
+    let kind = doc_kind(&engine_label(
+        entry.id,
+        &entry.name,
+        &entry.mime,
+        entry.name_enc,
+    ))
+    .ok_or_else(|| AppError::BadRequest("this file type has no office editor".into()))?;
     let base = wopi_base(&state, &headers).await?;
     let now_ms = Utc::now().timestamp_millis();
     let (token, exp_ms) = mint_token(secret, entry.id, user.id(), now_ms);
@@ -300,9 +323,10 @@ pub async fn checkfileinfo(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let token = q.access_token.ok_or(AppError::NotFound)?;
     let (claims, user, entry) = authenticate(&state, &token, file_id).await?;
+    let engine = engine_label(entry.id, &entry.name, &entry.mime, entry.name_enc);
     Ok(Json(json!({
-        "BaseFileName": entry.name,
-        "FileName": entry.name,
+        "BaseFileName": engine,
+        "FileName": engine,
         "Size": entry.size,
         "Version": version_string(&entry.modified_at),
         "LastModifiedTime": iso_utc(&entry.modified_at),
@@ -491,5 +515,18 @@ mod tests {
             hex,
             "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
         );
+    }
+
+    /// The name the engine gets (concepts/names.md N10): the stored name
+    /// while it is plaintext, a synthetic label with the real extension
+    /// once it is a blob - `doc_kind` keys off the extension, so the
+    /// editor still picks the right one; without a MIME to guess from
+    /// the label falls back to `.bin` rather than failing.
+    #[test]
+    fn engine_label_is_synthetic_only_for_wrapped_rows() {
+        let pdf = Some("application/pdf".to_string());
+        assert_eq!(engine_label(9, "report.pdf", &pdf, 0), "report.pdf");
+        assert_eq!(engine_label(9, "a blob", &pdf, 1), "enc-9.pdf");
+        assert_eq!(engine_label(9, "a blob", &None, 1), "enc-9.bin");
     }
 }
