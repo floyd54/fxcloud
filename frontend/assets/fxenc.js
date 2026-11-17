@@ -1451,6 +1451,292 @@
     return res;
   }
 
+  // ------------------------------------------------------------------------
+  // names at rest (concepts/names.md)
+  // ------------------------------------------------------------------------
+
+  // folder id -> its names_enc flag, so a create or rename does not fetch
+  // the parent's info every time. Cleared by the toggle itself and by the
+  // lock, like the other caches.
+  const nameEncCache = new Map();
+
+  /** URL-safe base64 (N3): the server's name validator refuses `/`, which
+   *  the standard alphabet contains. Swap on the way out, swap back before
+   *  any FX().b64decode - that one runs through atob, which rejects `-_`. */
+  function b64url(bytes) {
+    return FX().b64encode(bytes).replace(/\+/g, "-").replace(/\//g, "_");
+  }
+
+  function b64urlDecode(str) {
+    return FX().b64decode(String(str).replace(/-/g, "+").replace(/_/g, "/"));
+  }
+
+  /** Is this folder flagged ("my children's names are blobs")? The root
+   *  never is - the flag lives on real folders (N1). */
+  async function folderNamesEnc(parentId) {
+    if (parentId == null) return false;
+    const cached = nameEncCache.get(parentId);
+    if (cached !== undefined) return cached;
+    const info = await http("/api/files/info?id=" + parentId).then((r) => r.json());
+    const flagged = !!(info.entry && info.entry.names_enc);
+    nameEncCache.set(parentId, flagged);
+    return flagged;
+  }
+
+  /** `wrap(parentKey, utf8(name), childKeyAad(id))` as a URL-safe blob -
+   *  a name is a wrapped value like any other (N3). */
+  async function nameBlob(key, id, name) {
+    return b64url(await FX().wrap(key, FX().utf8(name), FX().childKeyAad(id)));
+  }
+
+  /** The inverse; null when the stored bytes do not open under this key
+   *  (plaintext under a flag, or a blob under the wrong parent). Note
+   *  `utf8` encodes (string -> bytes); decoding goes through TextDecoder. */
+  async function namePlain(key, id, blob) {
+    try {
+      return new TextDecoder().decode(
+        await FX().unwrap(key, b64urlDecode(blob), FX().childKeyAad(id))
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /** Decrypt one row's name in place (N2): the name lives under the
+   *  PARENT's key, so the chain walk resolves it exactly like a record.
+   *  Single-row version for trash, share rows and dialogs; listings use
+   *  [`decryptNames`] with the parent they already know. */
+  async function decryptName(entry) {
+    if (!entry || !entry.name_enc) return entry;
+    const trail = await http("/api/files/breadcrumb?id=" + entry.id).then((r) => r.json());
+    const crumbs = (trail.breadcrumbs || []).filter((c) => c.id != null);
+    let key;
+    let start;
+    if (crumbs.length > 0 && shareKeys.has(crumbs[0].id)) {
+      key = shareKeys.get(crumbs[0].id);
+      start = 1;
+    } else {
+      key = state.session.rootKey;
+      start = 0;
+    }
+    for (let i = start; i < crumbs.length; i++) {
+      const c = crumbs[i];
+      if (c.id === entry.id) {
+        // The row itself: `key` is its parent's, which wraps its name.
+        const plain = await namePlain(key, c.id, entry.name);
+        if (plain !== null) entry.name = plain;
+        break;
+      }
+      if (!c.enc_key) break;
+      try {
+        key = await FX().unwrapChildKey(key, c.id, c.enc_key);
+      } catch (_) {
+        break;
+      }
+    }
+    return entry;
+  }
+
+  /** Decrypt every listed row's name in place - one parent key, fetched
+   *  once (N2). Rows that do not open are left as stored: a listing must
+   *  never throw because one name is mid-walk. */
+  async function decryptNames(entries, parentId) {
+    if (!entries || !entries.some((e) => e.name_enc)) return entries;
+    const key = parentId == null ? state.session.rootKey : await chainKey(parentId);
+    for (const e of entries) {
+      if (!e.name_enc) continue;
+      const plain = await namePlain(key, e.id, e.name);
+      if (plain !== null) e.name = plain;
+    }
+    return entries;
+  }
+
+  /** Decrypt the breadcrumb's own names in place, walking the same chain
+   *  resolveFileKey walks - unwrap each crumb's name with the key ABOVE
+   *  it, then descend through its record. The last crumb (the folder we
+   *  are in) keeps its `names_enc` flag intact: that is the path answer
+   *  the create flows read. */
+  async function decryptCrumbs(crumbs) {
+    if (!crumbs || !crumbs.some((c) => c.name_enc)) return crumbs;
+    let key;
+    let start;
+    if (crumbs.length > 0 && crumbs[0].id != null && shareKeys.has(crumbs[0].id)) {
+      key = shareKeys.get(crumbs[0].id);
+      start = 1;
+    } else {
+      key = state.session.rootKey;
+      start = 0;
+    }
+    for (let i = start; i < crumbs.length; i++) {
+      const c = crumbs[i];
+      if (c.id == null) continue;
+      if (c.name_enc) {
+        const plain = await namePlain(key, c.id, c.name);
+        if (plain !== null) c.name = plain;
+      }
+      if (!c.enc_key) break;
+      try {
+        key = await FX().unwrapChildKey(key, c.id, c.enc_key);
+      } catch (_) {
+        break;
+      }
+    }
+    return crumbs;
+  }
+
+  /** The name to PUT in a rename (N2/N6): the plaintext when the parent
+   *  is unflagged, the id-bound blob when it is flagged - the row exists,
+   *  so childKeyAad(id) can bind it. */
+  async function wrapRename(parentId, id, name) {
+    if (!(await folderNamesEnc(parentId))) return name;
+    const key = parentId == null ? state.session.rootKey : await chainKey(parentId);
+    return await nameBlob(key, id, name);
+  }
+
+  /** A create under a flagged folder needs the row id for its AAD (N3),
+   *  which does not exist yet - so the row is first created under a random
+   *  server-meaningless name and renamed to the id-bound blob right after
+   *  (two-phase, never plaintext to the server). Returns null when the
+   *  parent is unflagged: the caller uses the real name, one request. */
+  async function newRowName(parentId) {
+    if (!(await folderNamesEnc(parentId))) return null;
+    return "n" + b64url(FX().randomBytes(16));
+  }
+
+  /** The second phase: rename the fresh row to its real, wrapped name. */
+  async function wrappedNameFor(parentId, id, name) {
+    if (!(await folderNamesEnc(parentId))) return name;
+    const key = parentId == null ? state.session.rootKey : await chainKey(parentId);
+    return await nameBlob(key, id, name);
+  }
+
+  /** ensureFolder with names at rest (N5): under a flag the server's
+   *  name lookup can never match (it compares ciphertext to plaintext),
+   *  so the client lists the parent's children, decrypts them and
+   *  matches itself; a miss creates the folder under a temp name and
+   *  renames it to the id-bound blob. Unflagged parents take the server's
+   *  own endpoint unchanged. Returns the server's `{entry}` shape. */
+  async function ensureFolder(parentId, segment) {
+    if (!(await folderNamesEnc(parentId))) {
+      return await http(
+        "/api/files/folder/ensure",
+        jsonCall("POST", { parent_id: parentId, name: segment })
+      ).then((r) => r.json());
+    }
+    const list = await http(
+      parentId == null ? "/api/files" : "/api/files?parent=" + parentId
+    ).then((r) => r.json());
+    for (const e of list.entries || []) {
+      if (!e.is_dir) continue;
+      const plain = await decryptName(e);
+      if (plain.name === segment) return { entry: e };
+    }
+    const temp = await newRowName(parentId);
+    const created = await http(
+      "/api/files/folder",
+      jsonCall("POST", { parent_id: parentId, name: temp })
+    ).then((r) => r.json());
+    const wrapped = await wrappedNameFor(parentId, created.entry.id, segment);
+    if (wrapped !== temp) {
+      await http(
+        "/api/files/rename",
+        jsonCall("POST", { id: created.entry.id, name: wrapped })
+      );
+      created.entry.name = segment; // the listing below decrypts anyway
+    }
+    return created;
+  }
+
+  /** The mount label for a share of a name-enc row (N4): wrapped under
+   *  the NODE's own key - the key the share's envelope carries - with the
+   *  share AAD, so the grantee opens it with what they already hold.
+   *  Returns null for plaintext rows: the server derives their label, as
+   *  it always did. */
+  async function shareLabel(entry, grantee) {
+    if (!entry || !entry.name_enc) return null;
+    const key = await resolveFileKey(entry);
+    return b64url(
+      await FX().wrap(key, FX().utf8(entry.name), FX().shareEnvelopeAad(entry.id, grantee))
+    );
+  }
+
+  /**
+   * Flag or unflag a folder's names (N13): wrap (or unwrap) every name
+   * below it first, then flip `PUT /api/files/nameenc` - the cascade
+   * marks exactly the rows this walk rewrote, so no reader ever meets a
+   * mark without the blob. Each step is idempotent (unwrap-probe first),
+   * so a cancelled walk is finished by running it again.
+   *
+   * opts: { onProgress({i,n,name}), cancelled() } like migrateTree.
+   * Returns { rows, failed: [], cancelled }.
+   */
+  async function setNamesEncrypted(folderId, flag, opts) {
+    if (!(await requestKeys())) throw new Error(t("enc.migrate.cancelled"));
+    const onProgress = opts && opts.onProgress || function () {};
+    const cancelled = opts && opts.cancelled || function () {
+      return false;
+    };
+    const res = { rows: 0, failed: [], cancelled: false };
+
+    // Pass 1: every row below the folder, breadth-first (names only, so
+    // this is cheap even on a large tree).
+    const rows = [];
+    const queue = [folderId];
+    while (queue.length > 0) {
+      if (cancelled()) {
+        res.cancelled = true;
+        return res;
+      }
+      const parent = queue.shift();
+      const list = await http("/api/files?parent=" + parent).then((r) => r.json());
+      for (const e of list.entries || []) {
+        rows.push({ entry: e, parent: parent });
+        if (e.is_dir) queue.push(e.id);
+      }
+    }
+
+    // Pass 2: one rename per row that actually changes state.
+    for (let i = 0; i < rows.length; i++) {
+      if (cancelled()) {
+        res.cancelled = true;
+        return res;
+      }
+      const row = rows[i];
+      onProgress({ i: i + 1, n: rows.length, name: row.entry.name });
+      try {
+        const key =
+          row.parent == null ? state.session.rootKey : await chainKey(row.parent);
+        const plain = await namePlain(key, row.entry.id, row.entry.name);
+        if (flag && plain === null) {
+          // Still plaintext (or a re-run after a cancel): wrap it.
+          const blob = await nameBlob(key, row.entry.id, row.entry.name);
+          await http(
+            "/api/files/rename",
+            jsonCall("POST", { id: row.entry.id, name: blob })
+          );
+        } else if (!flag && plain !== null) {
+          // Still a blob: write the plaintext back.
+          await http(
+            "/api/files/rename",
+            jsonCall("POST", { id: row.entry.id, name: plain })
+          );
+        }
+        res.rows++;
+      } catch (err) {
+        res.failed.push(row.entry.name + ": " + ((err && err.message) || err));
+      }
+    }
+
+    if (!res.cancelled) {
+      await http(
+        "/api/files/nameenc",
+        jsonCall("PUT", { id: folderId, flag: flag ? 1 : 0 })
+      );
+      nameEncCache.set(folderId, !!flag);
+    }
+    return res;
+  }
+
   async function download(entry) {
     if (state.status !== "unlocked") throw new Error(t("enc.err.download"));
     const res = await http("/api/files/download?id=" + entry.id);
@@ -1718,6 +2004,17 @@
     migrateTree: migrateTree,
     rekeyTree: rekeyTree,
     rotateFileKey: rotateFileKey,
+    // names at rest (concepts/names.md)
+    folderNamesEnc: folderNamesEnc,
+    decryptName: decryptName,
+    decryptNames: decryptNames,
+    decryptCrumbs: decryptCrumbs,
+    wrapRename: wrapRename,
+    newRowName: newRowName,
+    wrappedNameFor: wrappedNameFor,
+    ensureFolder: ensureFolder,
+    shareLabel: shareLabel,
+    setNamesEncrypted: setNamesEncrypted,
     recoveryView: recoveryView,
     recoveryRotate: recoveryRotate,
     setAutoUnlock: setAutoUnlock,

@@ -941,6 +941,47 @@ async function main() {
     });
   }
 
+  // ---- phase6: names at rest (concepts/names.md) ------------------------
+  if (dirEntry) {
+    const parent = dirEntry.id;
+    const listBefore = JSON.parse(await rawGet("/api/files?parent=" + parent));
+    const before = (listBefore.entries || []).map((e) => e.name).sort();
+    await step("setNamesEncrypted wraps every name below the folder", async () => {
+      if (before.length === 0) throw new Error("no children to wrap");
+      const res = await FXEnc.setNamesEncrypted(parent, 1, {});
+      if (res.failed.length) throw new Error("failed: " + res.failed.join(", "));
+      const after = JSON.parse(await rawGet("/api/files?parent=" + parent));
+      const names = (after.entries || []).map((e) => e.name);
+      for (const n of names) {
+        if (before.indexOf(n) >= 0) throw new Error("name still plaintext: " + n);
+      }
+    });
+    expect(
+      "the folder reports the names flag after the walk",
+      (await FXEnc.folderNamesEnc(parent)) === true,
+      "flag=" + (await FXEnc.folderNamesEnc(parent))
+    );
+    await step("decryptNames restores the listing from the parent key", async () => {
+      const list = JSON.parse(await rawGet("/api/files?parent=" + parent));
+      const entries = list.entries || [];
+      await FXEnc.decryptNames(entries, parent);
+      const now = entries.map((e) => e.name).sort();
+      if (JSON.stringify(now) !== JSON.stringify(before)) {
+        throw new Error("got " + JSON.stringify(now) + " want " + JSON.stringify(before));
+      }
+    });
+    await step("unflagging unwraps everything again", async () => {
+      const res = await FXEnc.setNamesEncrypted(parent, 0, {});
+      if (res.failed.length) throw new Error("failed: " + res.failed.join(", "));
+      if (await FXEnc.folderNamesEnc(parent)) throw new Error("flag still set");
+      const list = JSON.parse(await rawGet("/api/files?parent=" + parent));
+      const names = (list.entries || []).map((e) => e.name).sort();
+      if (JSON.stringify(names) !== JSON.stringify(before)) {
+        throw new Error("names differ: " + JSON.stringify(names));
+      }
+    });
+  }
+
   console.log(
     "DONE " + passed + " passed, " + failures.length + " failed" +
       (failures.length ? " (" + failures.join("; ") + ")" : "")
