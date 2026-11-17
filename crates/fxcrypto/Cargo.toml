@@ -2,7 +2,7 @@
 name = "fxcrypto"
 version = "0.1.0"
 edition = "2021"
-description = "fxcloud client-side crypto core (FXE1 container format) - deliberately NOT a dependency of the server binary"
+description = "fxcloud client-side crypto core (FXE1, key records, envelopes) - deliberately NOT a dependency of the server binary"
 license = "AGPL-3.0-or-later"
 
 # Client-side only: this crate must never enter the fxcloud server's
@@ -11,7 +11,12 @@ license = "AGPL-3.0-or-later"
 
 [dependencies]
 aes-gcm = "0.10"
-rand = "0.8"
+# rand0.10 matches the elliptic-curve/p256 stack in this lockfile (the
+# ECDH ephemeral keys below take an RngCore of exactly that generation).
+rand = "0.10"
+argon2 = "0.5"
+hkdf = "0.13"
+sha2 = "0.11"
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

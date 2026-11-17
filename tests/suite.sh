@@ -2733,7 +2733,8 @@ for SRC in "$REPO/frontend/assets/i18n.js" \
            "$REPO/frontend/tests/fxenc-harness.js" \
            "$REPO/frontend/tests/webauthn.js" \
            "$REPO/frontend/tests/gen-icons.js" \
-           "$REPO/frontend/tests/gen-fx1-vectors.js"; do
+           "$REPO/frontend/tests/gen-fx1-vectors.js" \
+           "$REPO/frontend/tests/gen-key-vectors.js"; do
   js_parse "$SRC" \
     && ok "$(basename "$SRC") parses ($PARSE)" \
     || bad "$(basename "$SRC") has a syntax error"
@@ -4405,6 +4406,12 @@ done
 "$NODE" "$REPO/frontend/tests/gen-fx1-vectors.js" --check \
   && ok "every committed FXE1 vector decrypts (or rejects) exactly as committed" \
   || bad "fx1-vectors.json drifted from fxcrypto.js - regenerate it deliberately"
+# Key-record golden vectors (5.1/5.4/5.7): same doctrine - the committed
+# account rows must still open under the REAL JS reader, rejects included;
+# crates/fxcrypto/tests/keys.rs pins the Rust twin to the same file.
+"$NODE" "$REPO/frontend/tests/gen-key-vectors.js" --check \
+  && ok "every committed key vector opens (or rejects) exactly as committed" \
+  || bad "fx-keys-vectors.json drifted from fxcrypto.js - regenerate it deliberately"
 # Key-blindness is structural, not a promise: the server binary must
 # never link the client crypto core (ENCRYPTION.md 8), so its
 # [dependencies] section may not name this crate.

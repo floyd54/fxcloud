@@ -14,7 +14,6 @@
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use rand::RngCore;
 
 /// Container magic: `FXE1` (fxcrypto.js `MAGIC`).
 pub const MAGIC: [u8; 4] = *b"FXE1";
@@ -105,6 +104,20 @@ pub enum Error {
     /// Chunk *i* failed authentication: wrong key, tampering, or a row
     /// move. Message byte-compatible with fxcrypto.js.
     Chunk(usize),
+    /// Argon2id rejected its parameters (or the salt was too short).
+    Kdf,
+    /// HKDF refused the requested output length (never: callers stay far
+    /// below `255 * hash_len`, this exists instead of a panic).
+    Hkdf,
+    /// A wrapped blob shorter than nonce + tag - the exact check
+    /// fxcrypto.js `unwrap` performs first.
+    WrappedTooShort,
+    /// Unwrapping failed: wrong KEK/key, tampered bytes, or an AAD
+    /// mismatch (row move, wrong grantee, wrong purpose). One message on
+    /// purpose - telling the three apart would help a prober (5.4/5.5).
+    Unwrap,
+    /// `public_key` is missing its suite byte.
+    PublicBlob,
 }
 
 impl std::fmt::Display for Error {
@@ -118,6 +131,16 @@ impl std::fmt::Display for Error {
                 f,
                 "decryption failed for chunk {i} - wrong key, a tampered file, or a file moved to another row"
             ),
+            Error::Kdf => write!(f, "argon2id key derivation failed (check the kdf parameters)"),
+            Error::Hkdf => write!(f, "hkdf expansion rejected the output length"),
+            Error::WrappedTooShort => {
+                write!(f, "wrapped value is too short to be a key record")
+            }
+            Error::Unwrap => write!(
+                f,
+                "could not unwrap this key - wrong passphrase, or the data was altered"
+            ),
+            Error::PublicBlob => write!(f, "public key is too short"),
         }
     }
 }
@@ -179,7 +202,7 @@ pub fn encrypt_bytes_with_chunk_size(
     header.push(SUITE_AES256_GCM);
     header.extend_from_slice(&chunk_size.to_be_bytes());
     let mut nonce_base = [0u8; 8];
-    rand::thread_rng().fill_bytes(&mut nonce_base);
+    rand::fill(&mut nonce_base);
     header.extend_from_slice(&nonce_base);
 
     let stride = chunk_size as usize;
@@ -256,4 +279,270 @@ pub fn decrypt_bytes(file_id: u64, key: &[u8], blob: &[u8]) -> Result<Vec<u8>, E
         off += ct_len;
     }
     Ok(out)
+}
+
+// ---- KDF and key derivation (mirror fxcrypto.js184) ----------------------
+
+/// Argon2id floor: exactly what the *server* uses for new login hashes
+/// (KDF_FLOOR in fxcrypto.js, LOGIN_KDF_* in src/auth/mod.rs) - DECISION 3's
+/// "login hash >= client KDF" holds as an equality.
+pub const KDF_M_KIB: u32 = 65536;
+pub const KDF_T: u32 = 3;
+pub const KDF_P: u32 = 1;
+/// Account-wrap salt length (fxcrypto.js `SALT_LEN`).
+pub const SALT_LEN: usize = 16;
+/// AES-GCM nonce length: wrap blobs and chunk nonces alike (fxcrypto.js
+/// `NONCE_LEN`).
+pub const NONCE_LEN: usize = 12;
+/// Version byte folded into every key record's AAD (ENCRYPTION.md 5.4).
+pub const KEY_RECORD_VERSION: u8 = 1;
+/// Published-key suite bytes (ENCRYPTION.md 5.5): the leading byte of
+/// `public_key` names the curve, so a reader dispatches instead of guessing.
+pub const SUITE_X25519: u8 = 1;
+pub const SUITE_P256: u8 = 2;
+
+/// Domain separation for the account-level wraps (5.4): a blob written as
+/// "wrap the root key" cannot be replayed as "wrap the private key".
+pub const AAD_ARK: &[u8] = b"fx1:ark:v1";
+pub const AAD_ARK_RECOVERY: &[u8] = b"fx1:ark-recovery:v1";
+pub const AAD_PRIVKEY: &[u8] = b"fx1:privkey:v1";
+pub const AAD_ROOTKEY: &[u8] = b"fx1:rootkey:v1";
+pub const AAD_RECOVERY_KEK: &[u8] = b"fx1:recovery-kek:v1";
+pub const AAD_RECOVERY_VIEW: &[u8] = b"fx1:recovery-view:v1";
+pub const AAD_DEVICE_ARK: &[u8] = b"fx1:device-ark:v1";
+
+/// Stored `kdf_params` (`0`/missing = floor, the `|| FLOOR` semantics of
+/// fxcrypto.js `deriveKek`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KdfParams {
+    pub m: u32,
+    pub t: u32,
+    pub p: u32,
+}
+
+impl Default for KdfParams {
+    fn default() -> Self {
+        KdfParams {
+            m: KDF_M_KIB,
+            t: KDF_T,
+            p: KDF_P,
+        }
+    }
+}
+
+impl KdfParams {
+    /// JS semantics: absent (or zeroed) fields fall back to the floor.
+    pub fn with_defaults(m: u32, t: u32, p: u32) -> Self {
+        KdfParams {
+            m: if m == 0 { KDF_M_KIB } else { m },
+            t: if t == 0 { KDF_T } else { t },
+            p: if p == 0 { KDF_P } else { p },
+        }
+    }
+}
+
+/// Argon2id(passphrase, salt) ->32-byte KEK, version1.3, parameters as
+/// stored with the account. Byte-identical to fxcrypto.js `deriveKek`
+/// (hash-wasm argon2 with the same inputs) - pinned by the golden vectors.
+pub fn derive_kek(
+    passphrase: &str,
+    salt: &[u8],
+    params: KdfParams,
+) -> Result<[u8; KEY_LEN], Error> {
+    let argon_params =
+        argon2::Params::new(params.m, params.t, params.p, Some(KEY_LEN)).map_err(|_| Error::Kdf)?;
+    let argon = argon2::Argon2::new(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        argon_params,
+    );
+    let mut kek = [0u8; KEY_LEN];
+    argon
+        .hash_password_into(passphrase.as_bytes(), salt, &mut kek)
+        .map_err(|_| Error::Kdf)?;
+    Ok(kek)
+}
+
+/// HKDF-SHA-256 (ENCRYPTION.md5.1) - same construction as fxcrypto.js
+/// `hkdf`: WebCrypto and RustCrypto agree bit for bit (RFC5869).
+pub fn hkdf_sha256(ikm: &[u8], salt: &[u8], info: &[u8], out_len: usize) -> Result<Vec<u8>, Error> {
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(salt), ikm);
+    let mut okm = vec![0u8; out_len];
+    hk.expand(info, &mut okm).map_err(|_| Error::Hkdf)?;
+    Ok(okm)
+}
+
+/// The recovery key's KEK: HKDF with a dedicated label, never the raw key
+/// (5.7: a future second recovery mechanism must not collide).
+pub fn derive_recovery_kek(recovery_key: &[u8], salt: &[u8]) -> Result<Vec<u8>, Error> {
+    hkdf_sha256(recovery_key, salt, AAD_RECOVERY_KEK, KEY_LEN)
+}
+
+// ---- symmetric wrap / unwrap (mirror fxcrypto.js227) ---------------------
+
+/// `AES-256-GCM(key, value, aad)` as `nonce(12) || ciphertext || tag`,
+/// fresh nonce per wrap - re-wrapping the same value never repeats bytes.
+pub fn wrap(wrapping_key: &[u8], value: &[u8], aad: &[u8]) -> Result<Vec<u8>, Error> {
+    if wrapping_key.len() != KEY_LEN {
+        return Err(Error::KeyLength);
+    }
+    let cipher = Aes256Gcm::new_from_slice(wrapping_key).map_err(|_| Error::KeyLength)?;
+    let mut iv = [0u8; NONCE_LEN];
+    rand::fill(&mut iv);
+    let ct = cipher
+        .encrypt(Nonce::from_slice(&iv), Payload { msg: value, aad })
+        .map_err(|_| Error::Aead)?;
+    let mut out = Vec::with_capacity(NONCE_LEN + ct.len());
+    out.extend_from_slice(&iv);
+    out.extend_from_slice(&ct);
+    Ok(out)
+}
+
+/// Reverse of [`wrap`]. One failure message for wrong key, tampered bytes
+/// and AAD mismatch - deliberately (fxcrypto.js `unwrap`).
+pub fn unwrap(wrapping_key: &[u8], blob: &[u8], aad: &[u8]) -> Result<Vec<u8>, Error> {
+    if blob.len() < NONCE_LEN + TAG_LEN {
+        return Err(Error::WrappedTooShort);
+    }
+    if wrapping_key.len() != KEY_LEN {
+        return Err(Error::KeyLength);
+    }
+    let cipher = Aes256Gcm::new_from_slice(wrapping_key).map_err(|_| Error::KeyLength)?;
+    let iv = &blob[..NONCE_LEN];
+    let ct = &blob[NONCE_LEN..];
+    cipher
+        .decrypt(Nonce::from_slice(iv), Payload { msg: ct, aad })
+        .map_err(|_| Error::Unwrap)
+}
+
+/// AAD for a parent-wrapped child key: `child_id || version` (5.4).
+pub fn child_key_aad(child_id: u64) -> [u8; 9] {
+    let mut aad = [0u8; 9];
+    aad[..8].copy_from_slice(&child_id.to_be_bytes());
+    aad[8] = KEY_RECORD_VERSION;
+    aad
+}
+
+/// Wrap a folder/file key under its parent key (5.4). Returns raw bytes;
+/// the JS twin base64-encodes on its side of the boundary.
+pub fn wrap_child_key(
+    parent_key: &[u8],
+    child_id: u64,
+    child_key: &[u8],
+) -> Result<Vec<u8>, Error> {
+    wrap(parent_key, child_key, &child_key_aad(child_id))
+}
+
+/// Reverse of [`wrap_child_key`].
+pub fn unwrap_child_key(
+    parent_key: &[u8],
+    child_id: u64,
+    wrapped: &[u8],
+) -> Result<Vec<u8>, Error> {
+    unwrap(parent_key, wrapped, &child_key_aad(child_id))
+}
+
+// ---- fingerprint (mirror fxcrypto.js397) ---------------------------------
+
+/// Display fingerprint (DECISION 6): SHA-256 over the *published* blob,
+/// truncated to128 bits, lowercase hex32 -32 hex digits a human compares
+/// out of band.
+pub fn fingerprint_hex(public_blob: &[u8]) -> String {
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(public_blob);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(32);
+    for &b in &digest[..16] {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+// ---- account access: unlock / recovery / rewrap (mirror fxcrypto.js587) --
+
+/// Everything a *stored* account row carries for opening sessions, as raw
+/// bytes (the JS twin holds base64 strings - decoding stays the caller's
+/// job on both sides, so no format decision hides in this struct).
+#[derive(Debug, Clone)]
+pub struct AccountKeys {
+    pub kdf_salt: Vec<u8>,
+    pub kdf_params: KdfParams,
+    pub wrapped_ark: Vec<u8>,
+    pub wrapped_root_key: Vec<u8>,
+    pub private_key_wrapped: Vec<u8>,
+    pub public_key: Vec<u8>,
+    pub wrapped_ark_recovery: Vec<u8>,
+}
+
+/// The plaintext material a tab keeps in memory (DECISION 7): the opened
+/// ARK, the root key, the PKCS#8 private key and the published public blob.
+/// Curve *objects* are deliberately absent - importing a CryptoKey is a
+/// browser concern; bytes are the contract.
+#[derive(Debug, Clone)]
+pub struct Session {
+    pub ark: Vec<u8>,
+    pub root_key: Vec<u8>,
+    pub private_key_pkcs8: Vec<u8>,
+    pub public_blob: Vec<u8>,
+    pub suite: u8,
+}
+
+/// Everything that hangs off an opened ARK: root key and private key
+/// (fxcrypto.js `sessionFromArk`). The passphrase, recovery and device
+/// paths all end here - only how the ARK was obtained differs.
+pub fn session_from_ark(keys: &AccountKeys, ark: &[u8]) -> Result<Session, Error> {
+    let root_key = unwrap(ark, &keys.wrapped_root_key, AAD_ROOTKEY)?;
+    let private_key_pkcs8 = unwrap(ark, &keys.private_key_wrapped, AAD_PRIVKEY)?;
+    // importPublicKey's own guard: a suite byte with no point behind it is
+    // not a public key (fxcrypto.js throws the very message below).
+    if keys.public_key.len() < 2 {
+        return Err(Error::PublicBlob);
+    }
+    Ok(Session {
+        ark: ark.to_vec(),
+        root_key,
+        private_key_pkcs8,
+        public_blob: keys.public_key.clone(),
+        suite: keys.public_key[0],
+    })
+}
+
+/// Open a stored account with the storage passphrase (fxcrypto.js
+/// `unlockAccount`): stored params -> KEK -> ARK -> session.
+pub fn unlock_account(keys: &AccountKeys, passphrase: &str) -> Result<Session, Error> {
+    let kek = derive_kek(passphrase, &keys.kdf_salt, keys.kdf_params)?;
+    let ark = unwrap(&kek, &keys.wrapped_ark, AAD_ARK)?;
+    session_from_ark(keys, &ark)
+}
+
+/// Open a stored account with the recovery key (5.7) - a full session, not
+/// a read-only peek (fxcrypto.js `openWithRecovery`).
+pub fn open_with_recovery(keys: &AccountKeys, recovery_key: &[u8]) -> Result<Session, Error> {
+    let recovery_kek = derive_recovery_kek(recovery_key, &keys.kdf_salt)?;
+    let ark = unwrap(&recovery_kek, &keys.wrapped_ark_recovery, AAD_ARK_RECOVERY)?;
+    session_from_ark(keys, &ark)
+}
+
+/// The result of a passphrase change (5.7, DECISION 3 consequence2):
+/// O(1) - the ARK and everything under it do not move.
+#[derive(Debug, Clone)]
+pub struct RewrappedArk {
+    pub wrapped_ark: Vec<u8>,
+    pub kdf_salt: Vec<u8>,
+    pub kdf_params: KdfParams,
+}
+
+/// Re-wrap the ARK under a fresh passphrase KEK (fxcrypto.js
+/// `rewrapAccount`): new salt, new KEK, one wrap.
+pub fn rewrap_account(ark: &[u8], new_passphrase: &str) -> Result<RewrappedArk, Error> {
+    let mut salt = [0u8; SALT_LEN];
+    rand::fill(&mut salt);
+    let params = KdfParams::default();
+    let kek = derive_kek(new_passphrase, &salt, params)?;
+    let wrapped_ark = wrap(&kek, ark, AAD_ARK)?;
+    Ok(RewrappedArk {
+        wrapped_ark,
+        kdf_salt: salt.to_vec(),
+        kdf_params: params,
+    })
 }

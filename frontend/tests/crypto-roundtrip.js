@@ -118,6 +118,25 @@ async function main() {
     FX.unlockAccount(account.payload, "correct horse battery stapl")
   );
 
+  await check("rewrap output reopens the ARK and retires the old passphrase", async () => {
+    const re = await FX.rewrapAccount(account.session.ark, "a fresh rewrap passphrase");
+    const rebuilt = {
+      ...account.payload,
+      wrapped_ark: re.wrapped_ark,
+      kdf_salt: re.kdf_salt,
+      kdf_params: re.kdf_params,
+    };
+    const opened = await FX.unlockAccount(rebuilt, "a fresh rewrap passphrase");
+    assert(FX.equalBytes(opened.ark, account.session.ark), "ARK differs after rewrap");
+    let refused = false;
+    try {
+      await FX.unlockAccount(rebuilt, "correct horse battery staple");
+    } catch (_) {
+      refused = true;
+    }
+    assert(refused, "the old passphrase must stop working");
+  });
+
   // ---------------------------------------------- device unlock (5.7, phase 4)
 
   await check("device blob wraps and opens the ARK only with its own key", async () => {
