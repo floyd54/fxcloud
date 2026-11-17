@@ -593,6 +593,14 @@
             t("enc.migrate.menu"),
             () => openMigrate(entry.id, t("enc.migrate.folder", { name: entry.name })),
           ]);
+          // Re-key is an owner action (5.6/DECISION 4): only the owner
+          // holds the parent chain and may swap existing key records.
+          if (isOwner) {
+            items.push([
+              t("enc.rekey.menu"),
+              () => openRekey(entry.id, t("enc.migrate.folder", { name: entry.name })),
+            ]);
+          }
           items.push([
             t("zone.menu", { state: entry.enc_zone ? t("zone.on") : t("zone.off") }),
             () => toggleZone(entry),
@@ -2460,6 +2468,15 @@
         try {
           await api(`/api/shares/${s.id}`, { method: "DELETE" });
           await loadShareList();
+          //5.6/DECISION4: the row is gone and API access stops, but the
+          // folder key itself is still out there - offer the re-key
+          // explicitly, never run it silently.
+          if (
+            s.is_dir &&
+            window.confirm(t("enc.rekey.afterRevoke", { name: s.source_name }))
+          ) {
+            openRekey(s.file_id, t("enc.migrate.folder", { name: s.source_name }));
+          }
         } catch (e) {
           alert(e.message);
         }
@@ -2981,6 +2998,8 @@
     // mid-flight would interleave two walks over the same tree.
     if (migrateRunning) return;
     if (!(await FXEnc.requestKeys())) return;
+    migrateEl("migrate-title").dataset.i18n = "enc.migrate.title";
+    migrateEl("migrate-title").textContent = t("enc.migrate.title");
     migrateEl("migrate-scope").textContent = scopeLabel || t("enc.migrate.all");
     migrateEl("migrate-summary").hidden = true;
     migrateEl("migrate-status").textContent = t("enc.migrate.idle");
@@ -2994,6 +3013,84 @@
       runMigrate(scope); // paused: continue
     };
     runMigrate(scope);
+  }
+
+  // ---------- phase6: re-key (ENCRYPTION.md5.6, DECISION4) ---------------
+
+  function showRekeySummary(res) {
+    const summary = migrateEl("migrate-summary");
+    if (res.skipped) {
+      summary.textContent = t("enc.rekey.nothing");
+    } else {
+      let text = t("enc.rekey.done", {
+        folders: String(res.folders),
+        grantees: String(res.grantees),
+        failed: String(res.failed.length),
+      });
+      if (res.failed.length) {
+        const names =
+          res.failed.slice(0, 6).join(", ") + (res.failed.length > 6 ? " (...)" : "");
+        text += " " + t("enc.migrate.failed", { names: names });
+      }
+      summary.textContent = text;
+    }
+    summary.hidden = false;
+  }
+
+  async function runRekey(scope) {
+    migrateCancel = false;
+    migrateRunning = true;
+    setMigrateMode("running");
+    migrateEl("migrate-summary").hidden = true;
+    migrateEl("migrate-status").textContent = t("enc.rekey.running");
+    try {
+      const res = await FXEnc.rekeyTree(scope, {
+        onProgress: (p) => {
+          migrateEl("migrate-status").textContent = t("upload.at", {
+            i: p.i,
+            n: p.n,
+            path: p.name,
+          });
+        },
+        cancelled: () => migrateCancel,
+      });
+      if (migrateModal.style.display === "none") return;
+      migrateEl("migrate-status").textContent = res.cancelled
+        ? t("enc.migrate.cancelled")
+        : t("enc.migrate.idle");
+      showRekeySummary(res);
+      setMigrateMode("idle");
+    } catch (e) {
+      if (migrateModal.style.display !== "none") {
+        migrateEl("migrate-status").textContent = e.message;
+        setMigrateMode("idle");
+      }
+    } finally {
+      migrateRunning = false;
+      // Every lock glyph and share row the walk touched changes with
+      // this listing.
+      loadFiles(currentParent).catch(() => {});
+    }
+  }
+
+  async function openRekey(scope, scopeLabel) {
+    if (migrateRunning) return;
+    if (!(await FXEnc.requestKeys())) return;
+    migrateEl("migrate-title").dataset.i18n = "enc.rekey.title";
+    migrateEl("migrate-title").textContent = t("enc.rekey.title");
+    migrateEl("migrate-scope").textContent = scopeLabel;
+    migrateEl("migrate-summary").hidden = true;
+    migrateEl("migrate-status").textContent = t("enc.migrate.idle");
+    migrateModal.style.display = "flex";
+    document.addEventListener("keydown", migrateOnKey);
+    migrateEl("migrate-primary").onclick = () => {
+      if (migrateRunning) {
+        migrateCancel = true;
+        return;
+      }
+      runRekey(scope);
+    };
+    runRekey(scope);
   }
 
   // ---------- phase4: the recovery key on demand (ENCRYPTION.md 5.7) -----

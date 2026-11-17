@@ -1218,6 +1218,166 @@
     };
   }
 
+  /**
+   * Re-key a folder subtree (ENCRYPTION.md 5.6, DECISION 4): every
+   * encrypted folder below `folderId` (it included) gets a fresh key,
+   * each child record is re-wrapped under its parent's NEW key, and each
+   * rotated folder's share envelopes are re-sealed to the new key for the
+   * grantees that are still there - a revoked one has no row left to
+   * re-seal, which is the whole point. File keys never change: their
+   * bytes stay where they are (DECISION 5), so what a former grantee
+   * already saved keeps opening, while the old folder key opens nothing
+   * new.
+   *
+   * Two passes like migrateTree: collect the keyed folders first (a
+   * stable progress total, and a cancel before the first write leaves the
+   * tree untouched), then one folder per step. A step rotates its own
+   * record, re-wraps every child record under the new key - directory
+   * children keep their value until their own step turns it - and
+   * re-seals this folder's envelopes. Cancel is honoured only between
+   * steps, so every completed folder is consistent; a PUT that fails
+   * mid-step lands in `failed` and leaves that one child on its old
+   * wrapper (the same per-row exposure the migration has).
+   *
+   * opts: { onProgress({i,n,name}), cancelled() } like migrateTree.
+   * Returns { folders, grantees, failed: [], skipped, cancelled }.
+   */
+  async function rekeyTree(folderId, opts) {
+    if (!(await requestKeys())) throw new Error(t("enc.migrate.cancelled"));
+    const onProgress = opts && opts.onProgress || function () {};
+    const cancelled = opts && opts.cancelled || function () {
+      return false;
+    };
+    const res = { folders: 0, grantees: 0, failed: [], skipped: false, cancelled: false };
+    const pubCache = new Map();
+
+    const info = await http("/api/files/info?id=" + folderId).then((r) => r.json());
+    const root = info.entry;
+    if (!root || !root.is_dir) throw new Error(t("enc.err.notFolder"));
+    if (!root.enc_key) {
+      res.skipped = true;
+      return res;
+    }
+
+    // Pass 1: the keyed folders of the subtree, breadth-first. Nothing is
+    // written yet, so a cancel here costs nothing.
+    const folders = [root];
+    for (let qi = 0; qi < folders.length; qi++) {
+      if (cancelled()) {
+        res.cancelled = true;
+        return res;
+      }
+      const list = await http("/api/files?parent=" + folders[qi].id).then((r) => r.json());
+      for (const e of list.entries || []) {
+        if (e.is_dir && e.enc_key) folders.push(e);
+      }
+    }
+
+    // The walk root's record lives above the subtree: its parent key
+    // never changes, only the value it wraps.
+    const rootOld = await resolveFileKey(root);
+    const rootParentKey =
+      root.parent_id == null ? state.session.rootKey : await chainKey(root.parent_id);
+    // id -> { old, new, parentNew }: seeded for the root, filled in by
+    // each parent step as it unwraps its children.
+    const keys = new Map();
+    keys.set(root.id, { old: rootOld, new: null, parentNew: rootParentKey });
+
+    for (let i = 0; i < folders.length; i++) {
+      if (cancelled()) {
+        res.cancelled = true;
+        return res;
+      }
+      const f = folders[i];
+      const k = keys.get(f.id);
+      // A folder whose parent failed is unreachable under the new chain;
+      // skipping it keeps the tree exactly as consistent as the failure
+      // already left it.
+      if (!k) continue;
+      onProgress({ i: i + 1, n: folders.length, name: f.name });
+
+      // (a) Rotate this folder's own record. If this PUT fails the folder
+      // stays as it was - children still wrap under the old key - so
+      // skipping it is the consistent choice, not a partial state.
+      k.new = FX().randomBytes(32);
+      try {
+        const wrapped = await FX().wrapChildKey(k.parentNew, f.id, k.new);
+        await http("/api/files/key", jsonCall("PUT", { id: f.id, key: wrapped }));
+        folderKeys.set(f.id, k.new);
+      } catch (err) {
+        res.failed.push(f.name);
+        continue;
+      }
+
+      // (b) Every child record moves under the new key; a directory
+      // child keeps its value here and rotates it in its own step, so
+      // the chain stays open at every step boundary.
+      let children = [];
+      try {
+        children = (await http("/api/files?parent=" + f.id).then((r) => r.json())).entries || [];
+      } catch (err) {
+        res.failed.push(f.name);
+        continue;
+      }
+      for (const c of children) {
+        if (!c.enc_key) continue; // plaintext row: no record to move
+        let raw = null;
+        try {
+          raw = await FX().unwrapChildKey(k.old, c.id, c.enc_key);
+        } catch (_) {
+          // Legacy flat record (5.4): wrapped straight to my root key.
+          try {
+            raw = await FX().unwrapChildKey(state.session.rootKey, c.id, c.enc_key);
+          } catch (_) {
+            res.failed.push(c.name);
+            continue;
+          }
+        }
+        try {
+          const wrapped = await FX().wrapChildKey(k.new, c.id, raw);
+          await http("/api/files/key", jsonCall("PUT", { id: c.id, key: wrapped }));
+          if (c.is_dir) keys.set(c.id, { old: raw, new: null, parentNew: k.new });
+        } catch (err) {
+          res.failed.push(c.name);
+        }
+      }
+
+      // (c) Re-seal this folder's envelopes to the new key - one round
+      // trip per *remaining* grantee (5.6): the revoked row is already
+      // gone, so it is never re-sealed.
+      let rows = [];
+      try {
+        rows = (await http("/api/shares/outgoing?file_id=" + f.id).then((r) => r.json())).shares || [];
+      } catch (err) {
+        rows = [];
+      }
+      for (const row of rows) {
+        try {
+          let pub = pubCache.get(row.username);
+          if (pub === undefined) {
+            const kres = await http("/api/keys/" + encodeURIComponent(row.username)).then((r) =>
+              r.json()
+            );
+            pub = (kres.key && kres.key.public_key) || null;
+            pubCache.set(row.username, pub);
+          }
+          if (!pub) {
+            res.failed.push(row.username); // no grantee key, no envelope (5.5)
+            continue;
+          }
+          const aad = FX().shareEnvelopeAad(f.id, row.username);
+          const env = await FX().eciesSeal(FX().b64decode(pub), k.new, aad);
+          await http("/api/shares/" + row.id, jsonCall("PUT", { envelope: env }));
+          res.grantees++;
+        } catch (err) {
+          res.failed.push(row.username);
+        }
+      }
+      res.folders++;
+    }
+    return res;
+  }
+
   async function download(entry) {
     if (state.status !== "unlocked") throw new Error(t("enc.err.download"));
     const res = await http("/api/files/download?id=" + entry.id);
@@ -1483,6 +1643,7 @@
     requestKeys: requestKeys,
     encryptUpload: encryptUpload,
     migrateTree: migrateTree,
+    rekeyTree: rekeyTree,
     recoveryView: recoveryView,
     recoveryRotate: recoveryRotate,
     setAutoUnlock: setAutoUnlock,

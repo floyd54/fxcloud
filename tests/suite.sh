@@ -2481,6 +2481,21 @@ AENV=$(printf '%s' "$BINC" | perl -MJSON::PP -0777 -ne '
 [ -z "$AENV" ] && ok "a share sent without an envelope stays without one" \
   || bad "the plaintext share grew an envelope: '$AENV'"
 
+note "alice re-seals the a.txt envelope (phase6 re-key write side)"
+AID=$(req GET /api/shares/outgoing "$JA" | perl -MJSON::PP -0777 -ne 'for $s (@{decode_json($_)->{shares}}) { if ($s->{file_id} == '"$A"') { print $s->{id}; last } }')
+BENV1=$(req GET /api/shares/incoming "$JB" | perl -MJSON::PP -0777 -ne 'for $s (@{decode_json($_)->{shares}}) { if ($s->{source_name} eq "a.txt") { print $s->{envelope} // ""; last } }')
+RC=$(reqcode PUT "/api/shares/$AID" "$JA" '{"envelope":"reseal-probe"}')
+BENV2=$(req GET /api/shares/incoming "$JB" | perl -MJSON::PP -0777 -ne 'for $s (@{decode_json($_)->{shares}}) { if ($s->{source_name} eq "a.txt") { print $s->{envelope} // ""; last } }')
+[ "$RC" = "200" ] && [ "$BENV2" = "reseal-probe" ] && [ "$BENV1" != "$BENV2" ] \
+  && ok "the owner's re-seal reaches the grantee's envelope" \
+  || bad "re-seal failed: code=$RC before=${BENV1:0:12} after=${BENV2:0:12}"
+RC=$(reqcode PUT "/api/shares/$AID" "$JB" '{"envelope":"intruder"}')
+[ "$RC" = "404" ] && ok "only the share's owner may reseal" \
+  || bad "grantee re-seal answered $RC"
+RC=$(reqcode PUT "/api/shares/$AID" "$JA" '{"envelope":""}')
+[ "$RC" = "400" ] && ok "an empty envelope is refused on re-seal" \
+  || bad "empty re-seal answered $RC"
+
 # The body shape moved with the exchange: `items` names the row *and* its
 # envelope, so the retired field cannot silently be shared without one. The
 # JSON extractor reads a schema mismatch as 422 rather than 400 - what
