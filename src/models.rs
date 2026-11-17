@@ -610,6 +610,17 @@ pub struct CreateShareRequest {
     pub envelope: Option<String>,
 }
 
+/// Payload to replace the envelope on a share the caller owns.
+///
+/// The writer besides creation: the re-key flow (ENCRYPTION.md 5.6)
+/// rotates a folder key and re-seals every *remaining* grantee, which
+/// updates each of those rows in place - revoke+recreate would change
+/// the share id and the grantee's mount name for no reason.
+#[derive(Debug, Deserialize)]
+pub struct UpdateShareRequest {
+    pub envelope: String,
+}
+
 /// One public link the owner created (concepts/public_links.md).
 ///
 /// The token itself is **never** in this struct: it is shown exactly once

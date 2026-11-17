@@ -234,7 +234,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/shares/incoming", get(routes::shares::incoming))
         .route(
             "/shares/{id}",
-            axum::routing::delete(routes::shares::revoke),
+            axum::routing::delete(routes::shares::revoke).put(routes::shares::put_envelope),
         );
 
     // Public links, owner side (concepts/public_links.md section 7): mint,

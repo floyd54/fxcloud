@@ -142,6 +142,31 @@ impl Db {
         .await
     }
 
+    /// Replace the envelope on a share row I created (5.6 re-key).
+    ///
+    /// Only the row's owner may re-seal: the envelope is addressed to a
+    /// grantee by the person who shared, and `list_outgoing` shows exactly
+    /// these rows. Zero rows changed answers 404 - a foreign id and a
+    /// revoked id are the same silence, as in [`Db::revoke_share`].
+    pub async fn update_share_envelope(
+        &self,
+        owner_id: i64,
+        share_id: i64,
+        envelope: String,
+    ) -> Result<(), AppError> {
+        self.run(move |conn| {
+            let changed = conn.execute(
+                "UPDATE shares SET envelope = ?1 WHERE id = ?2 AND owner_id = ?3",
+                params![envelope, share_id, owner_id],
+            )?;
+            if changed == 0 {
+                return Err(AppError::NotFound);
+            }
+            Ok(())
+        })
+        .await
+    }
+
     /// Shares I created (items I shared out), with grantee context.
     pub async fn list_outgoing(&self, owner_id: i64) -> Result<Vec<OutgoingShare>, AppError> {
         self.run(move |conn| {
@@ -354,5 +379,128 @@ fn map_share_constraint(e: rusqlite::Error) -> AppError {
             AppError::Conflict("already shared".into())
         }
         other => other.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+
+    /// A throwaway database with the real migrations applied - file-backed
+    /// for the same reason as the file tests: `Db` pools eight connections
+    /// and every `:memory:` connection would get its own private database.
+    struct Scratch {
+        db: Db,
+        dir: PathBuf,
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn scratch() -> Scratch {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("fxcloud-share-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = Db::open(&dir.join("fxcloud.db")).expect("migrations must apply to an empty db");
+        Scratch { db, dir }
+    }
+
+    fn user(conn: &Connection, name: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO users (username, password_hash, display_name, created_at, quota_bytes)
+             VALUES (?1, 'hash', ?1, '2026-01-01T00:00:00Z', 1000000)",
+            params![name],
+        )
+        .expect("insert user");
+        conn.query_row(
+            "SELECT id FROM users WHERE username = ?1",
+            params![name],
+            |r| r.get(0),
+        )
+        .expect("user id")
+    }
+
+    fn add_file(conn: &Connection, owner: i64, name: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO files (owner_id, name, is_dir, size, created_at, modified_at)
+             VALUES (?1, ?2, 1, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            params![owner, name],
+        )
+        .expect("insert file");
+        conn.last_insert_rowid()
+    }
+
+    fn envelope_of(s: &Scratch, id: i64) -> Option<String> {
+        let conn = s.db.pool.get().unwrap();
+        conn.query_row(
+            "SELECT envelope FROM shares WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .expect("query")
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_reseals_and_the_row_stays_addressable() {
+        let s = scratch();
+        let (owner, grantee, file) = {
+            let conn = s.db.pool.get().unwrap();
+            let o = user(&conn, "owner");
+            let g = user(&conn, "grantee");
+            let f = add_file(&conn, o, "proj");
+            (o, g, f)
+        };
+        let share =
+            s.db.create_share(
+                owner,
+                file,
+                "grantee".into(),
+                crate::sharing::PERM_ALL,
+                Some("env-old".into()),
+            )
+            .await
+            .expect("share created");
+        assert_eq!(envelope_of(&s, share.id).as_deref(), Some("env-old"));
+
+        // The owner re-seals after a re-key (5.6).
+        s.db.update_share_envelope(owner, share.id, "env-new".into())
+            .await
+            .expect("owner may re-seal");
+        assert_eq!(envelope_of(&s, share.id).as_deref(), Some("env-new"));
+
+        // The grantee rewrites nothing: a foreign row and a missing id
+        // are the same silence, and the row itself stays untouched.
+        let err =
+            s.db.update_share_envelope(grantee, share.id, "env-x".into())
+                .await
+                .expect_err("grantee refused");
+        assert!(matches!(err, AppError::NotFound));
+        assert_eq!(
+            envelope_of(&s, share.id).as_deref(),
+            Some("env-new"),
+            "row untouched by the refused call"
+        );
+        let err =
+            s.db.update_share_envelope(owner, 999_999, "env-x".into())
+                .await
+                .expect_err("missing id");
+        assert!(matches!(err, AppError::NotFound));
+
+        // A revoked row cannot be re-sealed either.
+        s.db.revoke_share(owner, share.id).await.expect("revoke");
+        let err =
+            s.db.update_share_envelope(owner, share.id, "env-x".into())
+                .await
+                .expect_err("revoked row");
+        assert!(matches!(err, AppError::NotFound));
     }
 }

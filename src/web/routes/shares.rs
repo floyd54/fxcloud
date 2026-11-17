@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::auth::AuthUser;
 use crate::error::AppError;
-use crate::models::{BatchOutcome, BatchShareRequest, CreateShareRequest};
+use crate::models::{BatchOutcome, BatchShareRequest, CreateShareRequest, UpdateShareRequest};
 use crate::sharing::{perm_names, PERM_ALL};
 use crate::web::state::SharedState;
 
@@ -33,15 +33,24 @@ const ENVELOPE_MAX_CHARS: usize = 8192;
 fn check_envelope(envelope: &Option<String>) -> Result<(), AppError> {
     match envelope {
         None => Ok(()),
-        Some(env) if env.is_empty() => Err(AppError::BadRequest(
+        Some(env) => check_envelope_str(env),
+    }
+}
+
+/// The size rule itself, shared by creation and the re-seal update.
+fn check_envelope_str(envelope: &str) -> Result<(), AppError> {
+    if envelope.is_empty() {
+        return Err(AppError::BadRequest(
             "empty key envelope - send the wrapped record or no field at all".into(),
-        )),
-        Some(env) if env.len() > ENVELOPE_MAX_CHARS => Err(AppError::BadRequest(format!(
+        ));
+    }
+    if envelope.len() > ENVELOPE_MAX_CHARS {
+        return Err(AppError::BadRequest(format!(
             "key envelope is too large - one share carries one wrapped key record, \
              up to {ENVELOPE_MAX_CHARS} characters"
-        ))),
-        Some(_) => Ok(()),
+        )));
     }
+    Ok(())
 }
 
 /// POST /api/shares – share a file/folder with another user.
@@ -131,6 +140,28 @@ pub async fn revoke(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// PUT /api/shares/:id – re-seal the envelope of a share I created (5.6).
+///
+/// The re-key flow is the only caller: it rotates a folder key and
+/// replaces each remaining grantee's envelope with one sealed to the new
+/// key. Authority is the row's owner (`list_outgoing` shows exactly these
+/// rows, and `create_share` refuses every row the caller does not own), so
+/// a foreign or already-revoked id answers 404 - the same silence as
+/// revoke.
+pub async fn put_envelope(
+    State(state): State<SharedState>,
+    user: AuthUser,
+    Path(id): Path<i64>,
+    Json(req): Json<UpdateShareRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    check_envelope_str(&req.envelope)?;
+    state
+        .db
+        .update_share_envelope(user.id(), id, req.envelope)
+        .await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// GET /api/shares/outgoing[?file_id=N] – shares I created, optionally for one item.
 pub async fn outgoing(
     State(state): State<SharedState>,
@@ -176,4 +207,34 @@ pub async fn incoming(
             "envelope": s.envelope,
         })).collect::<Vec<_>>(),
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn envelope_size_rules_are_shared_by_create_and_reseal() {
+        // Plaintext shares carry none and skip the rule entirely.
+        assert!(check_envelope(&None).is_ok());
+        assert!(check_envelope_str("env").is_ok());
+
+        let empty = check_envelope_str("").expect_err("empty refused");
+        assert!(matches!(&empty, AppError::BadRequest(msg) if msg.contains("empty key envelope")));
+
+        // The ceiling itself passes, one byte over does not.
+        assert!(check_envelope_str(&"x".repeat(ENVELOPE_MAX_CHARS)).is_ok());
+        let big =
+            check_envelope_str(&"x".repeat(ENVELOPE_MAX_CHARS + 1)).expect_err("oversize refused");
+        assert!(matches!(&big, AppError::BadRequest(msg) if msg.contains("too large")));
+
+        // Both entry points answer identically for the same blob.
+        assert_eq!(
+            format!(
+                "{:?}",
+                check_envelope(&Some(String::new())).expect_err("same empty rule")
+            ),
+            format!("{:?}", check_envelope_str("").expect_err("same empty rule"))
+        );
+    }
 }
