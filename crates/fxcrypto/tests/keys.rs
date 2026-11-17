@@ -14,10 +14,11 @@
 
 use base64::Engine as _;
 use fxcrypto::{
-    child_key_aad, derive_kek, derive_recovery_kek, fingerprint_hex, open_with_recovery,
-    rewrap_account, session_from_ark, unlock_account, unwrap, unwrap_child_key, wrap,
-    wrap_child_key, AccountKeys, Error, KdfParams, Session, AAD_ARK, AAD_ARK_RECOVERY, AAD_PRIVKEY,
-    AAD_ROOTKEY, KDF_M_KIB, KDF_P, KDF_T, SALT_LEN,
+    child_key_aad, derive_kek, derive_recovery_kek, ecies_open, ecies_seal, fingerprint_hex,
+    generate_key_pair, open_with_recovery, rewrap_account, session_from_ark, share_envelope_aad,
+    unlock_account, unwrap, unwrap_child_key, wrap, wrap_child_key, AccountKeys, Error, KdfParams,
+    Session, AAD_ARK, AAD_ARK_RECOVERY, AAD_PRIVKEY, AAD_ROOTKEY, KDF_M_KIB, KDF_P, KDF_T,
+    SALT_LEN, SUITE_P256,
 };
 use serde_json::Value;
 
@@ -64,6 +65,16 @@ struct Case {
     public_blob_b64: Option<String>,
     #[serde(default)]
     fingerprint_hex: Option<String>,
+    #[serde(default)]
+    envelope_b64: Option<String>,
+    #[serde(default)]
+    recipient_pkcs8_b64: Option<String>,
+    #[serde(default)]
+    recipient_public_b64: Option<String>,
+    #[serde(default)]
+    aad: Option<Value>,
+    #[serde(default)]
+    plaintext_b64: Option<String>,
     #[serde(default)]
     key_hex: Option<String>,
     #[serde(default)]
@@ -140,6 +151,16 @@ fn session_diff(s: &Session, expect: &Value) -> Option<String> {
         return Some("session field suite differs".to_string());
     }
     None
+}
+
+/// The envelope AAD a case names ({source_id, grantee}), through the spec
+/// function both implementations share.
+fn envelope_aad(c: &Case) -> Vec<u8> {
+    let aad = c.aad.as_ref().expect("aad present");
+    share_envelope_aad(
+        aad["source_id"].as_u64().expect("source_id"),
+        aad["grantee"].as_str().expect("grantee"),
+    )
 }
 
 /// Run one case; `Ok(())` = matched (or, for reject cases, failed with the
@@ -221,6 +242,25 @@ fn run_case(c: &Case) -> Result<(), String> {
             let wrapped = b64(c.wrapped_b64.as_ref().ok_or("wrapped missing")?);
             let aad = b64(c.aad_b64.as_ref().ok_or("aad missing")?);
             unwrap(&key, &wrapped, &aad).map_err(|e| e.to_string())?;
+        }
+        "ecies_open" => {
+            let aad = envelope_aad(c);
+            let pkcs8 = b64(c
+                .recipient_pkcs8_b64
+                .as_ref()
+                .ok_or("recipient_pkcs8 missing")?);
+            let envelope = b64(c.envelope_b64.as_ref().ok_or("envelope missing")?);
+            let got = ecies_open(&pkcs8, &envelope, &aad).map_err(|e| e.to_string())?;
+            let want = b64(c.plaintext_b64.as_ref().ok_or("plaintext missing")?);
+            if got != want {
+                return Err("plaintext differs".to_string());
+            }
+        }
+        "ecies_seal" => {
+            let aad = envelope_aad(c);
+            let recipient = b64(c.recipient_public_b64.as_ref().ok_or("recipient missing")?);
+            let plain = b64(c.plaintext_b64.as_ref().ok_or("plaintext missing")?);
+            ecies_seal(&recipient, &plain, &aad).map_err(|e| e.to_string())?;
         }
         other => return Err(format!("unknown case kind {other}")),
     }
@@ -419,4 +459,82 @@ fn kdf_parameter_semantics() {
         derive_kek("x", &[], KdfParams::default()),
         Err(Error::Kdf)
     ));
+}
+
+/// ECIES on both suites (5.5): seal -> open roundtrip, the unified
+/// failures, and the committed messages for garbage recipients.
+#[test]
+fn envelope_roundtrip_on_both_suites() {
+    let aad = share_envelope_aad(77, "user-9");
+    let plain = b"sealed folder key".to_vec();
+    for preferred in [None, Some(SUITE_P256)] {
+        let kp = generate_key_pair(preferred).expect("key pair");
+        assert_eq!(kp.suite, preferred.unwrap_or(fxcrypto::SUITE_X25519));
+        assert_eq!(kp.public_blob[0], kp.suite, "suite leads the blob");
+
+        let env = ecies_seal(&kp.public_blob, &plain, &aad).expect("seal");
+        let point_len = if kp.suite == fxcrypto::SUITE_X25519 {
+            33
+        } else {
+            66
+        };
+        assert_eq!(
+            env.len(),
+            point_len + fxcrypto::NONCE_LEN + plain.len() + 16,
+            "layout: suite||point||nonce12||ct||tag16"
+        );
+        assert_eq!(env[0], kp.suite, "suite byte leads");
+        assert_eq!(ecies_open(&kp.pkcs8, &env, &aad).expect("open"), plain);
+
+        // Every way of not being the recipient ends in one message.
+        let foreign = share_envelope_aad(77, "user-10");
+        let err = ecies_open(&kp.pkcs8, &env, &foreign)
+            .expect_err("foreign aad")
+            .to_string();
+        assert!(
+            err.contains("could not unwrap this key - wrong passphrase, or the data was altered"),
+            "unified message: {err}"
+        );
+        let mut tampered = env.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        assert!(matches!(
+            ecies_open(&kp.pkcs8, &tampered, &aad),
+            Err(Error::Unwrap)
+        ));
+        assert!(matches!(
+            ecies_open(&kp.pkcs8, &env[..10], &aad),
+            Err(Error::Unwrap)
+        ));
+        let mut unknown = env.clone();
+        unknown[0] = 9;
+        assert!(matches!(
+            ecies_open(&kp.pkcs8, &unknown, &aad),
+            Err(Error::Unwrap)
+        ));
+        let stranger = generate_key_pair(Some(kp.suite)).expect("stranger");
+        assert!(matches!(
+            ecies_open(&stranger.pkcs8, &env, &aad),
+            Err(Error::Unwrap)
+        ));
+    }
+
+    // Cross-suite: an X25519 key must not open a P-256 envelope (JS hits a
+    // WebCrypto type error with browser-defined text; unified is ours).
+    let x = generate_key_pair(None).expect("x key");
+    let p = generate_key_pair(Some(SUITE_P256)).expect("p key");
+    let env = ecies_seal(&p.public_blob, &plain, &aad).expect("seal p");
+    assert!(matches!(
+        ecies_open(&x.pkcs8, &env, &aad),
+        Err(Error::Unwrap)
+    ));
+
+    // Sealing refuses garbage recipients with the committed messages.
+    let err = ecies_seal(&[1], &plain, &aad)
+        .expect_err("one-byte recipient")
+        .to_string();
+    assert_eq!(err, "recipient public key is too short");
+    let err = ecies_seal(&[9, 1, 2], &plain, &aad)
+        .expect_err("unknown suite")
+        .to_string();
+    assert_eq!(err, "unknown key suite 9");
 }

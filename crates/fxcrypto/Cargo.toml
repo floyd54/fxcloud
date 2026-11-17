@@ -12,11 +12,15 @@ license = "AGPL-3.0-or-later"
 [dependencies]
 aes-gcm = "0.10"
 # rand0.10 matches the elliptic-curve/p256 stack in this lockfile (the
-# ECDH ephemeral keys below take an RngCore of exactly that generation).
+# ECDH paths take an RngCore of exactly that generation).
 rand = "0.10"
 argon2 = "0.5"
 hkdf = "0.13"
 sha2 = "0.11"
+# X25519 first, P-256 fallback (DECISION 1). getrandom is not part of
+# either default feature set but both crates' key generation needs it.
+x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
+p256 = { version = "0.14", features = ["ecdh", "pkcs8", "getrandom"] }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

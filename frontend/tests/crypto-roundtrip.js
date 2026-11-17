@@ -137,6 +137,32 @@ async function main() {
     assert(refused, "the old passphrase must stop working");
   });
 
+  await check("an envelope seals to a recipient and opens only for them", async () => {
+    for (const suite of [FX.SUITE_X25519, FX.SUITE_P256]) {
+      const rec = await FX.generateKeyPair(suite);
+      const aad = FX.shareEnvelopeAad(77, "user-9");
+      const plain = FX.utf8("folder key bytes");
+      const env = await FX.eciesSeal(rec.publicBlob, plain, aad);
+      const opened = await FX.eciesOpen(rec.privateKey, env, aad);
+      assert(FX.equalBytes(opened, plain), "roundtrip differs for suite " + suite);
+      let refused = false;
+      try {
+        await FX.eciesOpen(rec.privateKey, env, FX.shareEnvelopeAad(77, "user-10"));
+      } catch (_) {
+        refused = true;
+      }
+      assert(refused, "a foreign grantee's AAD must not open it (suite " + suite + ")");
+      const other = await FX.generateKeyPair(suite);
+      refused = false;
+      try {
+        await FX.eciesOpen(other.privateKey, env, aad);
+      } catch (_) {
+        refused = true;
+      }
+      assert(refused, "the wrong recipient must not open it (suite " + suite + ")");
+    }
+  });
+
   // ---------------------------------------------- device unlock (5.7, phase 4)
 
   await check("device blob wraps and opens the ARK only with its own key", async () => {

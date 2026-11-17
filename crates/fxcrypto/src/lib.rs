@@ -14,6 +14,9 @@
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::elliptic_curve::Generate;
+use p256::pkcs8::EncodePrivateKey;
 
 /// Container magic: `FXE1` (fxcrypto.js `MAGIC`).
 pub const MAGIC: [u8; 4] = *b"FXE1";
@@ -118,6 +121,15 @@ pub enum Error {
     Unwrap,
     /// `public_key` is missing its suite byte.
     PublicBlob,
+    /// A published blob or envelope names a suite neither implementation
+    /// knows (`fxcrypto.js`: "unknown key suite N").
+    UnknownSuite(u8),
+    /// Sealing to a recipient whose published blob carries no point.
+    RecipientKeyShort,
+    /// A stored private key that parses as neither X25519 nor P-256 PKCS#8.
+    /// (The JS twin fails the WebCrypto import here with a browser-defined
+    /// message, so this one is deliberately not vector-pinned.)
+    Pkcs8,
 }
 
 impl std::fmt::Display for Error {
@@ -141,6 +153,9 @@ impl std::fmt::Display for Error {
                 "could not unwrap this key - wrong passphrase, or the data was altered"
             ),
             Error::PublicBlob => write!(f, "public key is too short"),
+            Error::UnknownSuite(s) => write!(f, "unknown key suite {s}"),
+            Error::RecipientKeyShort => write!(f, "recipient public key is too short"),
+            Error::Pkcs8 => write!(f, "private key could not be imported"),
         }
     }
 }
@@ -545,4 +560,235 @@ pub fn rewrap_account(ark: &[u8], new_passphrase: &str) -> Result<RewrappedArk, 
         kdf_salt: salt.to_vec(),
         kdf_params: params,
     })
+}
+
+// ---- key pairs and share envelopes (mirror fxcrypto.js397/487, ENCRYPTION.md5.5) ----
+
+/// HKDF labels for one envelope's key agreement (5.5): fixed labels, no
+/// per-share salt - the shared secret is already fresh (a new ephemeral
+/// pair per envelope) and the AAD binds the result to one share.
+pub const SHARE_HKDF_SALT: &[u8] = b"fx1:share-kek:v1";
+pub const SHARE_HKDF_INFO: &[u8] = b"fx1:share:v1";
+
+/// X25519 PKCS#8 v2 private-key prefix (RFC8410): SEQUENCE { INTEGER0,
+/// id-X25519, OCTET STRING { OCTET STRING raw } }. WebCrypto exports
+/// exactly this shape; the golden vectors pin our reading of it.
+const X25519_PKCS8_PREFIX: [u8; 16] = [
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20,
+];
+
+/// Raw point length behind a suite byte (fxcrypto.js `publicKeyLen`).
+fn public_key_len(suite: u8) -> Result<usize, Error> {
+    match suite {
+        SUITE_X25519 => Ok(32),
+        SUITE_P256 => Ok(65), // uncompressed point: "04" || x || y
+        s => Err(Error::UnknownSuite(s)),
+    }
+}
+
+/// A published key (suite || point), parsed per its suite.
+enum CurvePublic {
+    X25519(x25519_dalek::PublicKey),
+    P256(p256::PublicKey),
+}
+
+fn import_public_blob(blob: &[u8]) -> Result<CurvePublic, Error> {
+    if blob.len() < 2 {
+        return Err(Error::PublicBlob);
+    }
+    let point_len = public_key_len(blob[0])?;
+    if blob.len() != 1 + point_len {
+        return Err(Error::PublicBlob);
+    }
+    match blob[0] {
+        SUITE_X25519 => {
+            let mut raw = [0u8; 32];
+            raw.copy_from_slice(&blob[1..33]);
+            Ok(CurvePublic::X25519(x25519_dalek::PublicKey::from(raw)))
+        }
+        _ => Ok(CurvePublic::P256(
+            p256::PublicKey::from_sec1_bytes(&blob[1..]).map_err(|_| Error::PublicBlob)?,
+        )),
+    }
+}
+
+/// My private key (PKCS#8), parsed per its suite.
+enum CurveSecret {
+    X25519(x25519_dalek::StaticSecret),
+    P256(p256::SecretKey),
+}
+
+impl CurveSecret {
+    fn suite(&self) -> u8 {
+        match self {
+            CurveSecret::X25519(_) => SUITE_X25519,
+            CurveSecret::P256(_) => SUITE_P256,
+        }
+    }
+
+    /// ECDH against the ephemeral blob of an envelope; the raw shared
+    /// secret is byte-for-byte what WebCrypto `deriveBits(..., 256)`
+    /// returns (X25519 u-coordinate / P-256 X coordinate,32 bytes).
+    fn diffie_hellman(&self, eph_blob: &[u8]) -> Result<Vec<u8>, Error> {
+        match self {
+            CurveSecret::X25519(secret) => {
+                if eph_blob.len() != 33 {
+                    return Err(Error::PublicBlob);
+                }
+                let mut raw = [0u8; 32];
+                raw.copy_from_slice(&eph_blob[1..33]);
+                let eph = x25519_dalek::PublicKey::from(raw);
+                Ok(secret.diffie_hellman(&eph).as_bytes().to_vec())
+            }
+            CurveSecret::P256(secret) => {
+                let point = eph_blob.get(1..).ok_or(Error::PublicBlob)?;
+                let eph = p256::PublicKey::from_sec1_bytes(point).map_err(|_| Error::PublicBlob)?;
+                Ok(secret.diffie_hellman(&eph).raw_secret_bytes().to_vec())
+            }
+        }
+    }
+}
+
+fn import_private_key(pkcs8: &[u8]) -> Result<CurveSecret, Error> {
+    if pkcs8.len() == X25519_PKCS8_PREFIX.len() + 32 && pkcs8[..16] == X25519_PKCS8_PREFIX {
+        let mut raw = [0u8; 32];
+        raw.copy_from_slice(&pkcs8[16..]);
+        return Ok(CurveSecret::X25519(x25519_dalek::StaticSecret::from(raw)));
+    }
+    p256::SecretKey::from_der(pkcs8)
+        .map(CurveSecret::P256)
+        .map_err(|_| Error::Pkcs8)
+}
+
+/// A fresh key pair (fxcrypto.js `generateKeyPair`): X25519 first, P-256
+/// when asked for (DECISION 1). The private key travels as PKCS#8 - the
+/// RFC8410 layout for X25519, the crate's DER for P-256.
+#[derive(Debug, Clone)]
+pub struct KeyPair {
+    pub suite: u8,
+    pub public_blob: Vec<u8>,
+    pub pkcs8: Vec<u8>,
+}
+
+pub fn generate_key_pair(preferred: Option<u8>) -> Result<KeyPair, Error> {
+    match preferred {
+        Some(SUITE_P256) => {
+            let secret = p256::SecretKey::generate();
+            let pkcs8 = secret
+                .to_pkcs8_der()
+                .map_err(|_| Error::Pkcs8)?
+                .as_bytes()
+                .to_vec();
+            let mut public_blob = Vec::with_capacity(66);
+            public_blob.push(SUITE_P256);
+            public_blob.extend_from_slice(secret.public_key().to_sec1_point(false).as_bytes());
+            Ok(KeyPair {
+                suite: SUITE_P256,
+                public_blob,
+                pkcs8,
+            })
+        }
+        // None, X25519, or anything unknown: the JS else-branch picks
+        // X25519 (it only falls back to P-256 when the browser cannot).
+        _ => {
+            let secret = x25519_dalek::StaticSecret::random();
+            let mut public_blob = Vec::with_capacity(33);
+            public_blob.push(SUITE_X25519);
+            public_blob.extend_from_slice(&x25519_dalek::PublicKey::from(&secret).to_bytes());
+            let mut pkcs8 = X25519_PKCS8_PREFIX.to_vec();
+            pkcs8.extend_from_slice(&secret.to_bytes());
+            Ok(KeyPair {
+                suite: SUITE_X25519,
+                public_blob,
+                pkcs8,
+            })
+        }
+    }
+}
+
+/// AAD binding one envelope to its share (5.5): the source row and the
+/// grantee it was sealed for, plus the key-record version so a future
+/// record format cannot be replayed as this one. Both bindings do real
+/// work: no replaying a stored envelope against a second share of the
+/// same source, and no handing a colleague *your* envelope as if it had
+/// been sealed for them.
+pub fn share_envelope_aad(source_id: u64, grantee: &str) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(8 + grantee.len() + 1);
+    aad.extend_from_slice(&source_id.to_be_bytes());
+    aad.extend_from_slice(grantee.as_bytes());
+    aad.push(KEY_RECORD_VERSION);
+    aad
+}
+
+/// Seal one key record to a recipient's published key (5.5): ephemeral
+/// ECDH in the *recipient's* suite -> HKDF-SHA-256 -> AES-256-GCM. The
+/// result is `eph.publicBlob || nonce12 || ct||tag` - the suite byte
+/// travels with the ephemeral blob, so sender and recipient never
+/// negotiate anything out of band. Returns raw bytes (the JS twin
+/// base64-encodes on its side of the boundary).
+pub fn ecies_seal(
+    recipient_public_blob: &[u8],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, Error> {
+    if recipient_public_blob.len() < 2 {
+        return Err(Error::RecipientKeyShort);
+    }
+    // Parse before generating anything: a garbage suite byte fails here
+    // instead of producing an envelope nobody can open.
+    let recipient = import_public_blob(recipient_public_blob)?;
+    let (eph_blob, shared) = match recipient {
+        CurvePublic::X25519(recipient) => {
+            let eph = x25519_dalek::StaticSecret::random();
+            let eph_pub = x25519_dalek::PublicKey::from(&eph);
+            let mut blob = Vec::with_capacity(33);
+            blob.push(SUITE_X25519);
+            blob.extend_from_slice(&eph_pub.to_bytes());
+            let shared = eph.diffie_hellman(&recipient).as_bytes().to_vec();
+            (blob, shared)
+        }
+        CurvePublic::P256(recipient) => {
+            let eph = p256::ecdh::EphemeralSecret::generate();
+            let eph_pub = eph.public_key();
+            let mut blob = Vec::with_capacity(66);
+            blob.push(SUITE_P256);
+            blob.extend_from_slice(eph_pub.to_sec1_point(false).as_bytes());
+            let shared = eph.diffie_hellman(&recipient).raw_secret_bytes().to_vec();
+            (blob, shared)
+        }
+    };
+    let wrap_key = hkdf_sha256(&shared, SHARE_HKDF_SALT, SHARE_HKDF_INFO, KEY_LEN)?;
+    let wrapped = wrap(&wrap_key, plaintext, aad)?;
+    let mut out = eph_blob;
+    out.extend_from_slice(&wrapped);
+    Ok(out)
+}
+
+/// Open a sealed envelope with my own private key (fxcrypto.js
+/// `eciesOpen`). Unknown suite, short blob, wrong recipient, tampering
+/// and a foreign AAD all end in the unified message on purpose (5.5):
+/// telling them apart would tell a prober something.
+pub fn ecies_open(private_key_pkcs8: &[u8], envelope: &[u8], aad: &[u8]) -> Result<Vec<u8>, Error> {
+    let suite = match envelope.first() {
+        Some(&s) => s,
+        None => return Err(Error::Unwrap),
+    };
+    let point_len = match suite {
+        SUITE_X25519 => 32usize,
+        SUITE_P256 => 65,
+        // JS: publicKeyLen throws and eciesOpen folds it into the message.
+        _ => return Err(Error::Unwrap),
+    };
+    if envelope.len() < 1 + point_len + NONCE_LEN + TAG_LEN {
+        return Err(Error::Unwrap);
+    }
+    let secret = import_private_key(private_key_pkcs8)?;
+    if secret.suite() != suite {
+        // JS hits a WebCrypto type error here (browser-defined text);
+        // "not mine" is the unified answer either way.
+        return Err(Error::Unwrap);
+    }
+    let shared = secret.diffie_hellman(&envelope[..1 + point_len])?;
+    let wrap_key = hkdf_sha256(&shared, SHARE_HKDF_SALT, SHARE_HKDF_INFO, KEY_LEN)?;
+    unwrap(&wrap_key, &envelope[1 + point_len..], aad)
 }

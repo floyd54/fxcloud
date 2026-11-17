@@ -52,6 +52,63 @@ const b64 = (b) => Buffer.from(b).toString("base64");
 const unb64 = (s) => Buffer.from(s, "base64");
 const unhex = (s) => Buffer.from(s, "hex");
 
+// HKDF labels for one envelope's key agreement (5.5) - restated here as
+// the spec side, the way gen-fx1 restates the container header.
+const SHARE_SALT = Buffer.from("fx1:share-kek:v1");
+const SHARE_INFO = Buffer.from("fx1:share:v1");
+
+/** ECDH (WebCrypto) + HKDF + wrap under a *committed* ephemeral key. The
+ *  real eciesSeal mints a fresh pair per call - exactly what a reproducible
+ *  vector cannot hold - so this file does the spec side and both readers
+ *  must open the result. */
+async function sealWithEph(ephPkcs8, ephPublicBlob, recipientPublicBlob, plaintext, aad) {
+  const suite = recipientPublicBlob[0];
+  const ephPriv = await FX.importPrivateKey(ephPkcs8, suite);
+  const recipient = await FX.importPublicKey(recipientPublicBlob);
+  const shared = new Uint8Array(
+    await subtle.deriveBits(
+      { name: suite === FX.SUITE_X25519 ? "X25519" : "ECDH", public: recipient },
+      ephPriv,
+      256
+    )
+  );
+  const wrapKey = await FX.hkdf(shared, SHARE_SALT, SHARE_INFO, 32);
+  const wrapped = await FX.wrap(wrapKey, plaintext, aad);
+  return Buffer.concat([Buffer.from(ephPublicBlob), Buffer.from(wrapped)]);
+}
+
+/** Byte-exact re-seal under the envelope's OWN ephemeral key and nonce:
+ *  pins the layout (suite || ephPub || iv || ct), the HKDF labels and the
+ *  ephemeral-key binding on the JS side - the Rust side pins the same file
+ *  by opening it. */
+async function resealMatches(c, aad) {
+  const env = unb64(c.envelope_b64);
+  const pubLen = c.recipient_suite === FX.SUITE_X25519 ? 32 : 65;
+  if (!Buffer.from(env.subarray(0, 1 + pubLen)).equals(unb64(c.eph_public_blob_b64))) {
+    return false;
+  }
+  const ephPriv = await FX.importPrivateKey(unb64(c.eph_pkcs8_b64), c.recipient_suite);
+  const recipient = await FX.importPublicKey(unb64(c.recipient_public_b64));
+  const shared = new Uint8Array(
+    await subtle.deriveBits(
+      { name: c.recipient_suite === FX.SUITE_X25519 ? "X25519" : "ECDH", public: recipient },
+      ephPriv,
+      256
+    )
+  );
+  const wrapKey = await FX.hkdf(shared, SHARE_SALT, SHARE_INFO, 32);
+  const key = await subtle.importKey("raw", wrapKey, { name: "AES-GCM" }, false, ["encrypt"]);
+  const nonce = env.subarray(1 + pubLen, 1 + pubLen + 12);
+  const ct = Buffer.from(
+    await subtle.encrypt(
+      { name: "AES-GCM", iv: nonce, additionalData: aad, tagLength: 128 },
+      key,
+      unb64(c.plaintext_b64)
+    )
+  );
+  return Buffer.from(env.subarray(1 + pubLen + 12)).equals(ct);
+}
+
 async function expectFromSession(s) {
   // session.privateKey is a CryptoKey, but generateKeyPair/importPrivateKey
   // both build it extractable, so the pkcs8 bytes can be compared back.
@@ -186,6 +243,55 @@ async function buildCases() {
     fingerprint_hex: await FX.fingerprint(kpP.publicBlob),
   });
 
+  // --- ECIES share envelopes (5.5): both suites, committed eph key ---
+  const accPkcs8 = new Uint8Array(
+    await subtle.exportKey("pkcs8", acc.session.privateKey)
+  );
+  const recAcc = {
+    suite: acc.session.suite,
+    publicBlob: acc.session.publicBlob,
+    pkcs8: accPkcs8,
+  };
+  const envelopeCase = async (name, recipient, sourceId, grantee, plain) => {
+    const eph = await FX.generateKeyPair(recipient.suite);
+    const aad = FX.shareEnvelopeAad(sourceId, grantee);
+    const env = await sealWithEph(
+      eph.pkcs8,
+      eph.publicBlob,
+      recipient.publicBlob,
+      plain,
+      aad
+    );
+    cases.push({
+      kind: "ecies_open",
+      name,
+      envelope_b64: b64(env),
+      recipient_pkcs8_b64: b64(recipient.pkcs8),
+      recipient_public_b64: b64(recipient.publicBlob),
+      recipient_suite: recipient.suite,
+      plaintext_b64: b64(plain),
+      aad: { source_id: sourceId, grantee },
+      eph_pkcs8_b64: b64(eph.pkcs8),
+      eph_public_blob_b64: b64(eph.publicBlob),
+    });
+    return { env, aad: { source_id: sourceId, grantee }, recipient };
+  };
+
+  const base = await envelopeCase(
+    "ecies: x25519 recipient opens",
+    recAcc,
+    77,
+    "user-9",
+    FX.utf8("folder key bytes")
+  );
+  await envelopeCase(
+    "ecies: p256 recipient opens",
+    await FX.generateKeyPair(FX.SUITE_P256),
+    77,
+    "user-9",
+    FX.utf8("folder key bytes")
+  );
+
   // --- rejections: the exact messages both readers must produce ---
   const UNIFIED = "could not unwrap this key - wrong passphrase, or the data was altered";
   const pushReject = (name, kind, fields, errorContains) =>
@@ -243,6 +349,45 @@ async function buildCases() {
       wrapped_child_b64: wrappedChild,
     }, UNIFIED);
   }
+
+  // --- ECIES rejections: one unified answer for "not mine"/"tampered" ---
+  const envReject = (name, env, recipient, aad, errorContains) =>
+    pushReject(name, "ecies_open", {
+      envelope_b64: b64(env),
+      recipient_pkcs8_b64: b64(recipient.pkcs8),
+      recipient_suite: recipient.suite,
+      aad,
+    }, errorContains);
+
+  {
+    const tampered = Buffer.from(base.env);
+    tampered[tampered.length - 1] ^= 1;
+    envReject("reject: tampered envelope", tampered, recAcc, base.aad, UNIFIED);
+    envReject(
+      "reject: envelope for another grantee",
+      base.env,
+      recAcc,
+      { source_id: 77, grantee: "user-10" },
+      UNIFIED
+    );
+    envReject("reject: truncated envelope", base.env.subarray(0, 40), recAcc, base.aad, UNIFIED);
+    const wrongSuite = Buffer.from(base.env);
+    wrongSuite[0] = 9;
+    envReject("reject: envelope with unknown suite", wrongSuite, recAcc, base.aad, UNIFIED);
+    const stranger = await FX.generateKeyPair(FX.SUITE_X25519);
+    envReject("reject: opened by the wrong recipient", base.env, stranger, base.aad, UNIFIED);
+  }
+
+  pushReject("reject: seal to a one-byte key", "ecies_seal", {
+    recipient_public_b64: b64(Buffer.from([1])),
+    plaintext_b64: b64(Buffer.from("x")),
+    aad: { source_id: 77, grantee: "user-9" },
+  }, "recipient public key is too short");
+  pushReject("reject: seal to an unknown suite", "ecies_seal", {
+    recipient_public_b64: b64(Buffer.from([9, 1, 2])),
+    plaintext_b64: b64(Buffer.from("x")),
+    aad: { source_id: 77, grantee: "user-9" },
+  }, "unknown key suite 9");
 
   return cases;
 }
@@ -370,6 +515,39 @@ async function verify() {
           }
           break;
         }
+        case "ecies_open": {
+          const priv = await FX.importPrivateKey(
+            unb64(c.recipient_pkcs8_b64),
+            c.recipient_suite
+          );
+          const aad = FX.shareEnvelopeAad(c.aad.source_id, c.aad.grantee);
+          if (c.eph_pkcs8_b64 && !(await resealMatches(c, aad))) {
+            fail(c, "committed envelope does not re-seal byte for byte under its own eph key");
+            break;
+          }
+          const got = await FX.eciesOpen(priv, c.envelope_b64, aad);
+          if (c.expect_error) {
+            fail(c, "expected an error, got success");
+          } else if (!Buffer.from(got).equals(unb64(c.plaintext_b64))) {
+            fail(c, "plaintext differs");
+          } else {
+            passed++;
+          }
+          break;
+        }
+        case "ecies_seal": {
+          await FX.eciesSeal(
+            unb64(c.recipient_public_b64),
+            unb64(c.plaintext_b64),
+            FX.shareEnvelopeAad(c.aad.source_id, c.aad.grantee)
+          );
+          if (c.expect_error) {
+            fail(c, "expected an error, got success");
+          } else {
+            passed++;
+          }
+          break;
+        }
         default:
           fail(c, "unknown case kind");
       }
@@ -407,13 +585,17 @@ async function write() {
   const doc = {
     format: "fx-keys-golden-vectors",
     spec:
-      "ENCRYPTION.md 5.1/5.4/5.7: Argon2id KEK (m,t,p;0/absent = floor), " +
+      "ENCRYPTION.md 5.1/5.4/5.5/5.7: Argon2id KEK (m,t,p;0/absent = floor), " +
       "wrap = nonce12||ct||tag under a domain-separated AAD (ark, ark-recovery, " +
       "privkey, rootkey), session = ark -> root key + pkcs8 + published blob " +
       "(suite || point), recovery = HKDF(recovery, salt, 'fx1:recovery-kek:v1'), " +
       "child aad = u64be(id) || version1, fingerprint = sha256(blob)[0..16] " +
-      "hex32. Wraps carry fresh nonces, so vectors pin the read side; the JS " +
-      "write side roundtrips in crypto-roundtrip.js.",
+      "hex32, ECIES envelope = eph.publicBlob(suite||point) || nonce12 || ct with " +
+      "wrapKey = HKDF-SHA256(ECDH, 'fx1:share-kek:v1', 'fx1:share:v1') and aad = " +
+      "u64be(source_id) || utf8(grantee) || version1. Wraps carry fresh nonces, " +
+      "so vectors pin the read side - committed ephemeral keys make the seal " +
+      "reproducible for --check; the JS write side roundtrips in " +
+      "crypto-roundtrip.js.",
     cases,
   };
   fs.mkdirSync(path.dirname(OUT), { recursive: true });

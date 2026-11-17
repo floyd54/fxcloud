@@ -1,127 +1,127 @@
 {
  "format": "fx-keys-golden-vectors",
- "spec": "ENCRYPTION.md 5.1/5.4/5.7: Argon2id KEK (m,t,p;0/absent = floor), wrap = nonce12||ct||tag under a domain-separated AAD (ark, ark-recovery, privkey, rootkey), session = ark -> root key + pkcs8 + published blob (suite || point), recovery = HKDF(recovery, salt, 'fx1:recovery-kek:v1'), child aad = u64be(id) || version1, fingerprint = sha256(blob)[0..16] hex32. Wraps carry fresh nonces, so vectors pin the read side; the JS write side roundtrips in crypto-roundtrip.js.",
+ "spec": "ENCRYPTION.md 5.1/5.4/5.5/5.7: Argon2id KEK (m,t,p;0/absent = floor), wrap = nonce12||ct||tag under a domain-separated AAD (ark, ark-recovery, privkey, rootkey), session = ark -> root key + pkcs8 + published blob (suite || point), recovery = HKDF(recovery, salt, 'fx1:recovery-kek:v1'), child aad = u64be(id) || version1, fingerprint = sha256(blob)[0..16] hex32, ECIES envelope = eph.publicBlob(suite||point) || nonce12 || ct with wrapKey = HKDF-SHA256(ECDH, 'fx1:share-kek:v1', 'fx1:share:v1') and aad = u64be(source_id) || utf8(grantee) || version1. Wraps carry fresh nonces, so vectors pin the read side - committed ephemeral keys make the seal reproducible for --check; the JS write side roundtrips in crypto-roundtrip.js.",
  "cases": [
   {
    "kind": "kdf",
    "name": "kdf: floor params",
    "passphrase": "correct horse battery staple",
-   "salt_b64": "ChZopOfgz2FG9l1wLsS4eQ==",
+   "salt_b64": "/9WBdHxvEJv0lp+MmPjeMQ==",
    "params": {
     "kdf": "argon2id",
     "m": 65536,
     "t": 3,
     "p": 1
    },
-   "kek_hex": "fe9aef18132ef133fa21c8d69d026da39313459d17e7d73a0cd14c0a970ddfc0"
+   "kek_hex": "aec145206673784101518d122f8025122d0c395f885aa1b16554d056be63c506"
   },
   {
    "kind": "kdf",
    "name": "kdf: stored params (128 MiB x2)",
    "passphrase": "correct horse battery staple",
-   "salt_b64": "55d22lETfks2GLUSjW03VA==",
+   "salt_b64": "xkm6yB9H5oOMvmrRn4NZtQ==",
    "params": {
     "kdf": "argon2id",
     "m": 131072,
     "t": 2,
     "p": 1
    },
-   "kek_hex": "dc5f492f1a7a380f0a75a23dc4be301660c59d1986eda6dccac2fa2a3d377ac3"
+   "kek_hex": "66e5c4901e248de07fd1cf1b8685093fe40514379efce009ee0f7f851435ce7a"
   },
   {
    "kind": "kdf",
    "name": "kdf: zeroed params mean floor",
    "passphrase": "correct horse battery staple",
-   "salt_b64": "3aUhs37QXto393I+eQADjA==",
+   "salt_b64": "SH83EccR/FBbKOTV1nlwJQ==",
    "params": {
     "kdf": "argon2id",
     "m": 0,
     "t": 0,
     "p": 0
    },
-   "kek_hex": "4bd2a7f0197fcc21ee7453abb9af31de4c44a32a7c3d72c2d06dcb18d39242b0"
+   "kek_hex": "8020cefff2d85f03a25bddeb7e56111fd56551b47a5e2d100c90a0dcdc3678f8"
   },
   {
    "kind": "unlock",
    "name": "unlock: passphrase -> session (floor params)",
    "passphrase": "correct horse battery staple",
    "keys": {
-    "public_key": "AQR/hjRx3ZJhpIB/rNIjEDJtMVjzJxHkkIEky3GceywV",
-    "private_key_wrapped": "oaFgNpfblKKOMtEcFsYpy2M1PRx38XQ0jWcBZU+OgXwm1pORnwUQzo5ruJiddZR2TxHvU9LNocVdmcah2p4owsW/bfXy4PIQZZTBkA==",
-    "wrapped_ark": "QPi7n4qyZed5b5kbohNEZJ3n62JUJoJSp0U+yoaUy9gJpCQOcer6cwTzU9ZQ5WJh1mGFBsNtwp3Vrr74",
-    "wrapped_root_key": "xbROTfTBhtQrXvqXx27BejMdBvwLM/T7mJsWY1uYXcRR05nmfmFNm75ITLWc/Nq54VFgLJuUcW7WA1Q/",
-    "wrapped_ark_recovery": "GFnSTlUn//o/s75XYmQggw2k6tH2IqfB4Ii6t/Gx6sp9uAiQYcOqKGDSYBbaPODD551paInY+/r+EnqG",
-    "wrapped_recovery": "9ag4F2e1W1klHnPSt7CauDQ/VPu0w0xVLd8xCq5pj/9f7K3gk1qAKt16jIsOw6uYSP+/205m6o0FryyZ",
-    "kdf_salt": "Y6w6jNINrmnZ0OcTlcXCGw==",
+    "public_key": "AZvRRbR1KUzGtdNUPy0Yq2pTKpZM/be7NoKVukHtHfVD",
+    "private_key_wrapped": "GfJxNGEaft2eiM0/2K+mQOs1ylIRP65pbjB4T8BO4cgkmTpiipHfBvoRqLAZLAtq1dUdLLmZmo4Uwu5Bts6wBD50VUIWwRFf2ece5A==",
+    "wrapped_ark": "l6ltxrbn2bridzmzWxn2r5KIXKAWRR6vAVHl51YciGwYlbMXxWNYmm/YY1Lbo3Z2YRhKeopIYiMuxtp+",
+    "wrapped_root_key": "9iDYXrU6z+21j2xaLe7IOPR3VggWadVkkEHlNe3mV3n4JtV6i/LFDQXfUBgvHgIxbaSo5duFmlikNG8I",
+    "wrapped_ark_recovery": "nLe6dpGzHtxpIZpWyf3dfZjifZ4uzFjjU/B91jDrBNmtZEPHRqhbPWP+BMEzH55jVt80TXxdTtlolBdV",
+    "wrapped_recovery": "P+o4M7UFMrtB8xsbDcOI/cx6/5Ul0oeYl6T6ymNC8JUFe/N0YRRL66/V+n8Um03SrzPe8WP6ir7uO587",
+    "kdf_salt": "rnWA1tKOxt4R4mqbATCF1g==",
     "kdf_params": {
      "kdf": "argon2id",
      "m": 65536,
      "t": 3,
      "p": 1
     },
-    "fingerprint": "80be8edeeeed8ac4cfa2a84a1f1d5c4a"
+    "fingerprint": "4cf65d73306f6745e84bb7fae2cd0c0e"
    },
    "expect": {
-    "ark_b64": "FE7MvET6CT38kXz9EEdX/PnsJwaBS2HSndVOsewy/tM=",
-    "root_key_b64": "iuK5gZU+WV/sITaJ2Y/rjNhbTqsX2tmgo3hmqoAwWoo=",
-    "private_key_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIHB837eYP7RXeilC3fp/FynMYSWbkX7CceBPIdbDRtRL",
-    "public_blob_b64": "AQR/hjRx3ZJhpIB/rNIjEDJtMVjzJxHkkIEky3GceywV",
+    "ark_b64": "BsvOWNqWYCfrj5hhjgVIxMDR4DOpTitRIMHYYpBIr+A=",
+    "root_key_b64": "idqc8bWaZ9VtOA+wRbD2SuQdrC0GBaoJ2CRuQLdDasA=",
+    "private_key_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIBg6G8ejz7o6bNr4Hs2lAOSWrtoMt5D669u9gJp5rYlL",
+    "public_blob_b64": "AZvRRbR1KUzGtdNUPy0Yq2pTKpZM/be7NoKVukHtHfVD",
     "suite": 1
    }
   },
   {
    "kind": "session",
    "name": "session: ARK handed over directly",
-   "ark_b64": "FE7MvET6CT38kXz9EEdX/PnsJwaBS2HSndVOsewy/tM=",
+   "ark_b64": "BsvOWNqWYCfrj5hhjgVIxMDR4DOpTitRIMHYYpBIr+A=",
    "keys": {
-    "public_key": "AQR/hjRx3ZJhpIB/rNIjEDJtMVjzJxHkkIEky3GceywV",
-    "private_key_wrapped": "oaFgNpfblKKOMtEcFsYpy2M1PRx38XQ0jWcBZU+OgXwm1pORnwUQzo5ruJiddZR2TxHvU9LNocVdmcah2p4owsW/bfXy4PIQZZTBkA==",
-    "wrapped_ark": "QPi7n4qyZed5b5kbohNEZJ3n62JUJoJSp0U+yoaUy9gJpCQOcer6cwTzU9ZQ5WJh1mGFBsNtwp3Vrr74",
-    "wrapped_root_key": "xbROTfTBhtQrXvqXx27BejMdBvwLM/T7mJsWY1uYXcRR05nmfmFNm75ITLWc/Nq54VFgLJuUcW7WA1Q/",
-    "wrapped_ark_recovery": "GFnSTlUn//o/s75XYmQggw2k6tH2IqfB4Ii6t/Gx6sp9uAiQYcOqKGDSYBbaPODD551paInY+/r+EnqG",
-    "wrapped_recovery": "9ag4F2e1W1klHnPSt7CauDQ/VPu0w0xVLd8xCq5pj/9f7K3gk1qAKt16jIsOw6uYSP+/205m6o0FryyZ",
-    "kdf_salt": "Y6w6jNINrmnZ0OcTlcXCGw==",
+    "public_key": "AZvRRbR1KUzGtdNUPy0Yq2pTKpZM/be7NoKVukHtHfVD",
+    "private_key_wrapped": "GfJxNGEaft2eiM0/2K+mQOs1ylIRP65pbjB4T8BO4cgkmTpiipHfBvoRqLAZLAtq1dUdLLmZmo4Uwu5Bts6wBD50VUIWwRFf2ece5A==",
+    "wrapped_ark": "l6ltxrbn2bridzmzWxn2r5KIXKAWRR6vAVHl51YciGwYlbMXxWNYmm/YY1Lbo3Z2YRhKeopIYiMuxtp+",
+    "wrapped_root_key": "9iDYXrU6z+21j2xaLe7IOPR3VggWadVkkEHlNe3mV3n4JtV6i/LFDQXfUBgvHgIxbaSo5duFmlikNG8I",
+    "wrapped_ark_recovery": "nLe6dpGzHtxpIZpWyf3dfZjifZ4uzFjjU/B91jDrBNmtZEPHRqhbPWP+BMEzH55jVt80TXxdTtlolBdV",
+    "wrapped_recovery": "P+o4M7UFMrtB8xsbDcOI/cx6/5Ul0oeYl6T6ymNC8JUFe/N0YRRL66/V+n8Um03SrzPe8WP6ir7uO587",
+    "kdf_salt": "rnWA1tKOxt4R4mqbATCF1g==",
     "kdf_params": {
      "kdf": "argon2id",
      "m": 65536,
      "t": 3,
      "p": 1
     },
-    "fingerprint": "80be8edeeeed8ac4cfa2a84a1f1d5c4a"
+    "fingerprint": "4cf65d73306f6745e84bb7fae2cd0c0e"
    },
    "expect": {
-    "ark_b64": "FE7MvET6CT38kXz9EEdX/PnsJwaBS2HSndVOsewy/tM=",
-    "root_key_b64": "iuK5gZU+WV/sITaJ2Y/rjNhbTqsX2tmgo3hmqoAwWoo=",
-    "private_key_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIHB837eYP7RXeilC3fp/FynMYSWbkX7CceBPIdbDRtRL",
-    "public_blob_b64": "AQR/hjRx3ZJhpIB/rNIjEDJtMVjzJxHkkIEky3GceywV",
+    "ark_b64": "BsvOWNqWYCfrj5hhjgVIxMDR4DOpTitRIMHYYpBIr+A=",
+    "root_key_b64": "idqc8bWaZ9VtOA+wRbD2SuQdrC0GBaoJ2CRuQLdDasA=",
+    "private_key_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIBg6G8ejz7o6bNr4Hs2lAOSWrtoMt5D669u9gJp5rYlL",
+    "public_blob_b64": "AZvRRbR1KUzGtdNUPy0Yq2pTKpZM/be7NoKVukHtHfVD",
     "suite": 1
    }
   },
   {
    "kind": "recovery_open",
    "name": "recovery key -> full session",
-   "recovery_key_b64": "98YtCKYUHTfta0NDVifm0ujzFzhTU6txicQj6s0Lo/w=",
+   "recovery_key_b64": "1tijCZQdS52YASe56m6VknJRvvBsdfVGNjHBv7x7iNI=",
    "keys": {
-    "public_key": "AQR/hjRx3ZJhpIB/rNIjEDJtMVjzJxHkkIEky3GceywV",
-    "private_key_wrapped": "oaFgNpfblKKOMtEcFsYpy2M1PRx38XQ0jWcBZU+OgXwm1pORnwUQzo5ruJiddZR2TxHvU9LNocVdmcah2p4owsW/bfXy4PIQZZTBkA==",
-    "wrapped_ark": "QPi7n4qyZed5b5kbohNEZJ3n62JUJoJSp0U+yoaUy9gJpCQOcer6cwTzU9ZQ5WJh1mGFBsNtwp3Vrr74",
-    "wrapped_root_key": "xbROTfTBhtQrXvqXx27BejMdBvwLM/T7mJsWY1uYXcRR05nmfmFNm75ITLWc/Nq54VFgLJuUcW7WA1Q/",
-    "wrapped_ark_recovery": "GFnSTlUn//o/s75XYmQggw2k6tH2IqfB4Ii6t/Gx6sp9uAiQYcOqKGDSYBbaPODD551paInY+/r+EnqG",
-    "wrapped_recovery": "9ag4F2e1W1klHnPSt7CauDQ/VPu0w0xVLd8xCq5pj/9f7K3gk1qAKt16jIsOw6uYSP+/205m6o0FryyZ",
-    "kdf_salt": "Y6w6jNINrmnZ0OcTlcXCGw==",
+    "public_key": "AZvRRbR1KUzGtdNUPy0Yq2pTKpZM/be7NoKVukHtHfVD",
+    "private_key_wrapped": "GfJxNGEaft2eiM0/2K+mQOs1ylIRP65pbjB4T8BO4cgkmTpiipHfBvoRqLAZLAtq1dUdLLmZmo4Uwu5Bts6wBD50VUIWwRFf2ece5A==",
+    "wrapped_ark": "l6ltxrbn2bridzmzWxn2r5KIXKAWRR6vAVHl51YciGwYlbMXxWNYmm/YY1Lbo3Z2YRhKeopIYiMuxtp+",
+    "wrapped_root_key": "9iDYXrU6z+21j2xaLe7IOPR3VggWadVkkEHlNe3mV3n4JtV6i/LFDQXfUBgvHgIxbaSo5duFmlikNG8I",
+    "wrapped_ark_recovery": "nLe6dpGzHtxpIZpWyf3dfZjifZ4uzFjjU/B91jDrBNmtZEPHRqhbPWP+BMEzH55jVt80TXxdTtlolBdV",
+    "wrapped_recovery": "P+o4M7UFMrtB8xsbDcOI/cx6/5Ul0oeYl6T6ymNC8JUFe/N0YRRL66/V+n8Um03SrzPe8WP6ir7uO587",
+    "kdf_salt": "rnWA1tKOxt4R4mqbATCF1g==",
     "kdf_params": {
      "kdf": "argon2id",
      "m": 65536,
      "t": 3,
      "p": 1
     },
-    "fingerprint": "80be8edeeeed8ac4cfa2a84a1f1d5c4a"
+    "fingerprint": "4cf65d73306f6745e84bb7fae2cd0c0e"
    },
    "expect": {
-    "ark_b64": "FE7MvET6CT38kXz9EEdX/PnsJwaBS2HSndVOsewy/tM=",
-    "root_key_b64": "iuK5gZU+WV/sITaJ2Y/rjNhbTqsX2tmgo3hmqoAwWoo=",
-    "private_key_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIHB837eYP7RXeilC3fp/FynMYSWbkX7CceBPIdbDRtRL",
-    "public_blob_b64": "AQR/hjRx3ZJhpIB/rNIjEDJtMVjzJxHkkIEky3GceywV",
+    "ark_b64": "BsvOWNqWYCfrj5hhjgVIxMDR4DOpTitRIMHYYpBIr+A=",
+    "root_key_b64": "idqc8bWaZ9VtOA+wRbD2SuQdrC0GBaoJ2CRuQLdDasA=",
+    "private_key_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIBg6G8ejz7o6bNr4Hs2lAOSWrtoMt5D669u9gJp5rYlL",
+    "public_blob_b64": "AZvRRbR1KUzGtdNUPy0Yq2pTKpZM/be7NoKVukHtHfVD",
     "suite": 1
    }
   },
@@ -130,12 +130,12 @@
    "name": "unlock: non-floor stored kdf params",
    "passphrase": "a different passphrase entirely",
    "keys": {
-    "public_key": "AWAOLjTDjzPyFTZeOvvsZtSAnIFsbLDT7fjBcluzXrQt",
-    "private_key_wrapped": "R+mmkoTLX79A8YtfArhiWvnzpeOPkl0SS8vMTvigLMN/nlfdgJlm7L4jyosFxL/1N2TqYiU/QcwieepYwgL2bbfXG3QHnIrfT9r2hQ==",
-    "wrapped_ark": "vVvDdmjEL5P3QdbKAe7nkKdfdZUy9gKQGaCD/Nqm461mOWkLw3dyopHt4J49NfrqB1RjL537qOkgPQ3H",
-    "wrapped_root_key": "cCKvcJ2chjqbMPGfFp/GLE7h1rnu1Ec/pSaMQNhUIyjiQV39/4P95H4MLC9NgD6ddwKCKzD63gKTZdvH",
-    "wrapped_ark_recovery": "Lplx7PFBDbfSd+zBYb9n+Zj5ZhUxbjpdzKmAxhQQOOw/L289QEjJdKYsK7WVjMXJ79v2NbVeRcfuGU6n",
-    "kdf_salt": "gVUHvUwns4Esx+1j4z8vFQ==",
+    "public_key": "AR0tgTYZohdA6+BH/CQ9EBZiBIgGrN3O1ohGi74nXBQv",
+    "private_key_wrapped": "FQ2k93cboaUlsEZbISUjgMNyP+z07Q9bRpzCNDqhsuhRJJTqmDy/YV/GmNYr+vQBkn2JI9ygaj+qfh6sW+9adck43fTY3dbU8PwqZA==",
+    "wrapped_ark": "VA2Zu9e7zY+baCWXDWralj0w9Bkj1ktXi+jZa+Qx4gCOmAJZaQCVaxEv/veuQ5/j9jR9WkLaeKm/TSzv",
+    "wrapped_root_key": "qkpIb72Na/suFcIvuvT0DxpVxyGHvHnMPqE7sBU2dGtb4pr5i5eon68gOQnsqy7fReBkWKJ00i77naDp",
+    "wrapped_ark_recovery": "o9DPUIbT4uJsuQfgrRT/5jsYqEaRo3VBm3gAUKWQfGtFm5T4Ql/T4fCWB0yZM1SoIIChxh+fiSRfruvv",
+    "kdf_salt": "EsytsyMURyrRd14uclXCIA==",
     "kdf_params": {
      "kdf": "argon2id",
      "m": 131072,
@@ -144,10 +144,10 @@
     }
    },
    "expect": {
-    "ark_b64": "gyN+eDKSu9bEH96OpacptPNoTjuqNuPjJ1naEGfNJ8Q=",
-    "root_key_b64": "RBMBqDQrpUv1YKZ9x/WxryRqojUjZPPLMyfFhUTRkaY=",
-    "private_key_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIMB4zLVsYHQbEx6pFjaNF7XyCJxhnB1F+0WDGwASj/BL",
-    "public_blob_b64": "AWAOLjTDjzPyFTZeOvvsZtSAnIFsbLDT7fjBcluzXrQt",
+    "ark_b64": "FuzBW+hD9SNmNMTqziehONIDupXZWiMwWxq9PrjMsxk=",
+    "root_key_b64": "JM5dALWLLgreHkbod0GF6zeALag6mxmx3Jq45KAaqhI=",
+    "private_key_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIKiHVXYen/VOz+twrcKhTRb9hLJFS3fen4bRCtjN+7lo",
+    "public_blob_b64": "AR0tgTYZohdA6+BH/CQ9EBZiBIgGrN3O1ohGi74nXBQv",
     "suite": 1
    }
   },
@@ -155,26 +155,26 @@
    "kind": "rewrap",
    "name": "rewrap: committed output reopens the same ARK",
    "keys": {
-    "public_key": "AQR/hjRx3ZJhpIB/rNIjEDJtMVjzJxHkkIEky3GceywV",
-    "private_key_wrapped": "oaFgNpfblKKOMtEcFsYpy2M1PRx38XQ0jWcBZU+OgXwm1pORnwUQzo5ruJiddZR2TxHvU9LNocVdmcah2p4owsW/bfXy4PIQZZTBkA==",
-    "wrapped_ark": "QPi7n4qyZed5b5kbohNEZJ3n62JUJoJSp0U+yoaUy9gJpCQOcer6cwTzU9ZQ5WJh1mGFBsNtwp3Vrr74",
-    "wrapped_root_key": "xbROTfTBhtQrXvqXx27BejMdBvwLM/T7mJsWY1uYXcRR05nmfmFNm75ITLWc/Nq54VFgLJuUcW7WA1Q/",
-    "wrapped_ark_recovery": "GFnSTlUn//o/s75XYmQggw2k6tH2IqfB4Ii6t/Gx6sp9uAiQYcOqKGDSYBbaPODD551paInY+/r+EnqG",
-    "wrapped_recovery": "9ag4F2e1W1klHnPSt7CauDQ/VPu0w0xVLd8xCq5pj/9f7K3gk1qAKt16jIsOw6uYSP+/205m6o0FryyZ",
-    "kdf_salt": "Y6w6jNINrmnZ0OcTlcXCGw==",
+    "public_key": "AZvRRbR1KUzGtdNUPy0Yq2pTKpZM/be7NoKVukHtHfVD",
+    "private_key_wrapped": "GfJxNGEaft2eiM0/2K+mQOs1ylIRP65pbjB4T8BO4cgkmTpiipHfBvoRqLAZLAtq1dUdLLmZmo4Uwu5Bts6wBD50VUIWwRFf2ece5A==",
+    "wrapped_ark": "l6ltxrbn2bridzmzWxn2r5KIXKAWRR6vAVHl51YciGwYlbMXxWNYmm/YY1Lbo3Z2YRhKeopIYiMuxtp+",
+    "wrapped_root_key": "9iDYXrU6z+21j2xaLe7IOPR3VggWadVkkEHlNe3mV3n4JtV6i/LFDQXfUBgvHgIxbaSo5duFmlikNG8I",
+    "wrapped_ark_recovery": "nLe6dpGzHtxpIZpWyf3dfZjifZ4uzFjjU/B91jDrBNmtZEPHRqhbPWP+BMEzH55jVt80TXxdTtlolBdV",
+    "wrapped_recovery": "P+o4M7UFMrtB8xsbDcOI/cx6/5Ul0oeYl6T6ymNC8JUFe/N0YRRL66/V+n8Um03SrzPe8WP6ir7uO587",
+    "kdf_salt": "rnWA1tKOxt4R4mqbATCF1g==",
     "kdf_params": {
      "kdf": "argon2id",
      "m": 65536,
      "t": 3,
      "p": 1
     },
-    "fingerprint": "80be8edeeeed8ac4cfa2a84a1f1d5c4a"
+    "fingerprint": "4cf65d73306f6745e84bb7fae2cd0c0e"
    },
-   "ark_b64": "FE7MvET6CT38kXz9EEdX/PnsJwaBS2HSndVOsewy/tM=",
+   "ark_b64": "BsvOWNqWYCfrj5hhjgVIxMDR4DOpTitRIMHYYpBIr+A=",
    "new_passphrase": "a brand new passphrase",
    "rewrap": {
-    "wrapped_ark": "PXRi0pZWqMSLoVaSwqUFeqrB76SB8k3XlODtwBelewpFMW1C9jrAvNClTNYClRYawJFrtfbCrc1f7Zo8",
-    "kdf_salt": "7gdD3JjafBdQbhWvYKj/ow==",
+    "wrapped_ark": "ISTAZXoahHXDnHXv9+oTR5Ys8GiSQIW/f1miwIt+/etUWDndWGdRB7GTNMMadrjGSxj6w6gZJLc584qK",
+    "kdf_salt": "1ipzPzMT4o13sNM0lzSCjA==",
     "kdf_params": {
      "kdf": "argon2id",
      "m": 65536,
@@ -186,22 +186,52 @@
   {
    "kind": "child",
    "name": "child key under parent",
-   "parent_key_hex": "01e9ad4751495ae1183e44e33c7435d8ad30c92cc02be6af0598c09d4f94213e",
+   "parent_key_hex": "721acad7cbb8feb98d50df32c21419b761e20c2694911be56a211eb241a13719",
    "child_id": 42,
-   "wrapped_child_b64": "5QE3lMb5KsoNsUxqCcqGEb75J+zaF36PrSSLeNsTdVwq0hButQv37msg+8f5D6AHySP0xu4iv8CLAV14",
-   "child_key_hex": "f25abd82a3b27d5262fa13c6a92d1b7ea0eadb754099827518016002a83a6be9"
+   "wrapped_child_b64": "rgS8siLVvwN2IIzq8lEEtNyrsonjyyG142KMfogG6MK7yholGy7ThnGdOPXSZoQbK4QiuGtT5rZRs3w2",
+   "child_key_hex": "17ea9ff35c837696335026dd41fc65c21e2c001a8bd6d20f0f8d2032ed592e72"
   },
   {
    "kind": "fingerprint",
    "name": "fingerprint: x25519 blob",
-   "public_blob_b64": "AQR/hjRx3ZJhpIB/rNIjEDJtMVjzJxHkkIEky3GceywV",
-   "fingerprint_hex": "80be8edeeeed8ac4cfa2a84a1f1d5c4a"
+   "public_blob_b64": "AZvRRbR1KUzGtdNUPy0Yq2pTKpZM/be7NoKVukHtHfVD",
+   "fingerprint_hex": "4cf65d73306f6745e84bb7fae2cd0c0e"
   },
   {
    "kind": "fingerprint",
    "name": "fingerprint: p256 blob",
-   "public_blob_b64": "AgRGnlBkQ2jJYVha6G6Bo34+SlXuWRSYyLY6U+uJUJkJL6MexpHh70DAhDSjGrxMuuPWV6ywcVuhqaAyu7LPQx1T",
-   "fingerprint_hex": "db1a03354b69de8ae8d7fe4215035236"
+   "public_blob_b64": "AgTtji2HUKsu1cA1Bk9f2fApCl0JRsaZrGb+DiTJvNi1j/Khyzwy5o9SVWYS7GYuTCCKXEU9iFX/pguq/bKl8SoO",
+   "fingerprint_hex": "d04f2b5cda81d79ad1a9b087f7746888"
+  },
+  {
+   "kind": "ecies_open",
+   "name": "ecies: x25519 recipient opens",
+   "envelope_b64": "Ab8rUKBtrdHlO0x0D9XLeboCaDLemWDMhvR6y1DhKjZL4dXbL3meSpkvnyBFa8KZBiKXvZ9GZc8EPL3jlan3XJSUrg48ycMO4DwSaZE=",
+   "recipient_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIBg6G8ejz7o6bNr4Hs2lAOSWrtoMt5D669u9gJp5rYlL",
+   "recipient_public_b64": "AZvRRbR1KUzGtdNUPy0Yq2pTKpZM/be7NoKVukHtHfVD",
+   "recipient_suite": 1,
+   "plaintext_b64": "Zm9sZGVyIGtleSBieXRlcw==",
+   "aad": {
+    "source_id": 77,
+    "grantee": "user-9"
+   },
+   "eph_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIOAW3FxA3q62xrTUisSGS+qmCNf0TgrvDyuR3/Co45pO",
+   "eph_public_blob_b64": "Ab8rUKBtrdHlO0x0D9XLeboCaDLemWDMhvR6y1DhKjZL"
+  },
+  {
+   "kind": "ecies_open",
+   "name": "ecies: p256 recipient opens",
+   "envelope_b64": "AgT4Rj4pARnueBRZGFcJ38w5bGxj7Bty+qLgjv37illL4YSnun8ZnFVMk0X427oBexOR1xx9jJIyJN8dX69/TnTEK7NR1wHowDle0hcPg8kRCOaVHMVq4F54TDh1CqqM5d1AQbFiIsN2m9/OScY=",
+   "recipient_pkcs8_b64": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg7ev/EOJAlQmyuHE7+pB0lsQ86MOG0/06p2M73O8qMxChRANCAAR/rwQ5q9/aHQwc9kkgK/5oJ9OINqhI+4IPnsJR+wAg2gB9OHDdfT2vSZJsivgTQMYYX2EiCLFCEo3RB9gth6T8",
+   "recipient_public_b64": "AgR/rwQ5q9/aHQwc9kkgK/5oJ9OINqhI+4IPnsJR+wAg2gB9OHDdfT2vSZJsivgTQMYYX2EiCLFCEo3RB9gth6T8",
+   "recipient_suite": 2,
+   "plaintext_b64": "Zm9sZGVyIGtleSBieXRlcw==",
+   "aad": {
+    "source_id": 77,
+    "grantee": "user-9"
+   },
+   "eph_pkcs8_b64": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgK9AVu/1jlWKqVtbHHjWAs+HNJKYFIT25MzABMWnkyVyhRANCAAT4Rj4pARnueBRZGFcJ38w5bGxj7Bty+qLgjv37illL4YSnun8ZnFVMk0X427oBexOR1xx9jJIyJN8dX69/TnTE",
+   "eph_public_blob_b64": "AgT4Rj4pARnueBRZGFcJ38w5bGxj7Bty+qLgjv37illL4YSnun8ZnFVMk0X427oBexOR1xx9jJIyJN8dX69/TnTE"
   },
   {
    "name": "reject: wrong passphrase",
@@ -210,20 +240,20 @@
    "error_contains": "could not unwrap this key - wrong passphrase, or the data was altered",
    "passphrase": "correct horse battery staplex",
    "keys": {
-    "public_key": "AQR/hjRx3ZJhpIB/rNIjEDJtMVjzJxHkkIEky3GceywV",
-    "private_key_wrapped": "oaFgNpfblKKOMtEcFsYpy2M1PRx38XQ0jWcBZU+OgXwm1pORnwUQzo5ruJiddZR2TxHvU9LNocVdmcah2p4owsW/bfXy4PIQZZTBkA==",
-    "wrapped_ark": "QPi7n4qyZed5b5kbohNEZJ3n62JUJoJSp0U+yoaUy9gJpCQOcer6cwTzU9ZQ5WJh1mGFBsNtwp3Vrr74",
-    "wrapped_root_key": "xbROTfTBhtQrXvqXx27BejMdBvwLM/T7mJsWY1uYXcRR05nmfmFNm75ITLWc/Nq54VFgLJuUcW7WA1Q/",
-    "wrapped_ark_recovery": "GFnSTlUn//o/s75XYmQggw2k6tH2IqfB4Ii6t/Gx6sp9uAiQYcOqKGDSYBbaPODD551paInY+/r+EnqG",
-    "wrapped_recovery": "9ag4F2e1W1klHnPSt7CauDQ/VPu0w0xVLd8xCq5pj/9f7K3gk1qAKt16jIsOw6uYSP+/205m6o0FryyZ",
-    "kdf_salt": "Y6w6jNINrmnZ0OcTlcXCGw==",
+    "public_key": "AZvRRbR1KUzGtdNUPy0Yq2pTKpZM/be7NoKVukHtHfVD",
+    "private_key_wrapped": "GfJxNGEaft2eiM0/2K+mQOs1ylIRP65pbjB4T8BO4cgkmTpiipHfBvoRqLAZLAtq1dUdLLmZmo4Uwu5Bts6wBD50VUIWwRFf2ece5A==",
+    "wrapped_ark": "l6ltxrbn2bridzmzWxn2r5KIXKAWRR6vAVHl51YciGwYlbMXxWNYmm/YY1Lbo3Z2YRhKeopIYiMuxtp+",
+    "wrapped_root_key": "9iDYXrU6z+21j2xaLe7IOPR3VggWadVkkEHlNe3mV3n4JtV6i/LFDQXfUBgvHgIxbaSo5duFmlikNG8I",
+    "wrapped_ark_recovery": "nLe6dpGzHtxpIZpWyf3dfZjifZ4uzFjjU/B91jDrBNmtZEPHRqhbPWP+BMEzH55jVt80TXxdTtlolBdV",
+    "wrapped_recovery": "P+o4M7UFMrtB8xsbDcOI/cx6/5Ul0oeYl6T6ymNC8JUFe/N0YRRL66/V+n8Um03SrzPe8WP6ir7uO587",
+    "kdf_salt": "rnWA1tKOxt4R4mqbATCF1g==",
     "kdf_params": {
      "kdf": "argon2id",
      "m": 65536,
      "t": 3,
      "p": 1
     },
-    "fingerprint": "80be8edeeeed8ac4cfa2a84a1f1d5c4a"
+    "fingerprint": "4cf65d73306f6745e84bb7fae2cd0c0e"
    }
   },
   {
@@ -231,22 +261,22 @@
    "kind": "recovery_open",
    "expect_error": true,
    "error_contains": "could not unwrap this key - wrong passphrase, or the data was altered",
-   "recovery_key_b64": "9sYtCKYUHTfta0NDVifm0ujzFzhTU6txicQj6s0Lo/w=",
+   "recovery_key_b64": "19ijCZQdS52YASe56m6VknJRvvBsdfVGNjHBv7x7iNI=",
    "keys": {
-    "public_key": "AQR/hjRx3ZJhpIB/rNIjEDJtMVjzJxHkkIEky3GceywV",
-    "private_key_wrapped": "oaFgNpfblKKOMtEcFsYpy2M1PRx38XQ0jWcBZU+OgXwm1pORnwUQzo5ruJiddZR2TxHvU9LNocVdmcah2p4owsW/bfXy4PIQZZTBkA==",
-    "wrapped_ark": "QPi7n4qyZed5b5kbohNEZJ3n62JUJoJSp0U+yoaUy9gJpCQOcer6cwTzU9ZQ5WJh1mGFBsNtwp3Vrr74",
-    "wrapped_root_key": "xbROTfTBhtQrXvqXx27BejMdBvwLM/T7mJsWY1uYXcRR05nmfmFNm75ITLWc/Nq54VFgLJuUcW7WA1Q/",
-    "wrapped_ark_recovery": "GFnSTlUn//o/s75XYmQggw2k6tH2IqfB4Ii6t/Gx6sp9uAiQYcOqKGDSYBbaPODD551paInY+/r+EnqG",
-    "wrapped_recovery": "9ag4F2e1W1klHnPSt7CauDQ/VPu0w0xVLd8xCq5pj/9f7K3gk1qAKt16jIsOw6uYSP+/205m6o0FryyZ",
-    "kdf_salt": "Y6w6jNINrmnZ0OcTlcXCGw==",
+    "public_key": "AZvRRbR1KUzGtdNUPy0Yq2pTKpZM/be7NoKVukHtHfVD",
+    "private_key_wrapped": "GfJxNGEaft2eiM0/2K+mQOs1ylIRP65pbjB4T8BO4cgkmTpiipHfBvoRqLAZLAtq1dUdLLmZmo4Uwu5Bts6wBD50VUIWwRFf2ece5A==",
+    "wrapped_ark": "l6ltxrbn2bridzmzWxn2r5KIXKAWRR6vAVHl51YciGwYlbMXxWNYmm/YY1Lbo3Z2YRhKeopIYiMuxtp+",
+    "wrapped_root_key": "9iDYXrU6z+21j2xaLe7IOPR3VggWadVkkEHlNe3mV3n4JtV6i/LFDQXfUBgvHgIxbaSo5duFmlikNG8I",
+    "wrapped_ark_recovery": "nLe6dpGzHtxpIZpWyf3dfZjifZ4uzFjjU/B91jDrBNmtZEPHRqhbPWP+BMEzH55jVt80TXxdTtlolBdV",
+    "wrapped_recovery": "P+o4M7UFMrtB8xsbDcOI/cx6/5Ul0oeYl6T6ymNC8JUFe/N0YRRL66/V+n8Um03SrzPe8WP6ir7uO587",
+    "kdf_salt": "rnWA1tKOxt4R4mqbATCF1g==",
     "kdf_params": {
      "kdf": "argon2id",
      "m": 65536,
      "t": 3,
      "p": 1
     },
-    "fingerprint": "80be8edeeeed8ac4cfa2a84a1f1d5c4a"
+    "fingerprint": "4cf65d73306f6745e84bb7fae2cd0c0e"
    }
   },
   {
@@ -254,22 +284,22 @@
    "kind": "session",
    "expect_error": true,
    "error_contains": "public key is too short",
-   "ark_b64": "FE7MvET6CT38kXz9EEdX/PnsJwaBS2HSndVOsewy/tM=",
+   "ark_b64": "BsvOWNqWYCfrj5hhjgVIxMDR4DOpTitRIMHYYpBIr+A=",
    "keys": {
     "public_key": "AQ==",
-    "private_key_wrapped": "oaFgNpfblKKOMtEcFsYpy2M1PRx38XQ0jWcBZU+OgXwm1pORnwUQzo5ruJiddZR2TxHvU9LNocVdmcah2p4owsW/bfXy4PIQZZTBkA==",
-    "wrapped_ark": "QPi7n4qyZed5b5kbohNEZJ3n62JUJoJSp0U+yoaUy9gJpCQOcer6cwTzU9ZQ5WJh1mGFBsNtwp3Vrr74",
-    "wrapped_root_key": "xbROTfTBhtQrXvqXx27BejMdBvwLM/T7mJsWY1uYXcRR05nmfmFNm75ITLWc/Nq54VFgLJuUcW7WA1Q/",
-    "wrapped_ark_recovery": "GFnSTlUn//o/s75XYmQggw2k6tH2IqfB4Ii6t/Gx6sp9uAiQYcOqKGDSYBbaPODD551paInY+/r+EnqG",
-    "wrapped_recovery": "9ag4F2e1W1klHnPSt7CauDQ/VPu0w0xVLd8xCq5pj/9f7K3gk1qAKt16jIsOw6uYSP+/205m6o0FryyZ",
-    "kdf_salt": "Y6w6jNINrmnZ0OcTlcXCGw==",
+    "private_key_wrapped": "GfJxNGEaft2eiM0/2K+mQOs1ylIRP65pbjB4T8BO4cgkmTpiipHfBvoRqLAZLAtq1dUdLLmZmo4Uwu5Bts6wBD50VUIWwRFf2ece5A==",
+    "wrapped_ark": "l6ltxrbn2bridzmzWxn2r5KIXKAWRR6vAVHl51YciGwYlbMXxWNYmm/YY1Lbo3Z2YRhKeopIYiMuxtp+",
+    "wrapped_root_key": "9iDYXrU6z+21j2xaLe7IOPR3VggWadVkkEHlNe3mV3n4JtV6i/LFDQXfUBgvHgIxbaSo5duFmlikNG8I",
+    "wrapped_ark_recovery": "nLe6dpGzHtxpIZpWyf3dfZjifZ4uzFjjU/B91jDrBNmtZEPHRqhbPWP+BMEzH55jVt80TXxdTtlolBdV",
+    "wrapped_recovery": "P+o4M7UFMrtB8xsbDcOI/cx6/5Ul0oeYl6T6ymNC8JUFe/N0YRRL66/V+n8Um03SrzPe8WP6ir7uO587",
+    "kdf_salt": "rnWA1tKOxt4R4mqbATCF1g==",
     "kdf_params": {
      "kdf": "argon2id",
      "m": 65536,
      "t": 3,
      "p": 1
     },
-    "fingerprint": "80be8edeeeed8ac4cfa2a84a1f1d5c4a"
+    "fingerprint": "4cf65d73306f6745e84bb7fae2cd0c0e"
    }
   },
   {
@@ -277,8 +307,8 @@
    "kind": "unwrap",
    "expect_error": true,
    "error_contains": "wrapped value is too short to be a key record",
-   "key_hex": "1cb137044d6dccc07815e9fa069335b74f19e6a17378de4268c108ffcad200d2",
-   "wrapped_b64": "ckQ+D1GK3dc3HF4a+FWXGp3a2jMBcPOcdOLN",
+   "key_hex": "b8a1aea3e2d5dac0d79c028a40bd177c202b6c9f95d9204c27bde27901fc978b",
+   "wrapped_b64": "Odn6EGgpF3wq56uO9WIAwSsG68YfRiLh2dyj",
    "aad_b64": "ZngxOmFyazp2MQ=="
   },
   {
@@ -286,8 +316,8 @@
    "kind": "unwrap",
    "expect_error": true,
    "error_contains": "could not unwrap this key - wrong passphrase, or the data was altered",
-   "key_hex": "1cb137044d6dccc07815e9fa069335b74f19e6a17378de4268c108ffcad200d2",
-   "wrapped_b64": "ckQ+D1GK3dc3HF4a+FWXGp3a2jMBcPOcdOLNouR/uRmFDTEEfxPkwVvKfg==",
+   "key_hex": "b8a1aea3e2d5dac0d79c028a40bd177c202b6c9f95d9204c27bde27901fc978b",
+   "wrapped_b64": "Odn6EGgpF3wq56uO9WIAwSsG68YfRiLh2dyjcd6wheqKPahk+hYMtsz9Gg==",
    "aad_b64": "ZngxOmFyazp2MQ=="
   },
   {
@@ -295,18 +325,107 @@
    "kind": "child",
    "expect_error": true,
    "error_contains": "could not unwrap this key - wrong passphrase, or the data was altered",
-   "parent_key_hex": "01e9ad4751495ae1183e44e33c7435d8ad30c92cc02be6af0598c09d4f94213e",
+   "parent_key_hex": "721acad7cbb8feb98d50df32c21419b761e20c2694911be56a211eb241a13719",
    "child_id": 43,
-   "wrapped_child_b64": "5QE3lMb5KsoNsUxqCcqGEb75J+zaF36PrSSLeNsTdVwq0hButQv37msg+8f5D6AHySP0xu4iv8CLAV14"
+   "wrapped_child_b64": "rgS8siLVvwN2IIzq8lEEtNyrsonjyyG142KMfogG6MK7yholGy7ThnGdOPXSZoQbK4QiuGtT5rZRs3w2"
   },
   {
    "name": "reject: child under the wrong parent",
    "kind": "child",
    "expect_error": true,
    "error_contains": "could not unwrap this key - wrong passphrase, or the data was altered",
-   "parent_key_hex": "00e9ad4751495ae1183e44e33c7435d8ad30c92cc02be6af0598c09d4f94213e",
+   "parent_key_hex": "731acad7cbb8feb98d50df32c21419b761e20c2694911be56a211eb241a13719",
    "child_id": 42,
-   "wrapped_child_b64": "5QE3lMb5KsoNsUxqCcqGEb75J+zaF36PrSSLeNsTdVwq0hButQv37msg+8f5D6AHySP0xu4iv8CLAV14"
+   "wrapped_child_b64": "rgS8siLVvwN2IIzq8lEEtNyrsonjyyG142KMfogG6MK7yholGy7ThnGdOPXSZoQbK4QiuGtT5rZRs3w2"
+  },
+  {
+   "name": "reject: tampered envelope",
+   "kind": "ecies_open",
+   "expect_error": true,
+   "error_contains": "could not unwrap this key - wrong passphrase, or the data was altered",
+   "envelope_b64": "Ab8rUKBtrdHlO0x0D9XLeboCaDLemWDMhvR6y1DhKjZL4dXbL3meSpkvnyBFa8KZBiKXvZ9GZc8EPL3jlan3XJSUrg48ycMO4DwSaZA=",
+   "recipient_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIBg6G8ejz7o6bNr4Hs2lAOSWrtoMt5D669u9gJp5rYlL",
+   "recipient_suite": 1,
+   "aad": {
+    "source_id": 77,
+    "grantee": "user-9"
+   }
+  },
+  {
+   "name": "reject: envelope for another grantee",
+   "kind": "ecies_open",
+   "expect_error": true,
+   "error_contains": "could not unwrap this key - wrong passphrase, or the data was altered",
+   "envelope_b64": "Ab8rUKBtrdHlO0x0D9XLeboCaDLemWDMhvR6y1DhKjZL4dXbL3meSpkvnyBFa8KZBiKXvZ9GZc8EPL3jlan3XJSUrg48ycMO4DwSaZE=",
+   "recipient_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIBg6G8ejz7o6bNr4Hs2lAOSWrtoMt5D669u9gJp5rYlL",
+   "recipient_suite": 1,
+   "aad": {
+    "source_id": 77,
+    "grantee": "user-10"
+   }
+  },
+  {
+   "name": "reject: truncated envelope",
+   "kind": "ecies_open",
+   "expect_error": true,
+   "error_contains": "could not unwrap this key - wrong passphrase, or the data was altered",
+   "envelope_b64": "Ab8rUKBtrdHlO0x0D9XLeboCaDLemWDMhvR6y1DhKjZL4dXbL3meSg==",
+   "recipient_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIBg6G8ejz7o6bNr4Hs2lAOSWrtoMt5D669u9gJp5rYlL",
+   "recipient_suite": 1,
+   "aad": {
+    "source_id": 77,
+    "grantee": "user-9"
+   }
+  },
+  {
+   "name": "reject: envelope with unknown suite",
+   "kind": "ecies_open",
+   "expect_error": true,
+   "error_contains": "could not unwrap this key - wrong passphrase, or the data was altered",
+   "envelope_b64": "Cb8rUKBtrdHlO0x0D9XLeboCaDLemWDMhvR6y1DhKjZL4dXbL3meSpkvnyBFa8KZBiKXvZ9GZc8EPL3jlan3XJSUrg48ycMO4DwSaZE=",
+   "recipient_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIBg6G8ejz7o6bNr4Hs2lAOSWrtoMt5D669u9gJp5rYlL",
+   "recipient_suite": 1,
+   "aad": {
+    "source_id": 77,
+    "grantee": "user-9"
+   }
+  },
+  {
+   "name": "reject: opened by the wrong recipient",
+   "kind": "ecies_open",
+   "expect_error": true,
+   "error_contains": "could not unwrap this key - wrong passphrase, or the data was altered",
+   "envelope_b64": "Ab8rUKBtrdHlO0x0D9XLeboCaDLemWDMhvR6y1DhKjZL4dXbL3meSpkvnyBFa8KZBiKXvZ9GZc8EPL3jlan3XJSUrg48ycMO4DwSaZE=",
+   "recipient_pkcs8_b64": "MC4CAQAwBQYDK2VuBCIEIPAuqFOxTstB5Yrt8Q/h3tF3jC8Im0ehTXuzGQl9ZpRM",
+   "recipient_suite": 1,
+   "aad": {
+    "source_id": 77,
+    "grantee": "user-9"
+   }
+  },
+  {
+   "name": "reject: seal to a one-byte key",
+   "kind": "ecies_seal",
+   "expect_error": true,
+   "error_contains": "recipient public key is too short",
+   "recipient_public_b64": "AQ==",
+   "plaintext_b64": "eA==",
+   "aad": {
+    "source_id": 77,
+    "grantee": "user-9"
+   }
+  },
+  {
+   "name": "reject: seal to an unknown suite",
+   "kind": "ecies_seal",
+   "expect_error": true,
+   "error_contains": "unknown key suite 9",
+   "recipient_public_b64": "CQEC",
+   "plaintext_b64": "eA==",
+   "aad": {
+    "source_id": 77,
+    "grantee": "user-9"
+   }
   }
  ]
 }
