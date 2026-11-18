@@ -22,6 +22,21 @@ object FxCore {
     }
 
     external fun fingerprint(blob: ByteArray): String
+
+    /**
+     * Unlock with the storage passphrase (S2): the account material as
+     * /api/keys/me sends it, packed as root_key(32) || u32be(pkcs8_len)
+     * || pkcs8 - Argon2id and the ARK chain run in Rust.
+     */
+    external fun unlock(keysJson: String, passphrase: String): ByteArray
+
+    /**
+     * Unwrap a child record or a wrapped name under its parent key (S2):
+     * the raw value out, or a RuntimeException when it does not open -
+     * the caller distinguishes "not mine" by catching, like the JS
+     * twin's null. Blobs may be standard or URL-safe base64.
+     */
+    external fun unwrapChild(parentKey: ByteArray, childId: Long, wrapped: String): ByteArray
 }
 
 /** Hex string -> bytes; the golden fixtures speak hex and base64. */

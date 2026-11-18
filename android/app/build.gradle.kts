@@ -43,6 +43,9 @@ dependencies {
     // Host-side golden-vector tests only (concepts/android.md A4); the
     // device build has no dependencies beyond the framework.
     testImplementation("junit:junit:4.13.2")
+    // Reading the committed fixtures on the JVM (android's org.json is
+    // not on the host classpath).
+    testImplementation("org.json:json:20260814")
 }
 
 // The .so is produced by `cargo ndk -t arm64-v8a -P26 build -p fxjni -o

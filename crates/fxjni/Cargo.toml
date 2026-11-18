@@ -21,3 +21,8 @@ fxcffi = { path = "../fxcffi" }
 #0.21 is the classic API (JNIEnv with new_string/throw_new/convert_byte_array);
 #0.22 split it into Env/EnvUnowned - revisit when the app needs a newer JNI.
 jni = "0.21"
+# Glue-level parsing only (the /api/keys/me payload): no crypto lives
+# here - the JSON is our own server's (concepts/android.md A3).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
