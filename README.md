@@ -89,7 +89,9 @@ systemd, Docker and the reverse-proxy setup - lives in
   passkeys, files, preview, versioning, sharing, public links, groups,
   quotas, trash, [office documents](concepts/office.md) (WOPI with an
   optional engine sidecar) and [streaming](concepts/streaming.md), the
-  memory profile every content path shares.
+  memory profile every content path shares, plus
+  [the Android app](concepts/android.md) (phase 7: one Rust core over
+  JNI, Android first).
 - [TRANSLATING.md](TRANSLATING.md) - adding a language to the UI
 
 ## License
