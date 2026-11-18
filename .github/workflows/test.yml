@@ -74,9 +74,11 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Licenses and the pinned SDK packages
+      # The runner ships an Android SDK (ANDROID_HOME is already set);
+      # install exactly the packages cargo-ndk and AGP read from there.
+      # setup-android@v3 is deliberately absent: it trips over the
+      # runner's modern cmdline-tools ("Failed to find package 'tools'").
+      - name: SDK packages (platform, build-tools, NDK)
         run: |
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager --install "platform-tools" "platforms;android-35" \
