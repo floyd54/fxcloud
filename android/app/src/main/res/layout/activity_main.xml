@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Diagnostic layer3: content comes from an inflated layout (the other
+     setContentView code path) with static, explicitly colored text - if
+     this renders, the programmatic-View path of the previous build was
+     the problem; if only the green window shows, content never attaches. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#14161B"
+    android:padding="64dp">
+
+    <TextView
+        android:id="@+id/label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="64dp"
+        android:textSize="16sp"
+        android:textColor="#E6E9EE"
+        android:text="fxcloud S1\n\nlayout path rendered - computing fingerprint ..." />
+
+    <TextView
+        android:id="@+id/result"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:textSize="16sp"
+        android:textColor="#00C853"
+        android:text="(waiting)" />
+</LinearLayout>

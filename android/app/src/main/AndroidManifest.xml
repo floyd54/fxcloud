@@ -8,7 +8,7 @@
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:forceDarkAllowed="false"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@style/Theme.Fxcloud">
         <activity
             android:name=".MainActivity"
             android:exported="true">

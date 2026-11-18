@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Diagnostic layer1 (S1 bring-up): the WINDOW itself carries a color
+     that only my activity can show. Green below the title = my window
+     and theme are alive even if the content never draws; pure white =
+     whatever the user sees is not this activity's window at all. The
+     action bar stays (parent Theme.Material.Light) so setTitle("...")
+     is visible as layer2: if the title changes, onCreate ran. -->
+<resources>
+    <style name="Theme.Fxcloud" parent="@android:style/Theme.Material.Light">
+        <item name="android:windowBackground">#00C853</item>
+    </style>
+</resources>
