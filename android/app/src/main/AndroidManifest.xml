@@ -6,7 +6,9 @@
     <application
         android:label="fxcloud"
         android:allowBackup="false"
-        android:fullBackupContent="false">
+        android:fullBackupContent="false"
+        android:forceDarkAllowed="false"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true">

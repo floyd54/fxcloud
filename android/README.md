@@ -7,7 +7,9 @@ through JNI, on the host in JUnit and on the device in `MainActivity`.
 ## Build the .so
 
 From the repository root (JDK17+, Android SDK/NDK, `cargo-ndk` - see
-concepts/android.md "Build and CI"):
+concepts/android.md "Build and CI"; on a machine where the SDK lives
+outside the default location, export it first, e.g.
+`export ANDROID_HOME=/opt/android-sdk`):
 
 ```sh
 cargo build -p fxjni                                   # host, for JUnit
