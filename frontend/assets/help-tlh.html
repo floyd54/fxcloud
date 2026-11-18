@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="tlh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fxcloud - paq</title>
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  body.help { max-width: 46rem; margin: 0 auto; padding: 1rem 1.25rem 4rem; line-height: 1.6; }
+  body.help header { display: flex; justify-content: space-between; align-items: center;
+    gap: 1rem; flex-wrap: wrap; padding: .75rem 0; border-bottom: 1px solid var(--border, #ccc); }
+  body.help header a { text-decoration: none; }
+  body.help .langs { font-size: .9rem; opacity: .85; }
+  body.help .langs a.active { font-weight: bold; text-decoration: none; }
+  body.help h1 { font-size: 1.6rem; margin: 1.5rem 0 .5rem; }
+  body.help h2 { font-size: 1.25rem; margin: 2rem 0 .5rem; padding-top: .75rem;
+    border-top: 1px solid var(--border, #ccc); }
+  body.help h3 { font-size: 1.05rem; margin: 1.4rem 0 .4rem; }
+  body.help pre { background: var(--code-bg, #f4f4f4); padding: .75rem; overflow-x: auto;
+    border-radius: .35rem; font-size: .85rem; }
+  body.help code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .9em; background: var(--code-bg, #f4f4f4); padding:0 .25em; border-radius: .25em; }
+  body.help pre code { background: none; padding: 0; }
+  body.help ul, body.help ol { padding-left: 1.4rem; }
+  body.help li { margin: .25rem 0; }
+  body.help a { color: inherit; }
+  body.help footer { margin-top: 3rem; font-size: .8rem; opacity: .7; }
+</style>
+</head>
+<body class="help">
+<header>
+  <a href="/">fxcloud poS</a>
+  <nav class="langs" aria-label="Hol"><a class="lang" href="/help?lang=en">English</a> · <a class="lang" href="/help?lang=de">Deutsch</a> · <a class="lang active" href="/help?lang=tlh">tlhIngan Hol</a></nav>
+</header>
+<main>
+<h1 id="fxcloud-paq---lutmeywij">fxcloud paq - lutmeywIj</h1>
+<p>paqDaj moHwIjvam lutmey lo'wI'wIj: nom, che' lutmey, boq, chuSQang, je passkey. nItlhvam paqqu'wI' wa'DIch lutmeywIj chut yIpoS - ngagh pujlaHbogh chut, cloud.example.com.</p>
+<p>Developer-facing documents:</p>
+<ul><li><a href="https://github.com/floyd54/fxcloud/blob/main/README.md">README.md</a> - the feature list and the map of this documentation</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md">INSTALL.md</a> - install, configuration table, systemd unit</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/API.md">API.md</a> - HTTP endpoints and protocol details</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/ENCRYPTION.md">ENCRYPTION.md</a> - the cryptographic design in full</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a> - code layout, storage, quotas</li></ul>
+<h2 id="niteb">nIteb</h2>
+<ol><li><a href="#1-installation">Installation</a></li><li><a href="#2-yuq-chu">yuQ chu'</a></li><li><a href="#3-nom">nom</a></li><li><a href="#4-che-lutmey">che' lutmey</a></li><li><a href="#5-boq">boq</a></li><li><a href="#6-ghom-biqroq">ghom bIQroq</a></li><li><a href="#7-biqtiq">bIQtIq</a></li><li><a href="#8-quota">quota</a></li><li><a href="#9-lowi-poh">lo'wI' poH</a></li><li><a href="#10-choh">choH</a></li><li><a href="#11-chusqang">chuSQang</a></li><li><a href="#12-passkeys">Passkeys</a></li><li><a href="#13-https-pasop-worked-example">HTTPS paS'op</a></li><li><a href="#14-webdav">WebDAV</a></li><li><a href="#15-troubleshooting">Troubleshooting</a></li></ol>
+<h2 id="1-installation">1. Installation</h2>
+<p>fxcloud chut wa'DIch: SQLite je weboberfläche poS, database chut je runtime chut neH.</p>
+<p><strong>chut wa'DIch</strong> - fxcloud systemdDaq chut, curl je Linux (pujDaq); chut chutDat yIpoS:</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/floyd54/fxcloud/main/install.sh | sh
+</code></pre>
+<p><strong>chu' binary</strong> - GitHub ReleasesDaq tag lughlu'bogh Datachugh, static Linux x86_64 build (~6 MB) botlu':</p>
+<pre><code class="language-bash">chmod +x fxcloud-&lt;tag&gt;-x86_64-unknown-linux-musl
+FXCLOUD_DATA=/srv/fxcloud ./fxcloud-&lt;tag&gt;-x86_64-unknown-linux-musl
+</code></pre>
+<p><strong>Sourcevo'</strong>:</p>
+<pre><code class="language-bash">cargo build --release
+./target/release/fxcloud      # ./data chut, DB je file blobs
+</code></pre>
+<p>&lt;http://127.0.0.1:8080&gt; poS. systemdDaq chutmey, hardened unit lo': <a href="https://github.com/floyd54/fxcloud/blob/main/deploy/fxcloud.service"><code>deploy/fxcloud.service</code></a> - <a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md#deployment">INSTALL.md</a> chut steps bot. chut chutDat neH environment variables (bind address, port, data directory, quota-related limits, ...); table complete in <a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md#configuration">INSTALL.md</a>.</p>
+<h2 id="2-yuq-chu">2. yuQ chu'</h2>
+<p>Instance chu'chugh, <strong>yuQ chu'</strong> tab poS, username (mI' wa' je chop), display name, je password (mI' jav je chop) wIv.</p>
+<p><strong>yuQ chu'Daq</strong> instanceDaq chu'bogh yuQ nomDaq activate, administrator qaw'lu'. yuQ chu'boghDat yuQ nomDaq activate: registration qang, nom administratorDaq activate chunwI' yuQ chel (see <a href="#9-lowi-poh">lo'wI' poH</a>).</p>
+<h2 id="3-nom">3. nom</h2>
+<p>nom pageDat tab wej:</p>
+<ul><li><strong>nom</strong> - username je password.</li><li><strong>Passkey</strong> - username neH; chut puj biometrics (see</li></ul>
+<p><a href="#12-passkeys">Passkeys</a>).</p>
+<ul><li><strong>yuQ chu'</strong> - registration, chutDat.</li></ul>
+<p>Session juH7 (default) (<code>FXCLOUD_SESSION_TTL</code>, useDaq sliding).</p>
+<h3 id="app-chut">App chut</h3>
+<p>fxcloud web app chut: Chrome/Edge address bar <strong>App install</strong> iPhone/iPad Safari <strong>Share &gt; Add to Home Screen</strong>, Android Chrome <strong>menu &gt; Add to home screen</strong>. app iconvo' poS, browser chrome neH - yuQ chut, session chut, configure chut.</p>
+<p>paQ'a' yIjatlh: launcher neH (offline chut neH - fxcloud server client), service worker app chutDaq <strong>cache chut</strong> - installed app server botlu'ghach neH legh (<a href="https://github.com/floyd54/fxcloud/blob/main/ENCRYPTION.md">ENCRYPTION.md</a>, section11).</p>
+<p>app chutDat JavaScript check: app yIpoS fresh app yIpoS default off je install dialog switch chut (Google PixelDaq report). symptom: nom page dead - see <a href="#15-troubleshooting">Troubleshooting</a>; icon long-press &gt; Settings &gt; JavaScript chut.</p>
+<h2 id="4-che-lutmey">4. che' lutmey</h2>
+<p>file explorer desktop file manager, browserDaq:</p>
+<ul><li><strong>che' chu'</strong> / <strong>bIQroq chu'</strong> current folderDat entry chu'; che' text</li></ul>
+<p>file editorDat poS (Markdown preview je <strong>qan</strong>).</p>
+<ul><li><strong>che' laD</strong> / <strong>bIQroq laD</strong>, je drop zone drag &amp; drop, file je whole</li></ul>
+<p>folder tree laD (empty subfolder included).</p>
+<ul><li><strong>nogh yItu'</strong> name dotvo' entry toggle; choice browserDat remember.</li><li>file click preview: image, video, audio, PDF, HTML je text lightboxDat</li></ul>
+<p>poS; text file editorDat poS.</p>
+<ul><li>editor unsaved changepo' close - gallery arrowvo' file chel - yIjatlh</li></ul>
+<p>default <strong>qan</strong> (Enter), <strong>mej</strong> je <strong>taHbe'</strong>. save qaw'lu'chugh lightbox taH status lineDat error, text qaw'lu'neH.</p>
+<ul><li>selection checkbox (Shift+click range) bulk bar bot: <strong>yuD</strong></li></ul>
+<p>(selection wa' ZIP), <strong>ghoS...</strong>, <strong>qon...</strong>, <strong>boq</strong>, <strong>qaw</strong> je <strong>wIv yIchIm</strong>.</p>
+<ul><li>row menuDat: yuD, boq, gHoS, qon, pong chu', qaw.</li><li>folder row recursive size bot; breadcrumb treevo' yIpoS.</li></ul>
+<p>ZIP download requestDaq assemble, uncompressed1 GiB cap; item puS yIwiv error yIjatlhchugh.</p>
+<h3 id="qes">QeS</h3>
+<p>content replace - editor <strong>qan</strong>, WebDAV <code>PUT</code> - replaced bytes QeSDat keep, wrong save file'Daq ending neH. row menu <strong>QeS</strong> file history poS, newest first, time je size versionDat:</p>
+<ul><li><strong>yuD</strong> version exact bytes, range included (player versionDat seek</li></ul>
+<p>current file'latlh).</p>
+<ul><li><strong>qa'</strong> swap: wIv version file content, current newest version - qa'</li></ul>
+<p>chuqDaq je qa'lu'.</p>
+<ul><li><strong>qaw</strong> version je bytes qaw.</li></ul>
+<p>read-only share history legh je version yuD; change write perm. kept version quotaDaq count, trash file history purgeDat. <strong>choH</strong> (&quot;QeS&quot;) wej bound: file versionDaq chenmoH, je age days - <code>0</code> bound disable. background sweep age bound trash purge cadence; count bound version saveDat apply.</p>
+<h3 id="office-lutmey">Office lutmey</h3>
+<p>instance office engine chut (see <a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md#office-integration-optional">INSTALL.md</a>), office file - docx, xlsx, pptx, odt, ods, odp - browser editorDat poS (inert neH): file click (row menu <strong>poS</strong>), chooseH, close. save write same door: quota count, QeSDat show, encrypted fileDat refuse (built-in editor handle). engine chut chugh nothing change - row latlhBeh.</p>
+<h2 id="5-boq">5. boq</h2>
+<p>file je folder instance accountDat boq:</p>
+<ol><li>item wIv, <strong>boq</strong> yIpoS.</li><li>dropdownvo' user wIv.</li><li>permission tick: <strong>legh</strong>, <strong>choH</strong>, <strong>chu'</strong>, <strong>qaw</strong> (boq box</li></ol>
+<p>wejlu', boq chut, effect chut neH).</p>
+<ol><li><strong>boq</strong> yIpoS.</li></ol>
+<p>boq user root file treeDat show, your name mark; name taken chugh, suffix bot (<code>Projekte</code> <code>Projekte (alice) 2</code>Dat). shared folderDat chu'bogh anything *your* treeDat land, *your* quotaDaq count.</p>
+<p>revoke: item <strong>boq</strong> dialog chutDat yIpoS, personDap <strong>yu'</strong> yIpoS.</p>
+<p><a href="#11-chusqang">chuSQang</a> both sides chut, boq key envelope bot - other person public keyvo' seal; fingerprint dialogDat show, bandDat compare, trust chunwI'.</p>
+<h3 id="public-link">Public link</h3>
+<p>public link folder je file bot URL lo'wI' - yuQ neH, nom neH. <strong>Public link</strong> section <strong>boq</strong> dialogDat:</p>
+<ol><li>visitor wIv: <strong>Read - view and download</strong>, <strong>Add - upload only</strong> je</li></ol>
+<p><strong>Full - upload, download and delete</strong>.</p>
+<ol><li>link expiry wIv: <strong>30/90 days after last use</strong> (rolling, default),</li></ol>
+<p><strong>30/90 days after creation</strong> (fixed) je <strong>Never</strong>.</p>
+<ol><li>optional <strong>Label</strong> yIchuv, link DIS distinction.</li><li><strong>Create link</strong> yIpoS. URL wa'DIch, <strong>Copy link</strong> button - copy now.</li></ol>
+<p>server hash token neH, URL chut neH chut.</p>
+<p>link lo'wI' plain page folder contents legh (folder wej level, download attachment) - nom neH, referrer neH, search engine index neH. link item exact je below reach; account Dat something else expose.</p>
+<p>section every link created list: label, preset, deadline, last visit je download count, <strong>yu'</strong> revoke. revoke instant - URL *not found* bot next requestvo'.</p>
+<p>qaSbogh yIjatlh:</p>
+<ul><li><strong>rolling vs. fixed:</strong> rolling link visit je day qaw'lu' neH, visit</li></ul>
+<p>deadline full windowDat push. fixed link create N daysDat expire, open qaj. expired link &quot;gone&quot; bot first, shortly after permanent - open chu'chugh je bring back.</p>
+<ul><li><strong>Add je Full writeable inbox link:</strong> URL lo'wI' *your* treeDat file</li></ul>
+<p>put (*your* quotaDaq count). <strong>Add</strong> visitor upload box neH - list je download chut, file name je. <strong>Full</strong> chugh browse je delete inside shared folder - delete *your* trashDat land, shared folder own linkvo' delete chut. <strong>Read</strong> wivchugh hand out neH.</p>
+<ul><li><strong>plaintext neH:</strong> encrypted file je folder link chut (section yIjatlh),</li></ul>
+<p>linked folder encrypted file visitorDat invisible taH.</p>
+<ul><li><strong>ghom bIQroq link chut</strong> - membership access grant.</li></ul>
+<h2 id="6-ghom-biqroq">6. ghom bIQroq</h2>
+<p>ghom bIQroq ghom bot, person neH: workspace chu', own quota, managed membership, memberDat tree latlh. ghom bIQroq ghom name badge rootDat wear, same name personal folderDIS distinction.</p>
+<p><strong>chu'.</strong> administrator ghom chu' (see <a href="#9-lowi-poh">lo'wI' poH</a>: name, quota MiB, member role - creator first manager vo'). ghom root folder <strong>ghom bIQroq chu'</strong> buttonvo' chu' file list topDat - root listingDat neH, ghom member chutDat. from member rootDat folder legh, whole tree work - upload, pong, gHoS, bIQtIq - individual boq neH. ghom bIQroq person boq chut: membership access grant.</p>
+<p><strong>quota.</strong> ghom storage own budget, administrator set. ghom bIQroq write ghomDaq count, your personal quota neH; ghom full chugh <code>507 Insufficient Storage</code> bot, budget raise chutpu' je someone space free. trash file purgeDat count taH.</p>
+<p><strong>pon.</strong> chuSQang chut, manager folder pon distribute: ghom root row menu (&quot;...&quot; column) <strong>bIQroq pon yIpevn</strong> yIpoS, then member wa'DaQ wrap je send. pon chut member file name legh, content decrypt chut; file encryption setup chut member pon receive chut (button yIjatlh). pon membership follow: member remove chugh ghom pon remove.</p>
+<p><strong>bIQtIq je delete.</strong> ghom file trashDat land, member ghom trash row own trash viewDat legh - qa' je purge memberDat. ghom administrator delete empty chugh: member neH, folder neH.</p>
+<h2 id="7-biqtiq">7. bIQtIq</h2>
+<p>nothing instant delete: <strong>qaw</strong> entry your personal trash ghoS, <strong>qa'</strong> je <strong>permanent qaw</strong>. <strong>bIQtIq yIQaw</strong> everything clear.</p>
+<p>background sweep trash entry30 daysDat qaw' (<code>FXCLOUD_TRASH_DAYS</code>); trash list entry deadline bot, trash content your quotaDaq count taH.</p>
+<h2 id="8-quota">8. quota</h2>
+<p>every account storage quota - default1 GiB, administrator accountDat set. count *your own*: upload file, copy create, other *your* share content original ownerDaq count. exceed chugh clear <code>507 Insufficient Storage</code> web UI je WebDAV; current use <strong>choH</strong> show (&quot;Storage: used of quota&quot;).</p>
+<h2 id="9-lowi-poh">9. lo'wI' poH</h2>
+<p>administrator top bar name menuDaq <strong>lo'wI' poH</strong> entry. dialog <strong>Users</strong> tab poS; <strong>Group folders</strong> tab <a href="#6-ghom-biqroq">section6</a> group admin bot. Users tabDat:</p>
+<ul><li>account <strong>activate / deactivate</strong> (instant: session je WebDAV included;</li></ul>
+<p>administrator self deactivate chut),</p>
+<ul><li><strong>administrator role grant / revoke</strong> (last active administrator</li></ul>
+<p>deactivate chut je demote chut),</p>
+<ul><li>account <strong>quota set</strong>,</li><li><strong>password reset</strong>, user next nomDat one-time temporary password bot.</li></ul>
+<p>deactivated account nom je WebDAV chut,403 bot administrator yIchel. display name, je password listDat *neH*: user <strong>choH</strong> self change.</p>
+<p>same switch databaseDat available (restart neH). systemd deploy file <code>/home/fxcloud/data/fxcloud.db</code>, development <code>./data/fxcloud.db</code>:</p>
+<pre><code class="language-bash">DB=/home/fxcloud/data/fxcloud.db
+
+# overview
+sqlite3 &quot;$DB&quot; &quot;SELECT id, username, is_active, is_admin, quota_bytes FROM users ORDER BY id;&quot;
+
+# activate / deactivate (takes effect instantly: sessions + WebDAV included)
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET is_active = 1 WHERE username = 'max';&quot;
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET is_active = 0 WHERE username = 'max';&quot;
+
+# administrator role
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET is_admin = 1 WHERE username = 'max';&quot;
+
+# quota (bytes;1073741824 =1 GiB, the default for every account)
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET quota_bytes = 2147483648 WHERE username = 'alice';&quot;
+</code></pre>
+<h2 id="10-choh">10. choH</h2>
+<p>top bar name menuDat <strong>choH</strong> poS:</p>
+<ul><li><strong>Konto</strong> - username, member since, storage quotaDaq.</li><li><strong>Display name</strong> - your self change, other userDat show.</li><li><strong>Theme</strong> - light je dark.</li><li><strong>Password</strong> - change; current password first yIchel.</li><li><strong>Passkeys</strong> - your nom device manage (below).</li></ul>
+<h2 id="11-chusqang">11. chuSQang</h2>
+<p>fxcloud file <strong>your browser</strong>Dat encrypt, your device leave chenN: server ciphertext je wrapped key store, file name, size je share je legh - storage service needed. full design (threat model, key hierarchy, DECISIONs) <a href="https://github.com/floyd54/fxcloud/blob/main/ENCRYPTION.md">ENCRYPTION.md</a>; user view:</p>
+<ul><li>top bar badge state show: <strong>chuSQang laD</strong> (setup chut neH),</li></ul>
+<p><strong>Unencrypted</strong>, je <strong>Encrypted</strong>.</p>
+<ul><li>enablechugh, <strong>fxcloud nom password use</strong> (default) je **separate</li></ul>
+<p>password choose** wIv.</p>
+<ul><li>then <strong>Recovery key</strong> (64 hex digit) show. save: passphrase forgetchugh</li></ul>
+<p>file back way only.</p>
+<ul><li>key current tab memory only - reload <strong>Unencrypted</strong>Dat back, unlock</li></ul>
+<p>pane passphrase chu'.</p>
+<ul><li>encryption chut, upload encrypt, download je preview browserDat decrypt,</li></ul>
+<p>share key envelope bot (above). WebDAV desktop client encrypt neH: encrypted file ciphertextDat visible, theyvo' write chut.</p>
+<h3 id="auto-unlock-passphrase-neh-pos">Auto-unlock: passphrase neH poS</h3>
+<p><strong>choH &gt; Konto &gt; Auto-unlock</strong> accountDat switch: device wa'DIch unlock chut, browser device key your wrapped account key bot (<code>localStorage</code>, password neH), later every poS - reload, new tab, password <strong>je</strong> passkey nom - unlocked start. passphrase device wa'DIch neH yIchel, exact moment: badge <strong>Unencrypted</strong> vo' <strong>Verschlüsselt</strong> switch live tabDat. fresh device wa'DIch ask, then silent. <strong>Off</strong> stored unlock delete, strict behavior back: key current tab only. trade-off, open: browser profile whole readHogh, account key devicevo' get - switch default off (ENCRYPTION.md5.7, DECISION7).</p>
+<h3 id="encrypt-existing-files">Encrypt existing files</h3>
+<p><strong>choH &gt; Konto &gt; Encrypt existing files</strong> whole tree browserDat walk, plaintext file encrypt, old version history qaw - history *is* plaintext. dialog <code>i of n</code> show, cancel available, resume where stopped: rerun already encrypted skip. quota full, quota message pause <strong>Continue after freeing space</strong> bot. folder row menu same action subtree only (<strong>Encrypt folder now...</strong>).</p>
+<h3 id="encryption-zones">Encryption zones</h3>
+<p>folder row menu (<strong>Encryption zone: on/off</strong>) zone mark: below new file je save passphrase yIchel even badge <strong>Unencrypted</strong> yIjatlh, folder encrypt taH, account rest WebDAV-compatible. owner (ghom manager) only flag change, descendant inherit, folder copy flag carry - copyDat chu' set.</p>
+<h3 id="recovery-key-show-again-je-new-issue">Recovery key: show again je new issue</h3>
+<p><strong>choH &gt; Konto</strong> <strong>Recovery key</strong> section: storage passphrase yIchuv <strong>Show recovery key</strong> again show (64 hex digit, <strong>Download</strong> je), je <strong>Issue a new one</strong> fresh key confirm behind generate - old key new storeDat moment qaw'lu'. wrong passphrase far neH. old version setup account stored copy chut, &quot;issue one here&quot; bot; first reissue show enable.</p>
+<h2 id="12-passkeys">12. Passkeys</h2>
+<p>passkey PIN je biometricsDat nom, password neH. fxcloud username-first FIDO2/WebAuthn ES256 use, user verification yIchel (PIN je biometric gesture, touch neH).</p>
+<p><strong>Add one:</strong> <strong>choH</strong> poS, <strong>Passkeys</strong>, <strong>Add passkey</strong> yIpoS, name yIchuv (example &quot;phone&quot;, &quot;security key&quot;) je device confirm. list your device last use show; each <strong>Rename</strong> je <strong>Remove</strong>. last one remove allowed - your password taH, lost device immediate cut.</p>
+<p><strong>nom:</strong> nom page <strong>Passkey</strong> tab ghoS, username yIchuv, device PIN je biometrics confirm. unknown username je passkey chut account same answer, dialog who account yIjatlhchut neH.</p>
+<p>requirements:</p>
+<ul><li><strong>secure context:</strong> browser passkey HTTPS neH <code>localhost</code> neH legh.</li></ul>
+<p>plain HTTP LAN addressDat UI yIjatlh browser block.</p>
+<ul><li>passkey origin je hostname bound created. instance URLDat serve chugh,</li></ul>
+<p>URL <code>FXCLOUD_ORIGIN</code>Dat fxcloud yIchel - next section how, error legh.</p>
+<h2 id="13-https-pasop-worked-example">13. HTTPS paS'op (worked example)</h2>
+<p>fxcloud plain HTTP speak, reverse proxy front TLS terminate. passkey reason extra setting needed: WebAuthn every passkey exact <code>scheme://host[:port]</code> bound created, browser <code>Origin</code> every passkey requestDat send. fxcloud header forwarded scheme je <code>Host</code>vo' derive origin compare - proxy <code>Host</code> rewrite scheme forward chut, two disagree.</p>
+<p>error symptom, passkey add use:</p>
+<pre><code>bad request: Origin does not match this server's address - set
+FXCLOUD_ORIGIN to the URL users open it under
+</code></pre>
+<p>fix environment variable wa'DIch: fxcloud URL yIchel user actual open. nginx worked example <code>cloud.example.com</code> fxcloud same host, port8080:</p>
+<p><strong>1. fxcloud</strong> (systemd unit, je quick test shell):</p>
+<pre><code class="language-bash">FXCLOUD_BIND=127.0.0.1 FXCLOUD_PORT=8080 \
+FXCLOUD_SECURE_COOKIE=1 \
+FXCLOUD_ORIGIN=https://cloud.example.com \
+./fxcloud
+</code></pre>
+<p>unit file (<code>deploy/fxcloud.service</code>) two line same, comment, environment sectionDat wait:</p>
+<pre><code class="language-ini"># Enable when serving over HTTPS behind a TLS-terminating reverse proxy:
+# Environment=FXCLOUD_SECURE_COOKIE=1
+# The exact URL users open fxcloud under - required for passkeys when a
+# reverse proxy rewrites Host or terminates TLS (e.g. https://cloud.example.com):
+# Environment=FXCLOUD_ORIGIN=https://cloud.example.com
+</code></pre>
+<p><strong>2. nginx</strong> TLS terminate forward:</p>
+<pre><code class="language-nginx">server {
+    listen 443 ssl;
+    server_name cloud.example.com;
+
+    client_max_body_size 10G;   # keep in sync with FXCLOUD_MAX_UPLOAD_MB
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_request_buffering off;
+        proxy_buffering off;
+    }
+}
+</code></pre>
+<p><strong>3. fxcloud restart</strong> (unit change: <code>sudo systemctl daemon-reload &amp;&amp; sudo systemctl restart fxcloud</code>).</p>
+<p><code>FXCLOUD_ORIGIN</code> value rules:</p>
+<ul><li>browser address bar origin equal: scheme, host, port default neH (https</li></ul>
+<p>443, http80) - <strong>trailing slash neH</strong>, path neH.</p>
+<ul><li>user instance several nameDat reach, passkeys configured oneDat work;</li></ul>
+<p>canonical URL wIv.</p>
+<ul><li>WebAuthn only. everything else nginx block headerDat work, proxy chut</li></ul>
+<p>harmless.</p>
+<p><code>FXCLOUD_ORIGIN</code> chut, fxcloud origin request <code>X-Forwarded-Proto</code> (<code>FXCLOUD_SECURE_COOKIE</code> je) <code>Host</code>vo' derive - proxy both unchanged forward correct, momentDat wrong.</p>
+<h2 id="14-webdav">14. WebDAV</h2>
+<p>fxcloud <strong><code>/dav/</code></strong>Dat WebDAV speak, HTTP Basic auth (your fxcloud username + password; passkey web-only). <code>/dav/</code> after path your home folder relative:</p>
+<pre><code class="language-bash">rclone config    # type: webdav, url: https://your-host/dav/, user/pass
+rclone lsd remote:
+
+# Windows &quot;Map network drive&quot; / macOS Finder &quot;Connect to Server&quot; -&gt; /dav/
+</code></pre>
+<p>deactivated account403, quota violation507. encrypted file ciphertextDat visible, desktop clientvo' write chut (see <a href="#11-chusqang">chuSQang</a>); web UI those way in out.</p>
+<h2 id="15-troubleshooting">15. Troubleshooting</h2>
+<p><strong>&quot;Origin does not match this server's address - set FXCLOUD_ORIGIN ...&quot;</strong> passkey add use: URL user fxcloud open fxcloud proxy headervo' derive disagree. <code>FXCLOUD_ORIGIN</code> set <a href="#13-https-pasop-worked-example">section13</a>Dat, restart.</p>
+<p><strong>passkey UI browser block passkey yIjatlh</strong>: plain HTTP (IP address) HTTPS localhost neH - browser secure contextDat passkey legh neH. fxcloud HTTPS serve.</p>
+<p><strong>&quot;Account created. It has to be activated before you can sign in&quot;</strong>: first account after expected - administrator <strong>lo'wI'poH</strong>Dat activate.</p>
+<p><strong>&quot;account is not activated yet - ask an administrator to activate it&quot;</strong> nomDat je WebDAV: same cause, existing accountDat.</p>
+<p><strong>507 &quot;storage quota exceeded: X of Y used&quot;</strong>: your quota full - trash yIQaw (count taH), file qaw, je administrator quota raise yIchel.</p>
+<p><strong>encrypted file poS chut</strong>: storage passphrase current tab unlock neH (key tab memory only) - unlock pane yIlo'; passphrase forgetchugh, setup recovery key recover.</p>
+<p><strong>sync client encrypted file write qaw'lu'chugh</strong>: desktop client encrypt neH; WebDAV those file ciphertext serve, read-only. encrypted content web UI yIlo'.</p>
+<p><strong>nom page dead: Passkey / yuQ chu' tab react neH, page English show even browser German, submit mask Dat back error neH</strong>: fxcloud JavaScript off. fresh installed web app default, install dialog switch neH (Google Pixel report; Samsung setting offer neH) - page script tab wire je form intercept, without browser plain reload fallback. fix: fxcloud icon long-press, <strong>choH</strong> poS, <strong>JavaScript</strong> enable (Chrome &gt; Settings &gt; Site settings &gt; JavaScript), app reopen. different cause partial overlap: tab *react* page your languageDat yet nom maskDat back loop chugh, session cookie drop - address bar <code>https://</code> check, site data browser settingsDat clear.</p>
+</main>
+<footer>fxcloud {{version}}</footer>
+</body>
+</html>

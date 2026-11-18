@@ -361,6 +361,9 @@ pub fn build_router(state: SharedState) -> Router {
         // UI pages & embedded assets
         .route("/", get(ui::index))
         .route("/login", get(ui::login_page))
+        // The user guide, in the reader's language (no session needed:
+        // documentation a locked-out reader can still reach).
+        .route("/help", get(ui::help_page))
         .route("/sw.js", get(ui::service_worker))
         .route("/manifest.webmanifest", get(ui::manifest))
         .route("/assets/{*path}", get(ui::asset))

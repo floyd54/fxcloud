@@ -41,6 +41,7 @@
     // topbar
     "nav.settings": "Einstellungen",
     "nav.admin": "Benutzerverwaltung",
+    "nav.help": "Hilfe",
     "nav.signout": "Abmelden",
     "storage.title": "Belegter Speicher vom Kontingent",
     "storage.of": "{used} von {quota}",
@@ -638,6 +639,7 @@
     // topbar
     "nav.settings": "Settings",
     "nav.admin": "User administration",
+    "nav.help": "Help",
     "nav.signout": "Sign out",
     "storage.title": "storage used of quota",
     "storage.of": "{used} of {quota}",
@@ -1241,6 +1243,7 @@
     // topbar
     "nav.settings": "choH",
     "nav.admin": "lo'wI' Qap",
+    "nav.help": "QaH",
     "nav.signout": "nomta'",
     "storage.title": "nI' qan",
     "storage.of": "{used}/{quota} nI'",
@@ -2011,6 +2014,7 @@
       /* private mode: the choice simply does not survive the session */
     }
     if (typeof document === "undefined") return;
+    syncLangCookie(code);
     if (document.documentElement) document.documentElement.lang = code;
     apply(document);
     renderSwitch();
@@ -2025,9 +2029,25 @@
   function init() {
     currentCode = detect();
     if (typeof document === "undefined") return;
+    syncLangCookie(currentCode);
     if (document.documentElement) document.documentElement.lang = currentCode;
     apply(document);
     renderSwitch();
+  }
+
+  /**
+   * Mirror the effective language into a cookie the server can read -
+   * `/help` serves the guide from it, so a page with no script still
+   * opens in the language the reader is using. localStorage stays the
+   * source of truth for the UI itself.
+   */
+  function syncLangCookie(code) {
+    try {
+      document.cookie =
+        "fxcloud_lang=" + code + "; path=/; max-age=31536000; SameSite=Lax";
+    } catch (e) {
+      /* private mode: /help just falls back to English */
+    }
   }
 
   // Only self-start in a real document: the Node crypto harness requires

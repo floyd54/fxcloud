@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fxcloud - Help</title>
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  body.help { max-width: 46rem; margin: 0 auto; padding: 1rem 1.25rem 4rem; line-height: 1.6; }
+  body.help header { display: flex; justify-content: space-between; align-items: center;
+    gap: 1rem; flex-wrap: wrap; padding: .75rem 0; border-bottom: 1px solid var(--border, #ccc); }
+  body.help header a { text-decoration: none; }
+  body.help .langs { font-size: .9rem; opacity: .85; }
+  body.help .langs a.active { font-weight: bold; text-decoration: none; }
+  body.help h1 { font-size: 1.6rem; margin: 1.5rem 0 .5rem; }
+  body.help h2 { font-size: 1.25rem; margin: 2rem 0 .5rem; padding-top: .75rem;
+    border-top: 1px solid var(--border, #ccc); }
+  body.help h3 { font-size: 1.05rem; margin: 1.4rem 0 .4rem; }
+  body.help pre { background: var(--code-bg, #f4f4f4); padding: .75rem; overflow-x: auto;
+    border-radius: .35rem; font-size: .85rem; }
+  body.help code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .9em; background: var(--code-bg, #f4f4f4); padding:0 .25em; border-radius: .25em; }
+  body.help pre code { background: none; padding: 0; }
+  body.help ul, body.help ol { padding-left: 1.4rem; }
+  body.help li { margin: .25rem 0; }
+  body.help a { color: inherit; }
+  body.help footer { margin-top: 3rem; font-size: .8rem; opacity: .7; }
+</style>
+</head>
+<body class="help">
+<header>
+  <a href="/">Back to fxcloud</a>
+  <nav class="langs" aria-label="Language"><a class="lang active" href="/help?lang=en">English</a> · <a class="lang" href="/help?lang=de">Deutsch</a> · <a class="lang" href="/help?lang=tlh">tlhIngan Hol</a></nav>
+</header>
+<main>
+<h1 id="fxcloud-user-guide">fxcloud User Guide</h1>
+<p>This guide is for people who *use* an fxcloud instance: how to sign up, work with your files, share them, encrypt them and sign in with a passkey. It also walks an administrator through the one deployment step passkeys care about (HTTPS behind a reverse proxy with <code>FXCLOUD_ORIGIN</code>).</p>
+<p>Developer-facing documents:</p>
+<ul><li><a href="https://github.com/floyd54/fxcloud/blob/main/README.md">README.md</a> - the feature list and the map of this documentation</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md">INSTALL.md</a> - install, configuration table, systemd unit</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/API.md">API.md</a> - HTTP endpoints and protocol details</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/ENCRYPTION.md">ENCRYPTION.md</a> - the cryptographic design in full</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a> - code layout, storage, quotas</li></ul>
+<h2 id="contents">Contents</h2>
+<ol><li><a href="#1-install">Install</a></li><li><a href="#2-the-first-account">The first account</a></li><li><a href="#3-signing-in">Signing in</a></li><li><a href="#4-your-files">Your files</a></li><li><a href="#5-sharing">Sharing</a></li><li><a href="#6-group-folders">Group folders</a></li><li><a href="#7-trash">Trash</a></li><li><a href="#8-quotas">Quotas</a></li><li><a href="#9-user-administration">User administration</a></li><li><a href="#10-your-account-settings">Your account settings</a></li><li><a href="#11-encryption">Encryption</a></li><li><a href="#12-passkeys">Passkeys</a></li><li><a href="#13-https-behind-a-reverse-proxy-worked-example">HTTPS behind a reverse proxy (worked example)</a></li><li><a href="#14-webdav">WebDAV</a></li><li><a href="#15-troubleshooting">Troubleshooting</a></li></ol>
+<h2 id="1-install">1. Install</h2>
+<p>fxcloud is a single binary: SQLite and the web interface are built in, there is no database server and no runtime dependency.</p>
+<p><strong>One line</strong> - installs fxcloud as a systemd service on any Linux with <code>curl</code> (as root); running the same line again updates it:</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/floyd54/fxcloud/main/install.sh | sh
+</code></pre>
+<p><strong>Prebuilt binary</strong> - every tagged release on <a href="https://github.com/floyd54/fxcloud/releases">GitHub Releases</a> ships a fully static Linux x86_64 build (~6 MB):</p>
+<pre><code class="language-bash">chmod +x fxcloud-&lt;tag&gt;-x86_64-unknown-linux-musl
+FXCLOUD_DATA=/srv/fxcloud ./fxcloud-&lt;tag&gt;-x86_64-unknown-linux-musl
+</code></pre>
+<p><strong>From source</strong>:</p>
+<pre><code class="language-bash">cargo build --release
+./target/release/fxcloud      # creates ./data with the DB and file blobs
+</code></pre>
+<p>Open &lt;http://127.0.0.1:8080&gt;. To run it as a service on Linux, use the hardened unit from <a href="https://github.com/floyd54/fxcloud/blob/main/deploy/fxcloud.service"><code>deploy/fxcloud.service</code></a> - the <a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md#deployment">INSTALL.md</a> has the step-by-step. All settings are environment variables (bind address, port, data directory, quota-related limits, ...); the full table is in <a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md#configuration">INSTALL.md</a>.</p>
+<h2 id="2-the-first-account">2. The first account</h2>
+<p>On a fresh instance, open the <strong>Create account</strong> tab, pick a username (3 characters or more), an optional display name and a password (8 characters or more).</p>
+<p>The <strong>first account</strong> created on an instance is activated immediately and becomes its administrator. Every account created after that starts inactive: registration succeeds, but sign-in is refused with a hint to contact the administrator until an active account activates it (see <a href="#9-user-administration">User administration</a>).</p>
+<h2 id="3-signing-in">3. Signing in</h2>
+<p>The sign-in page has three tabs:</p>
+<ul><li><strong>Sign in</strong> - username and password.</li><li><strong>Passkey</strong> - username only; the device then asks for a PIN or</li></ul>
+<p>biometrics (see <a href="#12-passkeys">Passkeys</a>).</p>
+<ul><li><strong>Create account</strong> - registration, as above.</li></ul>
+<p>Sessions last 7 days by default (<code>FXCLOUD_SESSION_TTL</code>, sliding while in use).</p>
+<h3 id="install-as-an-app">Install as an app</h3>
+<p>fxcloud installs like any other web app: in Chrome/Edge use <strong>Install app</strong> in the address bar, on iPhone/iPad Safari use <strong>Share &gt; Add to Home Screen</strong>, on Android Chrome the <strong>menu &gt; Add to home screen</strong>. The app then opens from its own icon in a window without browser chrome - same account, same session, nothing to configure.</p>
+<p>Two honest notes: the install is just a launcher (there is no offline mode - fxcloud is a client of your server), and the service worker that enables the install <strong>never caches anything</strong> by design, so an installed app always shows exactly what the server serves (<a href="https://github.com/floyd54/fxcloud/blob/main/ENCRYPTION.md">ENCRYPTION.md</a>, section 11).</p>
+<p>Right after installing, check that JavaScript is enabled for the app: on some devices freshly installed web apps start with it <strong>off</strong> and the install dialog offers no switch (reported on a Google Pixel). The symptom is a dead login page - see <a href="#15-troubleshooting">Troubleshooting</a>; long-press the icon &gt; Settings &gt; JavaScript fixes it.</p>
+<h2 id="4-your-files">4. Your files</h2>
+<p>The file explorer works like a desktop file manager, in the browser:</p>
+<ul><li><strong>New file</strong> / <strong>New folder</strong> create entries in the current folder; a new</li></ul>
+<p>text file opens straight in the built-in editor (with a Markdown preview toggle and <strong>Save</strong>).</p>
+<ul><li><strong>Upload file</strong> / <strong>Upload folder</strong>, or drag &amp; drop onto the drop zone,</li></ul>
+<p>upload files or whole folder trees (empty subfolders included).</p>
+<ul><li><strong>Show hidden</strong> toggles entries whose name starts with a dot; the choice</li></ul>
+<p>is remembered in your browser.</p>
+<ul><li>Click a file to preview it: images, video, audio, PDF, HTML and text</li></ul>
+<p>open in a lightbox; text files open in the editor.</p>
+<ul><li>Closing the editor with unsaved changes - or stepping to another file</li></ul>
+<p>with the gallery arrows - asks first, with <strong>Save</strong> as the focused default (Enter), <strong>Discard</strong> and <strong>Cancel</strong>. If the save fails the lightbox stays open and the status line carries the error, so the text is never closed over.</p>
+<ul><li>Selection checkboxes (Shift+click extends over a range) give you the</li></ul>
+<p>bulk bar: <strong>Download</strong> (the whole selection as one ZIP), <strong>Move to...</strong>, <strong>Copy to...</strong>, <strong>Share</strong>, <strong>Delete</strong> and <strong>Clear</strong>.</p>
+<ul><li>Every row also has a menu (Download, Share, Move, Copy, Rename, Delete).</li><li>Folder rows show their recursive size; the breadcrumb walks you down the</li></ul>
+<p>tree.</p>
+<p>ZIP downloads are assembled per request and capped at 1 GiB uncompressed; take fewer items if the error tells you to.</p>
+<h3 id="version-history">Version history</h3>
+<p>Every content replacement - the editor's <strong>Save</strong>, a WebDAV <code>PUT</code> - keeps the replaced bytes as a restorable version, so a wrong save is never the end of a file. The row menu's <strong>Version history</strong> opens the file's history, newest first, with time and size per version:</p>
+<ul><li><strong>Download</strong> fetches that version's exact bytes, ranges included (a</li></ul>
+<p>player can seek in a version like in the current file).</p>
+<ul><li><strong>Restore</strong> exchanges: the chosen version becomes the file's content and</li></ul>
+<p>what was current becomes the newest version - a restore is itself undoable.</p>
+<ul><li><strong>Delete</strong> removes one version together with its bytes.</li></ul>
+<p>A read-only share sees the history and can download versions; changing it needs write permission. Kept versions count against your quota, and the trash keeps a file's history until the file is purged. Two bounds in <strong>Settings</strong> (&quot;Version history&quot;) keep the history in check: how many versions to keep per file, and an age in days - <code>0</code> disables either bound. A background sweep applies the age bound on the same cadence as the trash purge; the count bound is applied whenever a version is saved.</p>
+<h3 id="office-documents">Office documents</h3>
+<p>If your instance runs an office engine (see <a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md#office-integration-optional">INSTALL.md</a>), office files - docx, xlsx, pptx, odt, ods, odp - open in a browser editor instead of staying inert: click the file (or <strong>Open in office editor</strong> in the row menu), edit, close. The save comes back through the same doors as any other write: it counts against the quota, shows up in the version history above, and is refused for encrypted files (the built-in editor handles those). Without an engine configured nothing changes - the rows keep behaving exactly as before.</p>
+<h2 id="5-sharing">5. Sharing</h2>
+<p>Share files or folders with other accounts of the same instance:</p>
+<ol><li>Select one or more items and press <strong>Share</strong>.</li><li>Pick the user from the dropdown.</li><li>Tick the permissions to grant: <strong>Read</strong>, <strong>Write</strong>, <strong>Create</strong>,</li></ol>
+<p><strong>Delete</strong> (a fifth box, Share, is reserved for re-sharing and has no effect yet).</p>
+<ol><li>Press <strong>Share</strong>.</li></ol>
+<p>A share appears in the other person's root file tree, marked with your name; if the name is taken there, it gets a suffix (<code>Projekte</code> becomes <code>Projekte (alice) 2</code>). Everything they create inside a shared folder lands in *your* tree and counts against *your* quota.</p>
+<p>To revoke, open the <strong>Share</strong> dialog for the item again and press <strong>Remove</strong> next to the person.</p>
+<p>When <a href="#11-encryption">encryption</a> is on for both sides, the share also carries a key envelope sealed to the other person's public key - their key fingerprint is shown in the dialog so you can compare it out of band before trusting the exchange.</p>
+<h3 id="public-links">Public links</h3>
+<p>A public link hands a folder or a single file to anyone who has the URL - no account, no sign-in. It lives in its own <strong>Public link</strong> section of the <a href="#5-sharing">Share</a> dialog:</p>
+<ol><li>Pick what visitors may do: <strong>Read - view and download</strong>, **Add -</li></ol>
+<p>upload only<strong> or </strong>Full - upload, download and delete**.</p>
+<ol><li>Pick how the link expires: <strong>30/90 days after last use</strong> (rolling, the</li></ol>
+<p>default), <strong>30/90 days after creation</strong> (fixed) or <strong>Never</strong>.</p>
+<ol><li>Optionally type a <strong>Label</strong> so you can tell your links apart later.</li><li>Press <strong>Create link</strong>. The URL is shown once, with a <strong>Copy link</strong></li></ol>
+<p>button - copy it now. The server keeps only a hash of the token and can never show the URL again.</p>
+<p>Anyone opening the link sees a plain page with the folder's contents (folders one level at a time, downloads as attachments) - no sign-in, no referrers, no search-engine indexing. The link reaches exactly the item it was minted on and everything below it; nothing else in your account is exposed.</p>
+<p>The section also lists every link you created: label, preset, deadline, last visit and download count, with <strong>Remove</strong> to revoke one. Revoking takes effect immediately - the URL answers *not found* from the next request on.</p>
+<p>Things worth knowing:</p>
+<ul><li><strong>Rolling vs fixed:</strong> a rolling link dies only after the chosen number</li></ul>
+<p>of days *without* a visit, and every visit pushes the deadline out to a full window again. A fixed link expires exactly N days after you created it, no matter how often it is opened. An expired link answers &quot;gone&quot; at first and disappears for good shortly after - it is never brought back by someone opening it again.</p>
+<ul><li><strong>Add and Full are writeable inbox links:</strong> everyone with the URL can</li></ul>
+<p>put files into *your* tree (they count against *your* quota). An <strong>Add</strong> visitor gets the upload box and nothing else - they can neither list nor download what is inside, not even the file names. With <strong>Full</strong> they can also browse and delete inside the shared folder - deletions land in *your* trash, and the shared folder itself can never be deleted through its own link. Use <strong>Read</strong> when you only want to hand something out.</p>
+<ul><li><strong>Plaintext only:</strong> an encrypted file or folder cannot be linked (the</li></ul>
+<p>section explains this on the spot), and encrypted files inside a linked folder stay invisible to visitors.</p>
+<ul><li><strong>Group folders cannot be linked</strong> - membership is what grants access</li></ul>
+<p>there.</p>
+<h2 id="6-group-folders">6. Group folders</h2>
+<p>A group folder belongs to a *group*, not to one person: a shared workspace with its own quota, managed membership, and the same tree for every member. Group folders wear the group's name as a badge in your root, so they stay tellable apart from a personal folder of the same name.</p>
+<p><strong>Creating one.</strong> An administrator creates the group itself (see <a href="#9-user-administration">User administration</a>: name, quota in MiB, and the members with their roles - the creator becomes its first manager). You then create the group's root folder yourself with the <strong>New group folder...</strong> button at the top of your file list - offered in the root listing only, and only while you belong to a group. From then on every member sees that folder in their root and works the whole tree - upload, rename, move, trash - without any individual shares. A group folder cannot be shared out to a person: membership is what grants access.</p>
+<p><strong>Quota.</strong> The group's storage is its own budget, set by the administrator. Writes into a group folder count against the group, never against your personal quota; a full group refuses further uploads with <code>507 Insufficient Storage</code> until the budget is raised or somebody frees space. Files in the trash keep counting until they are purged.</p>
+<p><strong>Keys.</strong> With encryption on, a manager hands out the folder keys: open the group root's row menu (the &quot;...&quot; column) and choose <strong>Distribute folder keys</strong>, then wrap and send to one member at a time. A member without a key sees the file names but cannot decrypt the content, and a member who has not set up file encryption cannot receive one yet (the button says so). Keys follow membership: removing a member removes their envelopes for that group as well.</p>
+<p><strong>Trash and deletion.</strong> Group files go to the trash like any other, and every member sees the group's trashed rows in their own trash view - restore and purge are open to any member. The group itself is deleted by an administrator once it is empty: no members, no folders.</p>
+<h2 id="7-trash">7. Trash</h2>
+<p>Nothing is deleted immediately: <strong>Delete</strong> moves entries to your personal trash, where they can be <strong>Restore</strong>d or <strong>Delete permanently</strong>. <strong>Empty trash</strong> clears everything at once.</p>
+<p>A background sweep removes trashed entries for good after 30 days (<code>FXCLOUD_TRASH_DAYS</code>); the trash list shows each entry's deadline, and trashed content still counts against your quota while it sits there.</p>
+<h2 id="8-quotas">8. Quotas</h2>
+<p>Every account has a storage quota - 1 GiB by default, set per account by an administrator. What counts is everything *you own*: files you uploaded, copies you made, and content others shared *to you* counts against the original owner. Exceeding it yields a clear <code>507 Insufficient Storage</code> error in the web UI and in WebDAV; your current usage is shown in <strong>Settings</strong> (&quot;Storage: used of quota&quot;).</p>
+<h2 id="9-user-administration">9. User administration</h2>
+<p>Administrators get a <strong>User administration</strong> entry in the menu behind their name in the top bar. The dialog opens on a <strong>Users</strong> tab; the <strong>Group folders</strong> tab beside it holds the group administration of <a href="#6-group-folders">section 6</a>. On the Users tab they can:</p>
+<ul><li><strong>activate / deactivate</strong> accounts (takes effect instantly: sessions and</li></ul>
+<p>WebDAV included; an administrator cannot deactivate themselves),</p>
+<ul><li><strong>grant / revoke the administrator role</strong> (the last active administrator</li></ul>
+<p>can neither be deactivated nor demoted),</p>
+<ul><li><strong>set the storage quota</strong> per account,</li><li><strong>reset a password</strong>, which hands back a one-time generated temporary</li></ul>
+<p>password for the user's next sign-in.</p>
+<p>Deactivated accounts can neither sign in nor use WebDAV and get a 403 with a hint to contact the administrator. Display name, theme and password are *not* on this list: every user changes those themselves in <strong>Settings</strong>.</p>
+<p>The same switches are still available directly in the database (no restart required). On a systemd deployment the file is <code>/home/fxcloud/data/fxcloud.db</code>, in development <code>./data/fxcloud.db</code>:</p>
+<pre><code class="language-bash">DB=/home/fxcloud/data/fxcloud.db
+
+# overview
+sqlite3 &quot;$DB&quot; &quot;SELECT id, username, is_active, is_admin, quota_bytes FROM users ORDER BY id;&quot;
+
+# activate / deactivate (takes effect instantly: sessions + WebDAV included)
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET is_active = 1 WHERE username = 'max';&quot;
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET is_active = 0 WHERE username = 'max';&quot;
+
+# administrator role
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET is_admin = 1 WHERE username = 'max';&quot;
+
+# quota (bytes; 1073741824 = 1 GiB, the default for every account)
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET quota_bytes = 2147483648 WHERE username = 'alice';&quot;
+</code></pre>
+<h2 id="10-your-account-settings">10. Your account settings</h2>
+<p>The menu behind your name in the top bar opens <strong>Settings</strong>:</p>
+<ul><li><strong>Account</strong> - username, member since, storage used of quota.</li><li><strong>Display name</strong> - changeable by you, shown to other users.</li><li><strong>Theme</strong> - Light or Dark.</li><li><strong>Password</strong> - change it; the current password is asked first.</li><li><strong>Passkeys</strong> - manage your sign-in devices (see below).</li></ul>
+<h2 id="11-encryption">11. Encryption</h2>
+<p>fxcloud can encrypt files <strong>in your browser</strong> before they leave your device: the server stores ciphertext and a wrapped key, and can still see file names, sizes and sharing - those are what the storage service needs. The full design (threat model, key hierarchy, the DECISIONs) lives in <a href="https://github.com/floyd54/fxcloud/blob/main/ENCRYPTION.md">ENCRYPTION.md</a>; this is the user's view:</p>
+<ul><li>The badge in the top bar shows the state: <strong>Encrypt uploads</strong> (not set</li></ul>
+<p>up yet), <strong>Unencrypted</strong>, or <strong>Encrypted</strong>.</p>
+<ul><li>Turning it on, you choose between <strong>Use my fxcloud login password</strong></li></ul>
+<p>(the default) and <strong>Choose a separate passphrase</strong>.</p>
+<ul><li>You are then shown a <strong>recovery key</strong> (64 hex digits). Save it: it is</li></ul>
+<p>the only way back into your files if the passphrase is forgotten.</p>
+<ul><li>The keys live in the current tab's memory only - a reload puts you back</li></ul>
+<p>to <strong>Unencrypted</strong>, and the unlock pane asks for the passphrase again.</p>
+<ul><li>With encryption on, uploads are encrypted, downloads and previews are</li></ul>
+<p>decrypted in the browser, and sharing carries the key envelope described above. WebDAV desktop clients do not encrypt: encrypted files are visible there as ciphertext and cannot be written through them.</p>
+<h3 id="auto-unlock-open-without-the-passphrase">Auto-unlock: open without the passphrase</h3>
+<p><strong>Settings &gt; Account &gt; Auto-unlock</strong> is a switch that travels with your account: once a device has unlocked once, that browser keeps a random device key with your wrapped account key (<code>localStorage</code>, never your password) and every later opening - reload, new tab, password <strong>or passkey</strong> login - starts unlocked. The passphrase is asked exactly once more per device, at the one deliberate moment: you switching the badge from <strong>Unencrypted</strong> to <strong>Encrypted</strong> inside a live tab. A brand-new device asks once, then it too is silent. <strong>Off</strong> deletes the stored unlock and returns to the strict behaviour: keys live in the current tab only. The trade-off, openly: whoever can read this browser profile wholesale gets the keys of this account on this device - which is why the switch is off by default (ENCRYPTION.md 5.7, DECISION 7).</p>
+<h3 id="encrypt-existing-files">Encrypt existing files</h3>
+<p><strong>Settings &gt; Account &gt; Encrypt existing files</strong> walks the whole tree in this browser, encrypts every plaintext file it finds and drops each file's old version history - that history *is* the plaintext. The dialog shows <code>i of n</code>, can be cancelled at any time, and resumes where it stopped: rerunning skips everything already encrypted. When the quota fills up it pauses with the quota message and offers <strong>Continue after freeing space</strong>. A folder's row menu has the same action for just that subtree (<strong>Encrypt folder now...</strong>).</p>
+<h3 id="encryption-zones">Encryption zones</h3>
+<p>A folder's row menu (<strong>Encryption zone: on/off</strong>) marks it as a zone: new files and saves below it demand the passphrase even when the badge says <strong>Unencrypted</strong>, so that folder stays encrypted while the rest of the account stays WebDAV-compatible. Only the owner (or a group's manager) can change the flag, descendants inherit it automatically, and copying a folder does not carry it - set it again on the copy.</p>
+<h3 id="recovery-key-show-it-again-or-issue-a-new-one">Recovery key: show it again or issue a new one</h3>
+<p><strong>Settings &gt; Account</strong> has a <strong>Recovery key</strong> section: enter the storage passphrase and <strong>Show recovery key</strong> displays it again (64 hex digits, with <strong>Download</strong>), or <strong>Issue a new one</strong> generates a fresh key behind a confirmation - the old key stops working the moment the new one is stored. A wrong passphrase never gets that far. Accounts set up before this version have no stored copy and answer &quot;issue one here&quot;; their first reissue enables showing for them too.</p>
+<h2 id="12-passkeys">12. Passkeys</h2>
+<p>A passkey signs you in with a PIN or biometrics instead of a password. fxcloud uses username-first FIDO2/WebAuthn with ES256 and requires user verification (a PIN or biometric gesture, not just a touch).</p>
+<p><strong>Add one:</strong> open <strong>Settings</strong>, <strong>Passkeys</strong>, press <strong>Add passkey</strong>, give it a name (e.g. &quot;phone&quot;, &quot;security key&quot;) and confirm with your device. The list shows your devices with their last use; each can be <strong>Rename</strong>d or <strong>Remove</strong>d. Removing the last one is allowed - your password keeps working, and a lost device can be cut off immediately.</p>
+<p><strong>Sign in:</strong> switch to the <strong>Passkey</strong> tab on the sign-in page, enter your username, and confirm with the device's PIN or biometrics. An unknown username and an account without passkeys get the same answer, so the dialog does not reveal who has an account.</p>
+<p>Requirements:</p>
+<ul><li>A <strong>secure context</strong>: browsers only expose passkeys over HTTPS or on</li></ul>
+<p><code>localhost</code>. Over plain HTTP on a LAN address the UI tells you the browser blocks them.</p>
+<ul><li>The passkey is bound to the origin and hostname it was created under.</li></ul>
+<p>If your instance is served under a URL, that URL must be announced to fxcloud with <code>FXCLOUD_ORIGIN</code> - the next section shows how, and what the error looks like when it is missing.</p>
+<h2 id="13-https-behind-a-reverse-proxy-worked-example">13. HTTPS behind a reverse proxy (worked example)</h2>
+<p>fxcloud speaks plain HTTP, so a reverse proxy terminates TLS in front of it. Passkeys are the reason this needs one extra setting: WebAuthn binds every passkey to the exact <code>scheme://host[:port]</code> it was created under, and the browser sends its <code>Origin</code> on every passkey request. fxcloud compares that header with the origin it derives from the forwarded scheme and <code>Host</code> - and, behind a proxy that rewrites <code>Host</code> or does not forward the scheme, the two disagree.</p>
+<p>The symptom is this error, when adding or using a passkey:</p>
+<pre><code>bad request: Origin does not match this server's address - set
+FXCLOUD_ORIGIN to the URL users open it under
+</code></pre>
+<p>The fix is one environment variable: tell fxcloud the URL users actually open it under. Worked example with nginx on <code>cloud.example.com</code> and fxcloud on the same host, port 8080:</p>
+<p><strong>1. fxcloud</strong> (systemd unit, or the shell for a quick test):</p>
+<pre><code class="language-bash">FXCLOUD_BIND=127.0.0.1 FXCLOUD_PORT=8080 \
+FXCLOUD_SECURE_COOKIE=1 \
+FXCLOUD_ORIGIN=https://cloud.example.com \
+./fxcloud
+</code></pre>
+<p>In the provided unit file (<code>deploy/fxcloud.service</code>) the same two lines, commented, wait in the environment section:</p>
+<pre><code class="language-ini"># Enable when serving over HTTPS behind a TLS-terminating reverse proxy:
+# Environment=FXCLOUD_SECURE_COOKIE=1
+# The exact URL users open fxcloud under - required for passkeys when a
+# reverse proxy rewrites Host or terminates TLS (e.g. https://cloud.example.com):
+# Environment=FXCLOUD_ORIGIN=https://cloud.example.com
+</code></pre>
+<p><strong>2. nginx</strong> terminates TLS and forwards to it:</p>
+<pre><code class="language-nginx">server {
+    listen 443 ssl;
+    server_name cloud.example.com;
+
+    client_max_body_size 10G;   # keep in sync with FXCLOUD_MAX_UPLOAD_MB
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_request_buffering off;
+        proxy_buffering off;
+    }
+}
+</code></pre>
+<p><strong>3. Restart fxcloud</strong> (after changing the unit: <code>sudo systemctl daemon-reload &amp;&amp; sudo systemctl restart fxcloud</code>).</p>
+<p>Rules for the value of <code>FXCLOUD_ORIGIN</code>:</p>
+<ul><li>It must equal what the browser's address bar shows as origin: scheme,</li></ul>
+<p>host, and port if it is not the scheme's default (443 for https, 80 for http) - and <strong>no trailing slash</strong>, no path.</p>
+<ul><li>If users reach the instance under several names, passkeys work under</li></ul>
+<p>the one configured here; pick the canonical URL.</p>
+<ul><li>It only affects WebAuthn. Everything else keeps working with the proxy</li></ul>
+<p>headers from the nginx block above, and setting it is harmless when no proxy is involved.</p>
+<p>Without <code>FXCLOUD_ORIGIN</code>, fxcloud derives the origin per request from <code>X-Forwarded-Proto</code> (or <code>FXCLOUD_SECURE_COOKIE</code>) plus <code>Host</code>, which is correct when the proxy passes both through unchanged - and wrong the moment it does not.</p>
+<h2 id="14-webdav">14. WebDAV</h2>
+<p>fxcloud speaks WebDAV at <strong><code>/dav/</code></strong> with HTTP Basic auth (your fxcloud username + password; passkeys are web-only). The path after <code>/dav/</code> is relative to your home folder:</p>
+<pre><code class="language-bash">rclone config    # type: webdav, url: https://your-host/dav/, user/pass
+rclone lsd remote:
+
+# Windows &quot;Map network drive&quot; / macOS Finder &quot;Connect to Server&quot; -&gt; /dav/
+</code></pre>
+<p>Deactivated accounts get 403, quota violations 507. Encrypted files show up as ciphertext and cannot be written from a desktop client (see <a href="#11-encryption">Encryption</a>); the web UI is the way in and out for those.</p>
+<h2 id="15-troubleshooting">15. Troubleshooting</h2>
+<p><strong>&quot;Origin does not match this server's address - set FXCLOUD_ORIGIN ...&quot;</strong> when adding or using a passkey: the URL users open fxcloud under differs from what fxcloud derives from the proxy headers. Set <code>FXCLOUD_ORIGIN</code> as in <a href="#13-https-behind-a-reverse-proxy-worked-example">section 13</a> and restart.</p>
+<p><strong>The passkey UI says the browser blocks passkeys</strong>: you are on plain HTTP (or an IP address) rather than HTTPS or localhost - browsers only expose passkeys in a secure context. Serve fxcloud over HTTPS.</p>
+<p><strong>&quot;Account created. It has to be activated before you can sign in&quot;</strong>: expected for every account after the first - an administrator activates it in <strong>User administration</strong>.</p>
+<p><strong>&quot;account is not activated yet - ask an administrator to activate it&quot;</strong> at sign-in or over WebDAV: same cause, now on an existing account.</p>
+<p><strong>507 &quot;storage quota exceeded: X of Y used&quot;</strong>: your quota is full - empty the trash (it keeps counting), delete files, or ask an administrator to raise the quota.</p>
+<p><strong>Encrypted files do not open</strong>: the storage passphrase is not unlocked in this tab (the keys live in tab memory only) - use the unlock pane; if the passphrase is forgotten, the recovery key from setup recovers it.</p>
+<p><strong>Sync client writes fail on encrypted files</strong>: desktop clients do not encrypt; WebDAV serves those files as ciphertext, read-only. Use the web UI for encrypted content.</p>
+<p><strong>Login page is dead: the Passkey / Create account tabs do not react, the page shows English although your browser is German, and submitting just brings the mask back without any error</strong>: JavaScript is switched off for fxcloud. On some devices this is the default for freshly installed web apps and the install dialog offers no switch (reported on a Google Pixel; a Samsung did not offer the setting at all) - the page script is what wires the tabs and intercepts the form, so without it the browser falls back to a plain reload. Fix: long-press the fxcloud icon, open <strong>Settings</strong>, enable <strong>JavaScript</strong> (or Chrome &gt; Settings &gt; Site settings &gt; JavaScript), reopen the app. A different cause with a partial overlap: if the tabs DO react and the page is in your language but signing in still loops back to the mask, the session cookie is being dropped instead - check the address bar says <code>https://</code> and clear the site's data in the browser settings.</p>
+</main>
+<footer>fxcloud {{version}}</footer>
+</body>
+</html>

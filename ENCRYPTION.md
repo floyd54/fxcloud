@@ -1029,4 +1029,6 @@ security story beyond "content at rest is protected".
 - RFC 9180 - HPKE (the pattern ECIES in 5.5 follows, simplified)
 - RFC 5869 - HKDF
 - OWASP Password Storage Cheat Sheet (Argon2id parameters for the KEK)
-- Nextcloud E2EE and Tresorit/Mega design write-
+- Nextcloud E2EE and Tresorit/Mega design write-ups (prior art for
+  envelope-per-share and folder key hierarchies)
+- Web Crypto API - AES-GCM, HKDF, ECDH, X25519 availability

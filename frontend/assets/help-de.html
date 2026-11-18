@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fxcloud - Hilfe</title>
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  body.help { max-width: 46rem; margin: 0 auto; padding: 1rem 1.25rem 4rem; line-height: 1.6; }
+  body.help header { display: flex; justify-content: space-between; align-items: center;
+    gap: 1rem; flex-wrap: wrap; padding: .75rem 0; border-bottom: 1px solid var(--border, #ccc); }
+  body.help header a { text-decoration: none; }
+  body.help .langs { font-size: .9rem; opacity: .85; }
+  body.help .langs a.active { font-weight: bold; text-decoration: none; }
+  body.help h1 { font-size: 1.6rem; margin: 1.5rem 0 .5rem; }
+  body.help h2 { font-size: 1.25rem; margin: 2rem 0 .5rem; padding-top: .75rem;
+    border-top: 1px solid var(--border, #ccc); }
+  body.help h3 { font-size: 1.05rem; margin: 1.4rem 0 .4rem; }
+  body.help pre { background: var(--code-bg, #f4f4f4); padding: .75rem; overflow-x: auto;
+    border-radius: .35rem; font-size: .85rem; }
+  body.help code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .9em; background: var(--code-bg, #f4f4f4); padding:0 .25em; border-radius: .25em; }
+  body.help pre code { background: none; padding: 0; }
+  body.help ul, body.help ol { padding-left: 1.4rem; }
+  body.help li { margin: .25rem 0; }
+  body.help a { color: inherit; }
+  body.help footer { margin-top: 3rem; font-size: .8rem; opacity: .7; }
+</style>
+</head>
+<body class="help">
+<header>
+  <a href="/">Zurück zu fxcloud</a>
+  <nav class="langs" aria-label="Sprache"><a class="lang" href="/help?lang=en">English</a> · <a class="lang active" href="/help?lang=de">Deutsch</a> · <a class="lang" href="/help?lang=tlh">tlhIngan Hol</a></nav>
+</header>
+<main>
+<h1 id="fxcloud-nutzerhandbuch">fxcloud Nutzerhandbuch</h1>
+<p>Dieses Handbuch richtet sich an Menschen, die eine fxcloud-Instanz *benutzen*: wie man sich registriert, mit Dateien arbeitet, sie teilt, verschlüsselt und sich mit einem Passkey anmeldet. Es führt außerdem einen Administrator durch den einen Deployment-Schritt, den Passkeys brauchen (HTTPS hinter einem Reverse Proxy mit <code>FXCLOUD_ORIGIN</code>).</p>
+<p>Dokumente für Entwickler:</p>
+<ul><li><a href="https://github.com/floyd54/fxcloud/blob/main/README.md">README.md</a> - die Funktionsliste und die Karte dieser Dokumentation</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md">INSTALL.md</a> - Installation, Konfigurationstabelle, systemd-Unit</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/API.md">API.md</a> - HTTP-Endpunkte und Protokelldetails</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/ENCRYPTION.md">ENCRYPTION.md</a> - das kryptografische Design im Volltext</li><li><a href="https://github.com/floyd54/fxcloud/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a> - Code-Struktur, Speicherung, Kontingente</li></ul>
+<h2 id="inhalte">Inhalte</h2>
+<ol><li><a href="#1-installation">Installation</a></li><li><a href="#2-das-erste-konto">Das erste Konto</a></li><li><a href="#3-anmelden">Anmelden</a></li><li><a href="#4-deine-dateien">Deine Dateien</a></li><li><a href="#5-teilen">Teilen</a></li><li><a href="#6-gruppenordner">Gruppenordner</a></li><li><a href="#7-papierkorb">Papierkorb</a></li><li><a href="#8-kontingente">Kontingente</a></li><li><a href="#9-benutzerverwaltung">Benutzerverwaltung</a></li><li><a href="#10-deine-kontoeinstellungen">Deine Kontoeinstellungen</a></li><li><a href="#11-verschlusselung">Verschlüsselung</a></li><li><a href="#12-passkeys">Passkeys</a></li><li><a href="#13-https-hinter-einem-reverse-proxy-durchgerechnetes-beispiel">HTTPS hinter einem Reverse Proxy (durchgerechnetes Beispiel)</a></li><li><a href="#14-webdav">WebDAV</a></li><li><a href="#15-fehlerbehebung">Fehlerbehebung</a></li></ol>
+<h2 id="1-installation">1. Installation</h2>
+<p>fxcloud ist eine einzelne Binary: SQLite und die Weboberfläche sind eingebaut, es gibt keinen Datenbankserver und keine Laufzeitabhängigkeit.</p>
+<p><strong>Eine Zeile</strong> - installiert fxcloud als systemd-Dienst auf jedem Linux mit <code>curl</code> (als Root); dieselbe Zeile erneut ausführt aktualisiert es:</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/floyd54/fxcloud/main/install.sh | sh
+</code></pre>
+<p><strong>Fertige Binary</strong> - jede markierte Version auf <a href="https://github.com/floyd54/fxcloud/releases">GitHub Releases</a> enthält einen vollständig statischen Linux-x86_64-Build (~6 MB):</p>
+<pre><code class="language-bash">chmod +x fxcloud-&lt;tag&gt;-x86_64-unknown-linux-musl
+FXCLOUD_DATA=/srv/fxcloud ./fxcloud-&lt;tag&gt;-x86_64-unknown-linux-musl
+</code></pre>
+<p><strong>Aus dem Quellcode</strong>:</p>
+<pre><code class="language-bash">cargo build --release
+./target/release/fxcloud      # legt ./data mit DB und Datei-Blobs an
+</code></pre>
+<p>Öffne &lt;http://127.0.0.1:8080&gt;. Um es als Dienst unter Linux zu betreiben, nutze die gehärtete Unit aus <a href="https://github.com/floyd54/fxcloud/blob/main/deploy/fxcloud.service"><code>deploy/fxcloud.service</code></a> - die <a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md#deployment">INSTALL.md</a> hat die Schritt-für-Schritt-Anleitung. Alle Einstellungen sind Umgebungsvariablen (Bind-Adresse, Port, Datenverzeichnis, kontingentbezogene Grenzen, ...); die vollständige Tabelle steht in <a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md#configuration">INSTALL.md</a>.</p>
+<h2 id="2-das-erste-konto">2. Das erste Konto</h2>
+<p>Auf einer frischen Instanz den Tab <strong>Konto erstellen</strong> öffnen, einen Benutzernamen (3 Zeichen oder mehr), optional einen Anzeigenamen und ein Passwort (8 Zeichen oder mehr) wählen.</p>
+<p>Das <strong>erste Konto</strong>, das auf einer Instanz angelegt wird, wird sofort aktiviert und dessen Administrator. Jedes danach angelegte Konto startet inaktiv: die Registrierung gelingt, aber die Anmeldung wird mit dem Hinweis abgelehnt, den Administrator zu kontaktieren, bis ein aktives Konto es aktiviert (siehe <a href="#9-benutzerverwaltung">Benutzerverwaltung</a>).</p>
+<h2 id="3-anmelden">3. Anmelden</h2>
+<p>Die Anmeldeseite hat drei Tabs:</p>
+<ul><li><strong>Anmelden</strong> - Benutzername und Passwort.</li><li><strong>Passkey</strong> - nur Benutzername; das Gerät fragt danach nach PIN oder</li></ul>
+<p>Biometrie (siehe <a href="#12-passkeys">Passkeys</a>).</p>
+<ul><li><strong>Konto erstellen</strong> - Registrierung wie oben.</li></ul>
+<p>Sitzungen dauern standardmäßig7 Tage (<code>FXCLOUD_SESSION_TTL</code>, gleitend bei Benutzung).</p>
+<h3 id="als-app-installieren">Als App installieren</h3>
+<p>fxcloud installiert sich wie jede andere Web-App: in Chrome/Edge über <strong>App installieren</strong> in der Adressleiste, auf iPhone/iPad-Safari über <strong>Teilen &gt; Zum Home-Bildschirm</strong>, in Android-Chrome über <strong>Menü &gt; Zum Startbildschirm hinzufügen</strong>. Die App öffnet sich danach über ihr eigenes Icon in einem Fenster ohne Browser-Chrome - dasselbe Konto, dieselbe Sitzung, nichts zu konfigurieren.</p>
+<p>Zwei ehrliche Hinweise: die Installation ist nur ein Startschalter (es gibt keinen Offline-Modus - fxcloud ist ein Client deines Servers), und der Service Worker, der die Installation ermöglicht, <strong>cacht aus Prinzip nichts</strong>, eine installierte App zeigt also immer exakt das, was der Server ausliefert (<a href="https://github.com/floyd54/fxcloud/blob/main/ENCRYPTION.md">ENCRYPTION.md</a>, Abschnitt11).</p>
+<p>Direkt nach der Installation prüfen, dass JavaScript für die App aktiv ist: auf manchen Geräten starten frisch installierte Web-Apps damit <strong>aus</strong>, und der Installationsdialog bietet keinen Schalter (berichtet auf einem Google Pixel). Das Symptom ist eine tote Anmeldeseite - siehe <a href="#15-fehlerbehebung">Fehlerbehebung</a>; langes Drücken auf das Icon &gt; Einstellungen &gt; JavaScript behebt das.</p>
+<h2 id="4-deine-dateien">4. Deine Dateien</h2>
+<p>Die Dateiverwaltung arbeitet wie ein Desktop-Dateimanager, im Browser:</p>
+<ul><li><strong>Neue Datei</strong> / <strong>Neuer Ordner</strong> legen Einträge im aktuellen Ordner an;</li></ul>
+<p>eine neue Textdatei öffnet direkt im eingebauten Editor (mit Markdown-Vorschau-Umschalter und <strong>Speichern</strong>).</p>
+<ul><li><strong>Datei hochladen</strong> / <strong>Ordner hochladen</strong> oder Drag &amp; Drop auf die</li></ul>
+<p>Ablagefläche laden Dateien oder ganze Ordnerbäume (auch leere Unterordner).</p>
+<ul><li><strong>Versteckte anzeigen</strong> blendet Einträge ein, deren Name mit einem Punkt</li></ul>
+<p>beginnt; die Auswahl bleibt im Browser gespeichert.</p>
+<ul><li>Ein Klick auf eine Datei zeigt eine Vorschau: Bilder, Video, Audio, PDF,</li></ul>
+<p>HTML und Text öffnen im Lightbox; Textdateien öffnen im Editor.</p>
+<ul><li>Den Editor mit ungespeicherten Änderungen schließen - oder mit den</li></ul>
+<p>Gallery-Pfeilen zu einer anderen Datei wechseln - fragt nach, mit <strong>Speichern</strong> als fokussierter Voreinstellung (Enter), <strong>Verwerfen</strong> und <strong>Abbrechen</strong>. Schlägt das Speichern fehl, bleibt das Lightbox offen und die Statuszeile trägt den Fehler, der Text geht nie verloren.</p>
+<ul><li>Auswahl-Kästchen (Shift+Klick erweitert über einen Bereich) geben die</li></ul>
+<p>Sammelleiste: <strong>Herunterladen</strong> (die ganze Auswahl als eine ZIP), <strong>Verschieben nach...</strong>, <strong>Kopieren nach...</strong>, <strong>Freigeben</strong>, <strong>Löschen</strong> und <strong>Auswahl aufheben</strong>.</p>
+<ul><li>Jede Zeile hat außerdem ein Menü (Herunterladen, Freigeben,</li></ul>
+<p>Verschieben, Kopieren, Umbenennen, Löschen).</p>
+<ul><li>Ordnerzeilen zeigen ihre rekursive Größe; die Kruste navigiert den Baum</li></ul>
+<p>hinab.</p>
+<p>ZIP-Downloads werden pro Anfrage zusammengesetzt und bei unkomprimierten 1 GiB gedeckelt; nehmt weniger Items, wenn der Fehler euch das sagt.</p>
+<h3 id="versionsverlauf">Versionsverlauf</h3>
+<p>Jede Inhaltsersetzung - <strong>Speichern</strong> im Editor, ein WebDAV-<code>PUT</code> - hält die ersetzten Bytes als wiederherstellbare Version, ein falsches Speichern ist also nie das Ende einer Datei. <strong>Versionsverlauf</strong> im Zeilenmenü öffnet die Historie der Datei, neueste zuerst, mit Zeit und Größe pro Version:</p>
+<ul><li><strong>Herunterladen</strong> holt die exakten Bytes dieser Version, Bereiche</li></ul>
+<p>eingeschlossen (ein Player kann in einer Version suchen wie in der aktuellen Datei).</p>
+<ul><li><strong>Versionsverlauf</strong> tauscht: die gewählte Version wird zum Inhalt der</li></ul>
+<p>Datei und das Aktuelle wird zur neuesten Version - eine Wiederherstellung ist selbst rückgängig zu machen.</p>
+<ul><li><strong>Löschen</strong> entfernt eine Version zusammen mit ihren Bytes.</li></ul>
+<p>Eine Nur-Lese-Freigabe sieht die Historie und kann Versionen herunterladen; Änderungen brauchen Schreibrechte. Aufbewahrte Versionen zählen gegen dein Kontingent, und der Papierkorb behält die Historie einer Datei, bis die Datei endgültig gelöscht wird. Zwei Grenzen in den <strong>Einstellungen</strong> (&quot;Versionsverlauf&quot;) halten die Historie in Schach: wie viele Versionen pro Datei aufbewahrt werden und ein Alter in Tagen - <code>0</code> deaktiviert jeweils eine Grenze. Ein Hintergrund-Sweep wendet die Altersgrenze im gleichen Rhythmus wie die Papierkorb-Löschung an; die Zahlen-Grenze wird bei jeder gespeicherten Version angewendet.</p>
+<h3 id="office-dokumente">Office-Dokumente</h3>
+<p>Wenn deine Instanz eine Office-Engine betreibt (siehe <a href="https://github.com/floyd54/fxcloud/blob/main/INSTALL.md#office-integration-optional">INSTALL.md</a>), öffnen Office-Dateien - docx, xlsx, pptx, odt, ods, odp - in einem Browser-Editor statt träge zu bleiben: Datei klicken (oder <strong>Im Office-Editor öffnen</strong> im Zeilenmenü), bearbeiten, schließen. Das Speichern läuft durch dieselben Türen wie jeder andere Schreibvorgang: es zählt gegen das Kontingent, erscheint im obigen Versionsverlauf und wird für verschlüsselte Dateien abgelehnt (der eingebaute Editor bearbeitet die). Ohne konfigurierte Engine ändert sich nichts - die Zeilen verhalten sich exakt wie vorher.</p>
+<h2 id="5-teilen">5. Teilen</h2>
+<p>Dateien oder Ordner mit anderen Konten derselben Instanz teilen:</p>
+<ol><li>Ein oder mehrere Einträge auswählen und <strong>Freigeben</strong> drücken.</li><li>Die Person aus dem Dropdown wählen.</li><li>Die zu vergebenden Rechte abhaken: <strong>Lesen</strong>, <strong>Schreiben</strong>,</li></ol>
+<p><strong>Erstellen</strong>, <strong>Löschen</strong> (ein fünftes Kästchen, Weitergeben, ist für das Weitergeben reserviert und hat noch keine Wirkung).</p>
+<ol><li><strong>Freigeben</strong> drücken.</li></ol>
+<p>Eine Freigabe erscheint im Dateibaum der anderen Person, markiert mit deinem Namen; ist der Name dort vergeben, bekommt er ein Suffix (<code>Projekte</code> wird zu <code>Projekte (alice) 2</code>). Alles, was sie in einem geteilten Ordner anlegen, landet in *deinem* Baum und zählt gegen *dein* Kontingent.</p>
+<p>Zum Widerrufen den <strong>Freigabe</strong>-Dialog des Eintrags erneut öffnen und neben der Person <strong>Entfernen</strong> drücken.</p>
+<p>Wenn die <a href="#11-verschlusselung">Verschlüsselung</a> auf beiden Seiten aktiv ist, trägt die Freigabe außerdem einen Schlüsselumschlag, der auf den öffentlichen Schlüssel der anderen Person versiegelt ist - deren Schlüsselfingerabdruck wird im Dialog angezeigt, damit du ihn außerhalb vergleichen kannst, bevor du dem Tausch vertraust.</p>
+<h3 id="offentliche-links">Öffentliche Links</h3>
+<p>Ein öffentlicher Link übergibt einen Ordner oder eine einzelne Datei jedem, der die URL hat - kein Konto, keine Anmeldung. Er lebt im eigenen Abschnitt <strong>Öffentlicher Link</strong> des <a href="#5-teilen">Freigabe</a>-Dialogs:</p>
+<ol><li>Wählen, was Besucher dürfen: <strong>Lesen - ansehen und herunterladen</strong>,</li></ol>
+<p><strong>Hinzufügen - nur hochladen</strong> oder <strong>Voll - hochladen, herunterladen und löschen</strong>.</p>
+<ol><li>Ablauf wählen: <strong>30/90 Tage nach letztem Aufruf</strong> (rollierend,</li></ol>
+<p>Standard), <strong>30/90 Tage nach Erstellung</strong> (fest) oder <strong>Nie</strong>.</p>
+<ol><li>Optional eine <strong>Bezeichnung</strong> eingeben, um die Links später</li></ol>
+<p>unterscheiden zu können.</p>
+<ol><li><strong>Link erstellen</strong> drucken. Die URL wird einmalig mit einem Button</li></ol>
+<p><strong>Link kopieren</strong> angezeigt - jetzt kopieren. Der Server speichert nur einen Hash des Tokens und kann die URL nie wieder zeigen.</p>
+<p>Wer den Link öffnet, sieht eine schlichte Seite mit dem Inhalt des Ordners (Ordner eine Ebene pro Runde, Downloads als Anhänge) - keine Anmeldung, keine Referrer, keine Indexierung durch Suchmaschinen. Der Link erreicht genau den Eintrag, für den er erstellt wurde, und alles darunter; sonst nichts an deinem Konto ist exponiert.</p>
+<p>Der Abschnitt listet außerdem jeden von dir erstellten Link: Bezeichnung, Preset, Frist, letzten Besuch und Download-Zahl, mit <strong>Entfernen</strong> zum Widerrufen. Der Widerruf wirkt sofort - die URL antwortet ab der nächsten Anfrage mit *nicht gefunden*.</p>
+<p>Was sich lohnt zu wissen:</p>
+<ul><li><strong>Rollierend vs. fest:</strong> ein rollierender Link stirbt erst nach der</li></ul>
+<p>gewählten Anzahl Tage *ohne* Aufruf, und jeder Aufruf schiebt die Frist wieder auf ein volles Fenster hinaus. Ein fester Link läuft genau N Tage nach der Erstellung ab, egal wie oft er geöffnet wird. Ein abgelaufener Link antwortet zuerst „verschwunden&quot; und kurz danach endgültig - er kommt nie durch erneutes Öffnen zurück.</p>
+<ul><li><strong>Hinzufügen und Voll sind schreibbare Postfach-Links:</strong> jeder mit der</li></ul>
+<p>URL kann Dateien in *deinen* Baum legen (sie zählen gegen *dein* Kontingent). Ein <strong>Hinzufügen</strong>-Besucher bekommt nur das Upload-Feld - er kann weder auflisten noch herunterladen, nicht einmal die Dateinamen. Mit <strong>Voll</strong> kann er zusätzlich im geteilten Ordner stöbern und löschen - Löschungen landen in *deinem* Papierkorb, und der geteilte Ordner selbst ist über seinen eigenen Link nie löschbar. <strong>Lesen</strong> wählen, wenn ihr nur etwas aushändigen wollt.</p>
+<ul><li><strong>Nur Klartext:</strong> eine verschlüsselte Datei oder ein verschlüsselter</li></ul>
+<p>Ordner kann nicht verlinkt werden (der Abschnitt sagt das direkt vor Ort), und verschlüsselte Dateien in einem verlinkten Ordner bleiben für Besucher unsichtbar.</p>
+<ul><li><strong>Gruppenordner können nicht verlinkt werden</strong> - die Mitgliedschaft</li></ul>
+<p>gewährt dort den Zugang.</p>
+<h2 id="6-gruppenordner">6. Gruppenordner</h2>
+<p>Ein Gruppenordner gehört einer *Gruppe*, nicht einer Person: ein gemeinsamer Arbeitsbereich mit eigenem Kontingent, verwalteter Mitgliedschaft und demselben Baum für jedes Mitglied. Gruppenordner tragen den Namen der Gruppe als Abzeichen in deiner Wurzel, damit sie sich von einem persönlichen Ordner desselben Namens unterscheiden lassen.</p>
+<p><strong>Anlegen.</strong> Ein Administrator legt die Gruppe selbst an (siehe <a href="#9-benutzerverwaltung">Benutzerverwaltung</a>: Name, Kontingent in MiB und die Mitglieder mit ihren Rollen - der Ersteller wird ihr erster Manager). Danach erstellst du den Wurzelordner der Gruppe selbst mit dem Button <strong>Neuer Gruppenordner...</strong> oben in deiner Dateiliste - nur in der Wurzelliste angeboten und nur, solange du einer Gruppe angehörst. Von da an sieht jedes Mitglied diesen Ordner in seiner Wurzel und arbeitet am ganzen Baum - hochladen, umbenennen, verschieben, Papierkorb - ohne einzelne Freigaben. Ein Gruppenordner kann nicht an eine Person weitergegeben werden: die Mitgliedschaft gewährt den Zugang.</p>
+<p><strong>Kontingent.</strong> Der Speicher der Gruppe ist ein eigenes Budget, vom Administrator gesetzt. Schreibvorgänge in einen Gruppenordner zählen gegen die Gruppe, nie gegen dein persönliches Kontingent; eine volle Gruppe lehnt weitere Uploads mit <code>507 Insufficient Storage</code> ab, bis das Budget erhöht wird oder jemand Platz schafft. Dateien im Papierkorb zählen weiter, bis sie endgültig gelöscht sind.</p>
+<p><strong>Schlüssel.</strong> Mit eingeschalteter Verschlüsselung verteilt ein Manager die Ordner-Schlüssel: das Zeilenmenü des Gruppenwurzelordners (die „...&quot;-Spalte) öffnen und <strong>Ordner-Schlüssel verteilen</strong> wählen, dann jeweils an ein Mitglied wrappen und senden. Ein Mitglied ohne Schlüssel sieht die Dateinamen, kann den Inhalt aber nicht entschlüsseln, und ein Mitglied, das die Dateiverschlüsselung noch nicht eingerichtet hat, kann keinen empfangen (der Button sagt das). Schlüssel folgen der Mitgliedschaft: ein entferntes Mitglied verliert auch seine Umschläge für diese Gruppe.</p>
+<p><strong>Papierkorb und Löschung.</strong> Gruppendateien landen wie jede andere im Papierkorb, und jedes Mitglied sieht die gelöschten Zeilen der Gruppe in seinem eigenen Papierkorb - Wiederherstellen und endgültiges Löschen sind jedem Mitglied offen. Die Gruppe selbst löscht ein Administrator, sobald sie leer ist: keine Mitglieder, keine Ordner.</p>
+<h2 id="7-papierkorb">7. Papierkorb</h2>
+<p>Nichts wird sofort gelöscht: <strong>Löschen</strong> verschiebt Einträge in deinen persönlichen Papierkorb, wo sie <strong>Wiederhergestellt</strong> oder <strong>Endgültig gelöscht</strong> werden können. <strong>Papierkorb leeren</strong> räumt auf einmal alles.</p>
+<p>Ein Hintergrund-Sweep entfernt gelöschte Einträge nach30 Tagen endgültig (<code>FXCLOUD_TRASH_DAYS</code>); die Papierkorb-Liste zeigt die Frist pro Eintrag, und gelöschter Inhalt zählt weiter gegen dein Kontingent, solange er dort liegt.</p>
+<h2 id="8-kontingente">8. Kontingente</h2>
+<p>Jedes Konto hat ein Speicher-Kontingent - standardmäßig1 GiB, vom Administrator pro Konto gesetzt. Zählt wird alles, was *dir gehört*: hochgeladene Dateien, Kopien, die du erstellt hast; Inhalt, den andere *dir* teilen, zählt gegen den ursprünglichen Besitzer. Überschreiten ergibt eine klare <code>507 Insufficient Storage</code>-Meldung in der Weboberfläche und in WebDAV; deine aktuelle Nutzung zeigt <strong>Einstellungen</strong> (&quot;Speicher: verwendet von Kontingent&quot;).</p>
+<h2 id="9-benutzerverwaltung">9. Benutzerverwaltung</h2>
+<p>Administratoren finden einen Eintrag <strong>Benutzerverwaltung</strong> im Menü hinter ihrem Namen in der oberen Leiste. Der Dialog öffnet auf dem Tab <strong>Benutzer</strong>; das danebenliegende Tab <strong>Gruppenordner</strong> enthält die Gruppenverwaltung aus <a href="#6-gruppenordner">Abschnitt6</a>. Auf dem Benutzer-Tab können sie:</p>
+<ul><li>Konten <strong>aktivieren / deaktivieren</strong> (wirkt sofort: Sitzungen und WebDAV</li></ul>
+<p>inklusive; ein Administrator kann sich nicht selbst deaktivieren),</p>
+<ul><li>die <strong>Administrator-Rolle vergeben / entziehen</strong> (der letzte aktive</li></ul>
+<p>Administrator kann weder deaktiviert noch herabgestuft werden),</p>
+<ul><li>das <strong>Speicher-Kontingent</strong> pro Konto setzen,</li><li>ein <strong>Passwort zurücksetzen</strong>, was dem Nutzer ein einmaliges</li></ul>
+<p>temporäres Passwort für die nächste Anmeldung zurückgibt.</p>
+<p>Deaktivierte Konten können sich weder anmelden noch WebDAV nutzen und bekommen ein403 mit dem Hinweis, den Administrator zu kontaktieren. Anzeigename, Theme und Passwort stehen *nicht* auf dieser Liste: die ändert jeder selbst in den <strong>Einstellungen</strong>.</p>
+<p>Dieselben Schalter weiterhin direkt in der Datenbank (kein Neustart nötig). Bei einer systemd-Installation ist die Datei <code>/home/fxcloud/data/fxcloud.db</code>, in der Entwicklung <code>./data/fxcloud.db</code>:</p>
+<pre><code class="language-bash">DB=/home/fxcloud/data/fxcloud.db
+
+# Übersicht
+sqlite3 &quot;$DB&quot; &quot;SELECT id, username, is_active, is_admin, quota_bytes FROM users ORDER BY id;&quot;
+
+# aktivieren / deaktivieren (wirkt sofort: Sitzungen + WebDAV inklusive)
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET is_active = 1 WHERE username = 'max';&quot;
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET is_active = 0 WHERE username = 'max';&quot;
+
+# Administrator-Rolle
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET is_admin = 1 WHERE username = 'max';&quot;
+
+# Kontingent (Bytes;1073741824 =1 GiB, das Standard für jedes Konto)
+sqlite3 &quot;$DB&quot; &quot;UPDATE users SET quota_bytes = 2147483648 WHERE username = 'alice';&quot;
+</code></pre>
+<h2 id="10-deine-kontoeinstellungen">10. Deine Kontoeinstellungen</h2>
+<p>Das Menü hinter deinem Namen in der oberen Leiste öffnet die <strong>Einstellungen</strong>:</p>
+<ul><li><strong>Konto</strong> - Benutzername, Mitglied seit, Speicher verwendet vom</li></ul>
+<p>Kontingent.</p>
+<ul><li><strong>Anzeigename</strong> - von dir änderbar, wird anderen Nutzern angezeigt.</li><li><strong>Theme</strong> - Hell oder Dunkel.</li><li><strong>Passwort</strong> - ändern; das aktuelle Passwort wird zuerst gefragt.</li><li><strong>Passkeys</strong> - deine Anmeldegeräte verwalten (siehe unten).</li></ul>
+<h2 id="11-verschlusselung">11. Verschlüsselung</h2>
+<p>fxcloud kann Dateien <strong>in deinem Browser</strong> verschlüsseln, bevor sie dein Gerät verlassen: der Server speichert ciphertext und einen gewrappten Schlüssel und sieht weiterhin Dateinamen, Größen und Freigaben - das ist alles, was der Speicherdienst braucht. Das vollständige Design (Bedrohungsmodell, Schlüsselhierarchie, die DECISIONs) steht in <a href="https://github.com/floyd54/fxcloud/blob/main/ENCRYPTION.md">ENCRYPTION.md</a>; hier die Nutzersicht:</p>
+<ul><li>Das Abzeichen in der oberen Leiste zeigt den Status: **Uploads</li></ul>
+<p>verschlüsseln<strong> (noch nicht eingerichtet), </strong>Unverschlüsselt<strong> oder </strong>Verschlüsselt**.</p>
+<ul><li>Beim Einschalten wählst du zwischen **Mein fxcloud-Anmeldepasswort</li></ul>
+<p>verwenden<strong> (Standard) und </strong>Eigenes Passwort wählen**.</p>
+<ul><li>Danach siehst du einen <strong>Recovery-Key</strong> (64 Hex-Ziffern). Speichere ihn:</li></ul>
+<p>er ist der einzige Weg zurück zu deinen Dateien, wenn das Passwort vergessen ist.</p>
+<ul><li>Die Schlüssel leben nur im Speicher des aktuellen Tabs - ein Reload</li></ul>
+<p>bringt dich zurück auf <strong>Unverschlüsselt</strong>, und die Entsperren-Leiste fragt das Passwort erneut.</p>
+<ul><li>Mit eingeschalteter Verschlüsselung werden Uploads verschlüsselt,</li></ul>
+<p>Downloads und Vorschauen im Browser entschlüsselt, und das Teilen trägt den oben beschriebenen Schlüsselumschlag. WebDAV-Desktop-Clients verschlüsseln nicht: verschlüsselte Dateien sind dort als Ciphertext sichtbar und können nicht über sie geschrieben werden.</p>
+<h3 id="auto-entsperrung-ohne-passwort-offnen">Auto-Entsperrung: ohne Passwort öffnen</h3>
+<p><strong>Einstellungen &gt; Konto &gt; Auto-Entsperrung</strong> ist ein Schalter, der mit deinem Konto reist: sobald ein Gerät einmal entsperrt hat, behält dieser Browser einen zufälligen Geräteschlüssel mit deinem gewrappten Kontoschlüssel (<code>localStorage</code>, nie dein Passwort), und jedes spätere Öffnen - Reload, neuer Tab, Passwort- <strong>oder</strong> Passkey-Anmeldung - startet entsperrt. Das Passwort wird pro Gerät genau einmal mehr gefragt, an dem einen bewussten Moment: wenn du das Abzeichen von <strong>Unverschlüsselt</strong> zu <strong>Verschlüsselt</strong> umschaltest, während ein Tab läuft. Ein brandneues Gerät fragt einmal, dann auch still. <strong>Aus</strong> löscht das gespeicherte Entsperren und kehrt zum strengen Verhalten zurück: Schlüssel leben nur im aktuellen Tab. Der Kompromiss, offen: wer dieses Browser-Profil im Ganzen lesen kann, erhält die Schlüssel dieses Kontos auf diesem Gerät - deshalb ist der Schalter standardmäßig aus (ENCRYPTION.md5.7, DECISION7).</p>
+<h3 id="bestehende-dateien-verschlusseln">Bestehende Dateien verschlüsseln</h3>
+<p><strong>Einstellungen &gt; Konto &gt; Bestehende Dateien verschlüsseln</strong> läuft durch den ganzen Baum in diesem Browser, verschlüsselt jede gefundene Klartextdatei und verwirft die alte Versionshistorie jeder Datei - diese Historie *ist* der Klartext. Der Dialog zeigt <code>i von n</code>, ist jederzeit abbrechbar und macht dort weiter, wo er stoppte: erneutes Ausführen überspringt alles bereits Verschlüsselte. Wenn das Kontingent voll ist, pausiert er mit der Kontingents-Meldung und bietet <strong>Weiter nach Platz schaffen</strong>. Das Zeilenmenü eines Ordners hat dieselbe Aktion nur für diesen Unterbaum (<strong>Ordner jetzt verschlüsseln...</strong>).</p>
+<h3 id="verschlusselungs-zonen">Verschlüsselungs-Zonen</h3>
+<p>Das Zeilenmenü eines Ordners (<strong>Verschlüsselungs-Zone: ein/aus</strong>) markiert ihn als Zone: neue Dateien und Speicherungen darunter verlangen das Passwort, auch wenn das Abzeichen <strong>Unverschlüsselt</strong> sagt - dieser Ordner bleibt also verschlüsselt, während der Rest des Kontos WebDAV- kompatibel bleibt. Nur der Besitzer (oder ein Manager einer Gruppe) kann das Flag ändern, Nachfolger erben es automatisch, und das Kopieren eines Ordners trägt es nicht - auf der Kopie neu setzen.</p>
+<h3 id="recovery-key-nochmal-anzeigen-oder-neuen-ausstellen">Recovery-Key: nochmal anzeigen oder neuen ausstellen</h3>
+<p><strong>Einstellungen &gt; Konto</strong> hat einen Abschnitt <strong>Recovery-Key</strong>: das Speicher-Passwort eingeben und <strong>Recovery-Key anzeigen</strong> zeigt ihn erneut (64 Hex-Ziffern, mit <strong>Herunterladen</strong>), oder <strong>Neuen Schlüssel ausstellen</strong> erzeugt hinter einer Bestätigung einen frischen Schlüssel - der alte Schlüssel hört auf zu funktionieren, sobald der neue gespeichert ist. Ein falsches Passwort kommt nie so weit. Konten, die vor dieser Version eingerichtet wurden, haben keine gespeicherte Kopie und antworten &quot;hier ausstellen&quot;; ihre erste Neu-Ausstellung aktiviert das Anzeigen auch für sie.</p>
+<h2 id="12-passkeys">12. Passkeys</h2>
+<p>Ein Passkey meldet dich mit PIN oder Biometrie statt mit einem Passwort an. fxcloud nutzt Username-first-FIDO2/WebAuthn mit ES256 und verlangt User-Verification (eine PIN oder eine biometrische Geste, nicht nur eine Berührung).</p>
+<p><strong>Hinzufügen:</strong> <strong>Einstellungen</strong> öffnen, <strong>Passkeys</strong>, <strong>Passkey hinzufügen</strong> drücken, einen Namen geben (z.B. „Handy&quot;, „Security Key&quot;) und mit dem Gerät bestätigen. Die Liste zeigt deine Geräte mit ihrer letzten Nutzung; jedes kann <strong>Umbenannt</strong> oder <strong>Entfernt</strong> werden. Das letzte zu entfernen ist erlaubt - dein Passwort funktioniert weiter, und ein verlorenes Gerät kann sofort abgeschaltet werden.</p>
+<p><strong>Anmelden:</strong> auf der Anmeldeseite zum Tab <strong>Passkey</strong> wechseln, den Benutzernamen eingeben und mit PIN oder Biometrie des Geräts bestätigen. Ein unbekannter Benutzername und ein Konto ohne Passkeys bekommen dieselbe Antwort, der Dialog verrät also nicht, wer ein Konto hat.</p>
+<p>Voraussetzungen:</p>
+<ul><li>Ein <strong>sicherer Kontext</strong>: Browser geben Passkeys nur über HTTPS oder auf</li></ul>
+<p><code>localhost</code> frei. Über reines HTTP auf einer LAN-Adresse sagt dir die Oberfläche, dass der Browser sie blockiert.</p>
+<ul><li>Der Passkey ist an den Ursprung und den Hostnamen gebunden, unter dem er</li></ul>
+<p>erstellt wurde. Wird deine Instanz unter einer URL ausgeliefert, muss diese URL fxcloud mit <code>FXCLOUD_ORIGIN</code> mitgeteilt werden - der nächste Abschnitt zeigt, wie, und wie der Fehler aussieht, wenn er fehlt.</p>
+<h2 id="13-https-hinter-einem-reverse-proxy-durchgerechnetes-beispiel">13. HTTPS hinter einem Reverse Proxy (durchgerechnetes Beispiel)</h2>
+<p>fxcloud spricht reines HTTP, also beendet ein Reverse Proxy TLS davor. Passkeys sind der Grund, warum hier eine Einstellung extra nötig ist: WebAuthn bindet jeden Passkey an das exakte <code>scheme://host[:port]</code>, unter dem er erstellt wurde, und der Browser sendet sein <code>Origin</code> bei jeder Passkey-Anfrage. fxcloud vergleicht diesen Header mit dem Ursprung, den es aus dem weitergeleiteten Schema und <code>Host</code> ableitet - und hinter einem Proxy, der <code>Host</code> überschreibt oder das Schema nicht weiterleitet, sind die beiden nicht gleich.</p>
+<p>Das Symptom ist dieser Fehler beim Hinzufügen oder Verwenden eines Passkeys:</p>
+<pre><code>bad request: Origin does not match this server's address - set
+FXCLOUD_ORIGIN to the URL users open it under
+</code></pre>
+<p>Die Lösung ist eine einzige Umgebungsvariable: sage fxcloud die URL, unter der Nutzer es tatsächlich öffnen. Durchgerechnetes Beispiel mit nginx auf <code>cloud.example.com</code> und fxcloud auf demselben Host, Port8080:</p>
+<p><strong>1. fxcloud</strong> (systemd-Unit, oder die Shell für einen schnellen Test):</p>
+<pre><code class="language-bash">FXCLOUD_BIND=127.0.0.1 FXCLOUD_PORT=8080 \
+FXCLOUD_SECURE_COOKIE=1 \
+FXCLOUD_ORIGIN=https://cloud.example.com \
+./fxcloud
+</code></pre>
+<p>In der mitgelieferten Unit-Datei (<code>deploy/fxcloud.service</code>) warten dieselben zwei Zeilen, auskommentiert, im Environment-Abschnitt:</p>
+<pre><code class="language-ini"># Enable when serving over HTTPS behind a TLS-terminating reverse proxy:
+# Environment=FXCLOUD_SECURE_COOKIE=1
+# The exact URL users open fxcloud under - required for passkeys when a
+# reverse proxy rewrites Host or terminates TLS (e.g. https://cloud.example.com):
+# Environment=FXCLOUD_ORIGIN=https://cloud.example.com
+</code></pre>
+<p><strong>2. nginx</strong> beendet TLS und leitet weiter:</p>
+<pre><code class="language-nginx">server {
+    listen 443 ssl;
+    server_name cloud.example.com;
+
+    client_max_body_size 10G;   # keep in sync with FXCLOUD_MAX_UPLOAD_MB
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_request_buffering off;
+        proxy_buffering off;
+    }
+}
+</code></pre>
+<p><strong>3. fxcloud neu starten</strong> (nach Änderung der Unit: <code>sudo systemctl daemon-reload &amp;&amp; sudo systemctl restart fxcloud</code>).</p>
+<p>Regeln für den Wert von <code>FXCLOUD_ORIGIN</code>:</p>
+<ul><li>Er muss dem entsprechen, was die Browser-Adressleiste als Ursprung</li></ul>
+<p>zeigt: Schema, Host und Port, falls nicht der Standard des Schemas (443 für https,80 für http) - und <strong>kein abschließender Schrägstrich</strong>, kein Pfad.</p>
+<ul><li>Wenn Nutzer die Instanz unter mehreren Namen erreichen, funktionieren</li></ul>
+<p>Passkeys unter dem hier konfigurierten; die kanonische URL wählen.</p>
+<ul><li>Er betrifft nur WebAuthn. Alles andere funktioniert weiter mit den</li></ul>
+<p>Proxy-Headern aus dem obigen nginx-Block, und ohne Proxy ist das Setzen harmlos.</p>
+<p>Ohne <code>FXCLOUD_ORIGIN</code> leitet fxcloud den Ursprung pro Anfrage aus <code>X-Forwarded-Proto</code> (oder <code>FXCLOUD_SECURE_COOKIE</code>) plus <code>Host</code> ab - das stimmt, wenn der Proxy beide unverändert durchreicht, und stimmt nicht im Moment, in dem er es nicht tut.</p>
+<h2 id="14-webdav">14. WebDAV</h2>
+<p>fxcloud spricht WebDAV unter <strong><code>/dav/</code></strong> mit HTTP-Basic-Auth (dein fxcloud-Benutzername + Passwort; Passkeys gibt es nur im Web). Der Pfad nach <code>/dav/</code> ist relativ zu deinem Home-Ordner:</p>
+<pre><code class="language-bash">rclone config    # type: webdav, url: https://your-host/dav/, user/pass
+rclone lsd remote:
+
+# Windows &quot;Map network drive&quot; / macOS Finder &quot;Connect to Server&quot; -&gt; /dav/
+</code></pre>
+<p>Deaktivierte Konten bekommen403, Kontingent-Überschreitungen507. Verschlüsselte Dateien erscheinen als Ciphertext und können nicht von einem Desktop-Client geschrieben werden (siehe <a href="#11-verschlusselung">Verschlüsselung</a>); die Weboberfläche ist der Weg hinein und heraus für diese.</p>
+<h2 id="15-fehlerbehebung">15. Fehlerbehebung</h2>
+<p><strong>&quot;Origin does not match this server's address - set FXCLOUD_ORIGIN ...&quot;</strong> beim Hinzufügen oder Verwenden eines Passkeys: die URL, unter der Nutzer fxcloud öffnen, weicht von dem ab, was fxcloud aus den Proxy-Headern ableitet. <code>FXCLOUD_ORIGIN</code> wie in <a href="#13-https-hinter-einem-reverse-proxy-durchgerechnetes-beispiel">Abschnitt13</a> setzen und neu starten.</p>
+<p><strong>Die Passkey-Oberfläche sagt, der Browser blockiert Passkeys</strong>: ihr seid auf reinem HTTP (oder einer IP-Adresse) statt HTTPS oder localhost - Browser geben Passkeys nur in einem sicheren Kontext frei. fxcloud über HTTPS ausliefern.</p>
+<p><strong>&quot;Account created. It has to be activated before you can sign in&quot;</strong>: erwartet für jedes Konto nach dem ersten - ein Administrator aktiviert es in der <strong>Benutzerverwaltung</strong>.</p>
+<p><strong>&quot;account is not activated yet - ask an administrator to activate it&quot;</strong> bei der Anmeldung oder über WebDAV: dieselbe Ursache, jetzt an einem bestehenden Konto.</p>
+<p><strong>507 &quot;storage quota exceeded: X of Y used&quot;</strong>: dein Kontingent ist voll - Papierkorb leeren (er zählt weiter), Dateien löschen oder den Administrator bitten, das Kontingent zu erhöhen.</p>
+<p><strong>Verschlüsselte Dateien öffnen nicht</strong>: das Speicher-Passwort ist in diesem Tab nicht entsperrt (die Schlüssel leben nur im Tab-Speicher) - die Entsperren-Leiste nutzen; wenn das Passwort vergessen ist, rettet der Recovery-Key aus dem Setup.</p>
+<p><strong>Sync-Client-Schreibvorgänge schlagen bei verschlüsselten Dateien fehl</strong>: Desktop-Clients verschlüsseln nicht; WebDAV liefert diese Dateien als Ciphertext, schreibgeschützt. Für verschlüsselten Inhalt die Weboberfläche nutzen.</p>
+<p><strong>Anmeldeseite ist tot: die Tabs Passkey/Konto erstellen reagieren nicht, die Seite zeigt Englisch, obwohl dein Browser Deutsch ist, und Abschicken bringt nur die Maske ohne Fehler zurück</strong>: JavaScript ist für fxcloud abgeschaltet. Auf manchen Geräten ist das die Voreinstellung für frisch installierte Web-Apps und der Installationsdialog bietet keinen Schalter (berichtet auf einem Google Pixel; ein Samsung bot die Einstellung gar nicht an) - das Seitenskript verdrahtet die Tabs und fängt das Formular ab, ohne es fällt der Browser auf ein einfaches Neuladen zurück. Fix: lange auf das fxcloud-Icon drücken, <strong>Einstellungen</strong> öffnen, <strong>JavaScript</strong> aktivieren (oder Chrome &gt; Einstellungen &gt; Website-Einstellungen &gt; JavaScript), App neu öffnen. Eine andere Ursache mit teilweiser Überschneidung: wenn die Tabs *doch* reagieren und die Seite in deiner Sprache ist, die Anmeldung aber trotzdem zur Maske zurückläuft, wird stattdessen das Sitzungs-Cookie verworfen - prüfen, dass die Adressleiste <code>https://</code> zeigt, und die Daten der Seite in den Browsereinstellungen löschen.</p>
+</main>
+<footer>fxcloud {{version}}</footer>
+</body>
+</html>

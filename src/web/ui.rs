@@ -1,7 +1,8 @@
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Redirect, Response};
 use rust_embed::RustEmbed;
+use serde::Deserialize;
 
 use crate::auth::token_from_cookie_header;
 use crate::error::AppError;
@@ -58,6 +59,56 @@ pub async fn login_page(
         return Ok(Redirect::to("/").into_response());
     }
     serve_asset("login.html", "")
+}
+
+/// Query of the help page: an optional language override.
+#[derive(Deserialize)]
+pub struct HelpQuery {
+    pub lang: Option<String>,
+}
+
+/// The language cookie the UI writes on every apply (`i18n.js`), so the
+/// server can serve the guide in the language the reader is already
+/// using without any script on the page itself.
+fn lang_cookie(headers: &header::HeaderMap) -> Option<String> {
+    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
+    raw.split(';').find_map(|pair| {
+        pair.trim()
+            .strip_prefix("fxcloud_lang=")
+            .map(|v| v.to_string())
+            .filter(|v| matches!(v.as_str(), "en" | "de" | "tlh"))
+    })
+}
+
+/// GET /help - the user guide as a static page, in the reader's language.
+///
+/// `?lang=` wins and is remembered in the same cookie the UI writes;
+/// without either the English source serves (the guide's default and the
+/// UI's). Deliberately no login gate: the guide is documentation, and a
+/// reader who cannot get into the app is exactly who needs
+/// troubleshooting.
+pub async fn help_page(
+    headers: header::HeaderMap,
+    Query(params): Query<HelpQuery>,
+) -> Result<Response, AppError> {
+    let chosen = params
+        .lang
+        .as_deref()
+        .filter(|l| matches!(*l, "en" | "de" | "tlh"))
+        .map(|l| l.to_string());
+    let lang = chosen
+        .clone()
+        .or_else(|| lang_cookie(&headers))
+        .unwrap_or_else(|| "en".to_string());
+    let mut response = serve_asset(&format!("assets/help-{lang}.html"), "")?;
+    if let Some(wanted) = chosen {
+        // Remember the choice the way the UI remembers its switcher.
+        let cookie = format!("fxcloud_lang={wanted}; Path=/; Max-Age=31536000; SameSite=Lax");
+        if let Ok(value) = cookie.parse() {
+            response.headers_mut().append(header::SET_COOKIE, value);
+        }
+    }
+    Ok(response)
 }
 
 /// GET /assets/{*path} – serve a static asset with sensible caching.

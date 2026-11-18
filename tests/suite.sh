@@ -2791,7 +2791,8 @@ for SRC in "$REPO/frontend/assets/i18n.js" \
            "$REPO/frontend/tests/webauthn.js" \
            "$REPO/frontend/tests/gen-icons.js" \
            "$REPO/frontend/tests/gen-fx1-vectors.js" \
-           "$REPO/frontend/tests/gen-key-vectors.js"; do
+           "$REPO/frontend/tests/gen-key-vectors.js" \
+           "$REPO/frontend/tests/gen-help.js"; do
   js_parse "$SRC" \
     && ok "$(basename "$SRC") parses ($PARSE)" \
     || bad "$(basename "$SRC") has a syntax error"
@@ -4318,6 +4319,17 @@ grep -q 'curl -fsSL https://raw.githubusercontent.com/.*/install.sh | sh' "$READ
   && grep -q 'raw.githubusercontent.com/.*/install.sh | sh' "$REPO/INSTALL.md" \
   && ok "README, USERGUIDE and INSTALL.md carry the install one-liner" \
   || bad "the one-liner is missing from README, USERGUIDE or INSTALL.md"
+# The guide as a page (phase6 follow-up): /help serves the same content
+# in the three languages the UI offers, no session and no script needed.
+curl -s "$BASE/help" | grep -q "fxcloud User Guide" \
+  && ok "GET /help serves the guide in the default language" \
+  || bad "help page (default) missing or wrong"
+curl -s "$BASE/help?lang=de" | grep -q "fxcloud Nutzerhandbuch" \
+  && ok "GET /help?lang=de serves the German guide" \
+  || bad "help page (de) missing or wrong"
+curl -s "$BASE/help?lang=tlh" | grep -q "lutmeywIj" \
+  && ok "GET /help?lang=tlh serves the Klingon guide" \
+  || bad "help page (tlh) missing or wrong"
 grep -q '$BIN.bak' "$INSTALL" \
   && ok "an update keeps the previous binary as a .bak" \
   || bad "install.sh does not back up the running binary"
@@ -4469,6 +4481,13 @@ done
 "$NODE" "$REPO/frontend/tests/gen-key-vectors.js" --check \
   && ok "every committed key vector opens (or rejects) exactly as committed" \
   || bad "fx-keys-vectors.json drifted from fxcrypto.js - regenerate it deliberately"
+# The help pages are build products of the guides (gen-help.js): the
+# committed HTML must match what the markdown converts to, in all three
+# languages, or an edit to USERGUIDE(.de/.tlh).md silently never reaches
+# /help.
+"$NODE" "$REPO/frontend/tests/gen-help.js" --check \
+  && ok "help pages match USERGUIDE(.de/.tlh).md" \
+  || bad "help pages drifted from the guides - run gen-help.js"
 # The C ABI itself (phase 5 slice 3): compile c/smoke.c against the
 # SHIPPED header and the built static library with -Werror, then run it -
 # a header that lies about layout, names or ownership fails here, and so

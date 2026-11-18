@@ -4492,6 +4492,11 @@
     folderInput.click()
   );
   document.getElementById("logout-btn").addEventListener("click", logout);
+  // The guide: a plain page in the reader's language (the cookie i18n
+  // keeps in sync decides which), same tab so Back works as expected.
+  document.getElementById("help-btn").addEventListener("click", () => {
+    window.location.href = "/help";
+  });
   // User menu + settings.
   document.getElementById("user-menu-btn").addEventListener("click", (e) => {
     e.stopPropagation();
