@@ -1488,6 +1488,11 @@ textarea#enc-rcv-key:focus {
 [data-theme="dark"] .preview-body iframe { background: var(--panel); }
 [data-theme="dark"] .editor-md { background: var(--panel); color: var(--text); }
 [data-theme="dark"] .icon.folder { background: #4a3d13; }
+/* The list's header strip (with the select-all box over every file) and
+   the editor's code chips predate the theme: hardcoded light grays that
+   never learned about dark mode. In dark they join the panels. */
+[data-theme="dark"] thead th { background: var(--panel); }
+[data-theme="dark"] .editor-md pre { background: var(--row-hover); }
 
 /* ---------- office editor overlay (concepts/office.md) ----------
    Full-bleed frame under a thin toolbar: the engine owns the viewport, the
