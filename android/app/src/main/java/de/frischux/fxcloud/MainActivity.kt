@@ -7,23 +7,20 @@ import android.widget.TextView
 import android.widget.Toast
 
 /**
- * S1's UI - and the diagnostic bring-up build (three layers, so a blank
- * screen can never again be ambiguous):
+ * S1's whole UI: a label that runs the golden fingerprint through the
+ * JNI boundary and shows the result. A committed vector from
+ * tests/fixtures/fx-keys-vectors.json ("fingerprint: x25519 blob") -
+ * the app must print exactly the committed fingerprint or the boundary
+ * is broken (concepts/android.md, slice S1).
  *
- *  1. the window: Theme.Fxcloud paints the window green before any code
- *  2. the title: setTitle right after super.onCreate - if the action bar
- *     says "S1-ONCREATE-RAN", this method started
- *  3. the content: an inflated layout (the other setContentView path)
- *     with static colors; the fingerprint result lands in R.id.result
- *
- * Anything that throws before the content is up shows a Toast AND an
- * alert dialog - never a silent blank.
+ * Shapes here are the ones proven on the first real device: an inflated
+ * layout with explicit colors (two earlier builds rendered blank), and
+ * everything that throws before the content is up surfaces as a Toast
+ * AND an alert dialog - never a silent white screen.
  */
 class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Layer2 probe: visible on the action bar before anything else.
-        setTitle("S1-ONCREATE-RAN")
         try {
             setContentView(R.layout.activity_main)
             val result = findViewById<TextView>(R.id.result)

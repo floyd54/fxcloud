@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Diagnostic layer1 (S1 bring-up): the WINDOW itself carries a color
-     that only my activity can show. Green below the title = my window
-     and theme are alive even if the content never draws; pure white =
-     whatever the user sees is not this activity's window at all. The
-     action bar stays (parent Theme.Material.Light) so setTitle("...")
-     is visible as layer2: if the title changes, onCreate ran. -->
+<!-- The proven S1 window: Material.Light with an action bar + an
+     inflated layout was the combination that rendered on the first
+     real device (the two prior builds, NoActionBar + programmatic
+     view, showed a blank screen - the exact culprit between those two
+     changes was never isolated, so this stays the shape that works).
+     The window background matches the content panel so nothing flashes
+     green-ish or white before the first frame. -->
 <resources>
     <style name="Theme.Fxcloud" parent="@android:style/Theme.Material.Light">
-        <item name="android:windowBackground">#00C853</item>
+        <item name="android:windowBackground">#14161B</item>
     </style>
 </resources>
