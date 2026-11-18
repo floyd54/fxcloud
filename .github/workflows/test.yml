@@ -74,15 +74,19 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      # The runner ships an Android SDK (ANDROID_HOME is already set);
-      # install exactly the packages cargo-ndk and AGP read from there.
-      # setup-android@v3 is deliberately absent: it trips over the
-      # runner's modern cmdline-tools ("Failed to find package 'tools'").
+      # The runner ships an Android SDK; its sdkmanager is simply not on
+      # PATH (it lives under cmdline-tools/<version>/bin). Install exactly
+      # the packages cargo-ndk and AGP read from there. setup-android@v3
+      # is deliberately absent: it trips over this very layout ("Failed
+      # to find package 'tools'").
       - name: SDK packages (platform, build-tools, NDK)
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install "platform-tools" "platforms;android-35" \
-            "build-tools;35.0.0" "ndk;29.0.14206865"
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$(find "$SDK/cmdline-tools" -name sdkmanager -type f | sort | tail -1)"
+          if [ -z "$SDKMANAGER" ]; then echo "sdkmanager not found under $SDK"; exit 1; fi
+          yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses >/dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK" --install "platform-tools" \
+            "platforms;android-35" "build-tools;35.0.0" "ndk;29.0.14206865"
 
       - name: cargo-ndk
         run: cargo install cargo-ndk
