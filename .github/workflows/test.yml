@@ -86,7 +86,7 @@ jobs:
           if [ -z "$SDKMANAGER" ]; then echo "sdkmanager not found under $SDK"; exit 1; fi
           yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses >/dev/null || true
           "$SDKMANAGER" --sdk_root="$SDK" --install "platform-tools" \
-            "platforms;android-35" "build-tools;35.0.0" "ndk;29.0.14206865"
+            "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
 
       - name: cargo-ndk
         run: cargo install cargo-ndk

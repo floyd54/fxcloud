@@ -126,6 +126,10 @@ public-link management, admin dialog (web only).
 | S4 shares + device | share dialog with fingerprints, revoke, re-key/rotate entry points as they make sense on a phone, Keystore auto-unlock (+ the fxcffi device-blob pair) |
 | S5 polish + store | versions, trash, settings parity, signing, Play listing ($25) |
 
+Status: S1 shipped (on-device pass done). S2 built - JVM vectors and CI
+green, device pass pending; the BOM stays at `2026.06.01` because newer
+ones demand an unreleased `compileSdk 37` (see `android/README.md`).
+
 ## Tests
 
 - Host JUnit: the golden fixtures through JNI (the app's `ffi_vectors`

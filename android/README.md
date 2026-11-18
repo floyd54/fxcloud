@@ -1,8 +1,16 @@
-# fxcloud Android app (S1 skeleton)
+# fxcloud Android app (S2: sign-in + tree)
 
-The native client of `concepts/android.md`. S1 proves the boundary:
-`libfxcloud.so` (built from `crates/fxjni`) answers a golden fingerprint
-through JNI, on the host in JUnit and on the device in `MainActivity`.
+The native client of `concepts/android.md`. S2 state: the app signs in
+against a live instance with the same JSON login and `fxcloud_session`
+cookie as the browser, unlocks encrypted accounts through
+`FxCore.unlock` (Argon2id + ARK chain in Rust), lists the tree with its
+breadcrumb and decrypts names-at-rest through `FxCore.unwrapChild` -
+the golden fixtures replay through JNI on the host (JUnit) and in CI.
+
+Versions, deliberately not the newest: `compileSdk = 36` with the
+Compose BOM `2026.06.01` (Compose 1.11.x). The BOMs from August on
+require `compileSdk 37`, whose SDK package is not released on the
+stable channel yet; `minSdk 26` is unaffected either way.
 
 ## Build the .so
 

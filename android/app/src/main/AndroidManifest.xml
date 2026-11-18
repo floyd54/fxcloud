@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- S1 skeleton (concepts/android.md): one launcher activity whose only
-     job is to prove the JNI boundary with a golden fingerprint. The real
-     app arrives with S2. -->
+<!-- S2: the proven XML frame from S1 stays - a header that always
+     renders - and the Compose view below it carries the login,
+     passphrase and file-list screens (concepts/android.md A2). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:label="fxcloud"
         android:allowBackup="false"

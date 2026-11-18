@@ -1,26 +1,30 @@
-// The S1 skeleton (concepts/android.md): no dependencies beyond the
-// framework - the crypto arrives as libfxcloud.so from cargo-ndk, not
-// from a Maven artifact. The real UI (Compose) starts with S2. AGP9
-// applies Kotlin itself (kotl.in/gradle/agp-built-in-kotlin).
+// S2: the real screens (concepts/android.md). The XML frame from S1
+// stays - it is the shape that proved itself on the device - and the
+// Compose view fills what is below the header.
 plugins {
     id("com.android.application")
+    // Kotlin 2.x requires the Compose compiler as its own plugin; the
+    // version tracks the Kotlin toolchain AGP 9 ships (2.2.10).
+    id("org.jetbrains.kotlin.plugin.compose") version "2.2.10"
 }
 
 android {
     namespace = "de.frischux.fxcloud"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "de.frischux.fxcloud"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-s1"
-        // One ABI in S1 (spec A1: the devices we build for); x86_64 for
-        // an emulator joins when there is one to run.
+        versionCode = 2
+        versionName = "0.2.0-s2"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
+    }
+
+    buildFeatures {
+        compose = true
     }
 
     buildTypes {
@@ -40,13 +44,17 @@ android {
 }
 
 dependencies {
+    // Compose for the S2 screens (A2); the BOM pins every androidx.compose
+    // artifact, activity-compose brings the setContent entry point.
+    val composeBom = platform("androidx.compose:compose-bom:2026.06.01")
+    implementation(composeBom)
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.compose.material3:material3")
+
     // Host-side golden-vector tests only (concepts/android.md A4); the
-    // device build has no dependencies beyond the framework.
+    // device build has no dependencies beyond these.
     testImplementation("junit:junit:4.13.2")
     // Reading the committed fixtures on the JVM (android's org.json is
     // not on the host classpath).
     testImplementation("org.json:json:20260814")
 }
-
-// The .so is produced by `cargo ndk -t arm64-v8a -P26 build -p fxjni -o
-// app/src/main/jniLibs` (see android/README.md), not by this build.
