@@ -66,4 +66,4 @@ codegen-units = 1
 strip = true
 
 [workspace]
-members = ["crates/fxcrypto", "crates/fxcffi"]
+members = ["crates/fxcrypto", "crates/fxcffi", "crates/fxjni"]

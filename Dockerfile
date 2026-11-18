@@ -30,10 +30,12 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/fxcrypto/Cargo.toml crates/fxcrypto/Cargo.toml
 COPY crates/fxcffi/Cargo.toml crates/fxcffi/Cargo.toml
-RUN mkdir -p src crates/fxcrypto/src crates/fxcffi/src \
+COPY crates/fxjni/Cargo.toml crates/fxjni/Cargo.toml
+RUN mkdir -p src crates/fxcrypto/src crates/fxcffi/src crates/fxjni/src \
     && echo 'fn main() {}' > src/main.rs \
     && echo 'pub fn warm() {}' > crates/fxcrypto/src/lib.rs \
     && echo 'pub fn warm() {}' > crates/fxcffi/src/lib.rs \
+    && echo 'pub fn warm() {}' > crates/fxjni/src/lib.rs \
     && cargo build --release --workspace \
     && rm -rf src crates
 
