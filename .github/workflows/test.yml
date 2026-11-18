@@ -56,6 +56,53 @@ jobs:
       - name: Integration suite
         run: ./tests/suite.sh
 
+  # The native client's build (concepts/android.md "Build and CI"): the
+  # golden vectors through JNI on the host first, then the device .so and
+  # the APK. S1's exit criterion is this job being green.
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      # AGP9 needs a modern JDK - the box builds with21, so does CI.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Licenses and the pinned SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platform-tools" "platforms;android-35" \
+            "build-tools;35.0.0" "ndk;29.0.14206865"
+
+      - name: cargo-ndk
+        run: cargo install cargo-ndk
+
+      # Host first: both committed fingerprint vectors through JNI.
+      - name: Host .so and JUnit vectors
+        run: |
+          cargo build -p fxjni
+          cd android && ./gradlew test --no-daemon
+
+      - name: Device .so (aarch64)
+        run: cargo ndk -t arm64-v8a -P 26 build -p fxjni --release -o android/app/src/main/jniLibs
+
+      - name: APK
+        run: cd android && ./gradlew assembleDebug --no-daemon
+
+      - name: Upload the debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: fxcloud-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
   docker:
     runs-on: ubuntu-latest
     steps:

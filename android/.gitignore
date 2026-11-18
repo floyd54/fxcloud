@@ -1,0 +1,6 @@
+# Gradle / Android build products (concepts/android.md)
+.gradle/
+build/
+local.properties
+# The .so is produced by cargo-ndk (android/README.md), never committed.
+app/src/main/jniLibs/
