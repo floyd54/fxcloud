@@ -13,7 +13,7 @@
 //! - a panic inside the core is caught by `fxcffi` (`FX_ERR_PANIC`) and
 //!   arrives as an exception, never as a JVM abort
 
-use jni::objects::{JClass, JByteArray};
+use jni::objects::{JByteArray, JClass};
 use jni::sys::jstring;
 use jni::JNIEnv;
 
@@ -60,7 +60,11 @@ fn fingerprint_impl(env: &mut JNIEnv, blob: &JByteArray) -> Result<String, Strin
     // SAFETY: the buffer is valid for this call (the slice above), out is
     // our own local; fx_free releases what the core allocated.
     let code = unsafe {
-        fxcffi::fx_fingerprint(bytes.as_ptr(), bytes.len(), &mut out as *mut fxcffi::FxBytes)
+        fxcffi::fx_fingerprint(
+            bytes.as_ptr(),
+            bytes.len(),
+            &mut out as *mut fxcffi::FxBytes,
+        )
     };
     let hex = if code == fxcffi::FX_OK {
         let text = if out.ptr.is_null() {
