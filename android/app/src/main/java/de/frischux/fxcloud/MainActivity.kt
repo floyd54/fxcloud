@@ -1,6 +1,8 @@
 package de.frischux.fxcloud
 
 import android.os.Bundle
+import android.view.View
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
@@ -31,6 +33,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -93,6 +96,9 @@ class MainActivity : ComponentActivity() {
         })
         try {
             setContentView(R.layout.activity_main)
+            // The way out, in the header that has always rendered: it
+            // clears the stored session, so the next launch starts fresh.
+            findViewById<TextView>(R.id.headerLogout).setOnClickListener { logout() }
             findViewById<ComposeView>(R.id.compose).setContent { AppUi() }
             restoreSession()
         } catch (t: Throwable) {
@@ -334,6 +340,12 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun AppUi() {
+        // The header's Logout follows the step: hidden on the sign-in
+        // form, present wherever a session exists to end.
+        LaunchedEffect(step) {
+            findViewById<TextView>(R.id.headerLogout).visibility =
+                if (step == Step.LOGIN) View.GONE else View.VISIBLE
+        }
         MaterialTheme(
             colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
         ) {
@@ -445,7 +457,8 @@ class MainActivity : ComponentActivity() {
         Column(Modifier.fillMaxSize()) {
             Row(
                 Modifier.fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+                    .heightIn(min = 44.dp)
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
                     .padding(horizontal = 12.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -453,10 +466,10 @@ class MainActivity : ComponentActivity() {
                 // segments are links (underlined, accent-colored like the
                 // web's), the current folder semibold, "›" between - and
                 // never an empty strip: without crumbs the bar still says
-                // "Home", exactly like the web's root view.
+                // "Home", exactly like the web's root view. Every color is
+                // explicit here so no inherited value can make it vanish.
                 Row(
                     Modifier.weight(1f)
-                        .heightIn(min = 40.dp)
                         .horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -465,6 +478,7 @@ class MainActivity : ComponentActivity() {
                         if (i > 0) {
                             Text(
                                 "›",
+                                fontSize = 14.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                                 modifier = Modifier.padding(horizontal = 4.dp)
                             )
@@ -473,7 +487,9 @@ class MainActivity : ComponentActivity() {
                             Text(
                                 crumb.name,
                                 maxLines = 1,
-                                fontWeight = FontWeight.SemiBold
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         } else {
                             TextButton({
@@ -482,6 +498,8 @@ class MainActivity : ComponentActivity() {
                                 Text(
                                     crumb.name,
                                     maxLines = 1,
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.primary,
                                     textDecoration = TextDecoration.Underline
                                 )
                             }
@@ -491,7 +509,8 @@ class MainActivity : ComponentActivity() {
                 if (busy) {
                     CircularProgressIndicator(Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp)
                 }
-                TextButton({ logout() }) { Text("Logout") }
+                // The way out sits in the XML header (headerLogout) - the
+                // one element this device has always rendered.
             }
             notice?.let {
                 Text(
