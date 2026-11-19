@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher backdrop: the app's window dark, a shade lighter at
+     the top so the icon reads as depth, not as a flat tile. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="270"
+        android:startColor="#1E2430"
+        android:endColor="#14161B" />
+</shape>
