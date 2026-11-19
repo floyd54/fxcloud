@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -38,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONArray
@@ -441,31 +444,46 @@ class MainActivity : ComponentActivity() {
     private fun FilesUi() {
         Column(Modifier.fillMaxSize()) {
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                Modifier.fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // The path bar, the web's renderBreadcrumb in kind:
-                // earlier segments are links, the current one is text,
-                // separated by "›" (app.js uses the same three parts).
+                // The path bar, the web's renderBreadcrumb in kind: earlier
+                // segments are links (underlined, accent-colored like the
+                // web's), the current folder semibold, "›" between - and
+                // never an empty strip: without crumbs the bar still says
+                // "Home", exactly like the web's root view.
                 Row(
-                    Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                    Modifier.weight(1f)
+                        .heightIn(min = 40.dp)
+                        .horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    crumbs.forEachIndexed { i, crumb ->
+                    val path = crumbs.ifEmpty { listOf(Crumb(null, "Home", 0)) }
+                    path.forEachIndexed { i, crumb ->
                         if (i > 0) {
                             Text(
                                 "›",
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                                modifier = Modifier.padding(horizontal = 2.dp)
+                                modifier = Modifier.padding(horizontal = 4.dp)
                             )
                         }
-                        if (i == crumbs.lastIndex) {
-                            Text(crumb.name, maxLines = 1, fontWeight = FontWeight.Medium)
+                        if (i == path.lastIndex) {
+                            Text(
+                                crumb.name,
+                                maxLines = 1,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         } else {
                             TextButton({
                                 if (crumb.id != parent) openFolder(crumb.id)
                             }) {
-                                Text(crumb.name, maxLines = 1)
+                                Text(
+                                    crumb.name,
+                                    maxLines = 1,
+                                    textDecoration = TextDecoration.Underline
+                                )
                             }
                         }
                     }
@@ -484,6 +502,15 @@ class MainActivity : ComponentActivity() {
                 )
             }
             LazyColumn(Modifier.weight(1f)) {
+                if (rows.isEmpty() && !busy) {
+                    item {
+                        Text(
+                            "This folder is empty",
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp)
+                        )
+                    }
+                }
                 items(rows, key = { it.id }) { row ->
                     Row(
                         Modifier.fillMaxWidth()
