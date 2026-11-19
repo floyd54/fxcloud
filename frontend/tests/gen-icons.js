@@ -10,8 +10,11 @@
  * here by hand (zlib for the IDAT stream, CRC32 per chunk), which keeps the
  * whole pipeline dependency-free and byte-reproducible.
  *
- * The mark is a white cloud on the accent blue (#0082c9, the topbar/brand
- * color), full-bleed: no pre-rounded corners, because every consumer (iOS
+ * The mark matches the Android launcher icon (concepts/android.md): a
+ * dark vertical gradient (#1E2430 -> #14161B), the brand cloud as a
+ * soft blue - fill 45% / rim 70% of the accent #0082c9, the same
+ * AARRGGBB values the Android XML carries - and a white fx inside.
+ * Full-bleed: no pre-rounded corners, because every consumer (iOS
  * home screen, Android launcher masks, Chrome) applies its own mask and a
  * maskable icon must bleed to the edge. The cloud stays inside the maskable
  * safe zone (central 62.5%), the maskable variant gets extra padding.
@@ -23,8 +26,36 @@ const fs = require("fs");
 const path = require("path");
 
 const ACCENT = [0x00, 0x82, 0xc9];
-const WHITE = [0xff, 0xff, 0xff];
+const LETTER = [0xe6, 0xe9, 0xee]; // the fx, white like the app icon
+const BG_TOP = [0x1e, 0x24, 0x30];
+const BG_BOTTOM = [0x14, 0x16, 0x1b];
 const SS = 4; // supersampling: SS x SS sub-pixels per output pixel
+// The cloud's rim: stroke width 2.4 in the app icon's 108 grid, halved
+// for a band centred on the outline; the fx strokes likewise (3.6/3.2).
+const RIM_HALF = (2.4 / 108) / 2;
+const FX_HW = (3.6 / 108) / 2;
+const FX_HW_CROSS = (3.2 / 108) / 2;
+// The fx in icon space (0..1), the same letterforms the Android XML
+// draws: f hook + stem, crossbar, and the x - inside the cloud. This
+// cloud is narrower than the launcher's, so the letters shrink to the
+// same fraction of it (46-49% of the cloud's width).
+const FX_SCALE = 0.8;
+const FX_CY = 0.483;
+const FX = [
+  [0.426, 0.410, 0.426, 0.595, FX_HW], // f stem
+  [0.426, 0.410, 0.434, 0.394, FX_HW], // f flag
+  [0.434, 0.394, 0.452, 0.389, FX_HW], // f flag
+  [0.452, 0.389, 0.472, 0.419, FX_HW], // f flag
+  [0.380, 0.484, 0.472, 0.484, FX_HW_CROSS], // f crossbar
+  [0.509, 0.410, 0.620, 0.595, FX_HW], // x
+  [0.620, 0.410, 0.509, 0.595, FX_HW], // x
+].map(([ax, ay, bx, by, hw]) => [
+  0.5 + (ax - 0.5) * FX_SCALE,
+  FX_CY + (ay - FX_CY) * FX_SCALE,
+  0.5 + (bx - 0.5) * FX_SCALE,
+  FX_CY + (by - FX_CY) * FX_SCALE,
+  hw * FX_SCALE,
+]);
 
 // ---- PNG encoder (subset: RGBA8, no interlace, filter None) -------------
 
@@ -79,11 +110,6 @@ function encodePng(width, height, rgba) {
 // Signed distances in a unit coordinate system (0..1 of the icon), cloud
 // centered horizontally, sitting slightly below center so it reads balanced
 // once a launcher crops top/bottom.
-function sdRoundBox(px, py, bx, by, r) {
-  const qx = Math.abs(px) - bx + r;
-  const qy = Math.abs(py) - by + r;
-  return Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - r;
-}
 function sdCircle(px, py, cx, cy, r) {
   return Math.hypot(px - cx, py - cy) - r;
 }
@@ -91,30 +117,62 @@ function cloudDistance(u, v, scale) {
   // Scale the whole cloud about its center; scale < 1 pads for maskable.
   const x = (u - 0.5) / scale + 0.5;
   const y = (v - 0.52) / scale + 0.52;
-  const d1 = sdRoundBox(x, y, 0.20, 0.06, 0.06); // base
+  // Three puffs only: the old base box sat at the coordinate origin and
+  // painted a stray blob into the top-left corner instead of a base.
   const d2 = sdCircle(x, y, 0.37, 0.55, 0.09); // left puff
   const d3 = sdCircle(x, y, 0.5, 0.47, 0.13); // top puff
   const d4 = sdCircle(x, y, 0.63, 0.55, 0.09); // right puff
-  return Math.min(d1, d2, d3, d4);
+  return Math.min(d2, d3, d4);
+}
+
+function sdSegment(px, py, ax, ay, bx, by) {
+  const pax = px - ax;
+  const pay = py - ay;
+  const bax = bx - ax;
+  const bay = by - ay;
+  const h = Math.min(1, Math.max(0, (pax * bax + pay * bay) / (bax * bax + bay * bay)));
+  return Math.hypot(pax - bax * h, pay - bay * h);
+}
+
+function mix(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 }
 
 function render(size, scale) {
   const px = Buffer.alloc(size * size * 4);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      let hits = 0;
+      let r = 0;
+      let g = 0;
+      let b = 0;
       for (let sy = 0; sy < SS; sy++) {
         for (let sx = 0; sx < SS; sx++) {
           const u = (x + (sx + 0.5) / SS) / size;
           const v = (y + (sy + 0.5) / SS) / size;
-          if (cloudDistance(u, v, scale) < 0) hits++;
+          // 1. the gradient, full-bleed and unscaled
+          let col = mix(BG_TOP, BG_BOTTOM, v);
+          // 2. the cloud: rim band first, then the soft fill
+          const d = cloudDistance(u, v, scale);
+          if (Math.abs(d) <= RIM_HALF) col = mix(col, ACCENT, 0.7);
+          else if (d < 0) col = mix(col, ACCENT, 0.45);
+          // 3. the fx on top, scaled with the cloud (maskable padding)
+          const ix = (u - 0.5) / scale + 0.5;
+          const iy = (v - 0.52) / scale + 0.52;
+          let fx = Infinity;
+          for (const [ax, ay, bx, by, hw] of FX) {
+            fx = Math.min(fx, sdSegment(ix, iy, ax, ay, bx, by) - hw);
+          }
+          if (fx < 0) col = LETTER;
+          r += col[0];
+          g += col[1];
+          b += col[2];
         }
       }
-      const cover = hits / (SS * SS); // 0 = background, 1 = cloud
+      const n = SS * SS;
       const o = (y * size + x) * 4;
-      px[o] = Math.round(ACCENT[0] + (WHITE[0] - ACCENT[0]) * cover);
-      px[o + 1] = Math.round(ACCENT[1] + (WHITE[1] - ACCENT[1]) * cover);
-      px[o + 2] = Math.round(ACCENT[2] + (WHITE[2] - ACCENT[2]) * cover);
+      px[o] = Math.round(r / n);
+      px[o + 1] = Math.round(g / n);
+      px[o + 2] = Math.round(b / n);
       px[o + 3] = 255;
     }
   }
