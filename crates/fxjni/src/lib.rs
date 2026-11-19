@@ -699,3 +699,44 @@ fn ecies_seal_impl(
     };
     take_out(code, &mut out, "ecies seal")
 }
+
+/// Wrap a value under a parent key, bound to the child id (S3): the
+/// record an upload writes for its content key and the id-bound name
+/// blob (N3) are both this call - the reverse of `unwrapChild`.
+///
+/// # Safety
+/// Standard JNI contract: the arrays are valid JVM objects for this call.
+#[no_mangle]
+pub extern "system" fn Java_de_frischux_fxcloud_FxCore_wrapChild(
+    mut env: JNIEnv,
+    _class: JClass,
+    parent_key: JByteArray,
+    child_id: jni::sys::jlong,
+    value: JByteArray,
+) -> jni::sys::jbyteArray {
+    let result = wrap_child_impl(&mut env, &parent_key, child_id, &value);
+    to_jbytes(&mut env, result)
+}
+
+fn wrap_child_impl(
+    env: &mut JNIEnv,
+    parent_key: &JByteArray,
+    child_id: jni::sys::jlong,
+    value: &JByteArray,
+) -> Result<Vec<u8>, String> {
+    let parent = bytes_arg(env, parent_key, "parent key")?;
+    let value = bytes_arg(env, value, "value")?;
+    let mut out = empty_bytes();
+    // SAFETY: our copies are readable, out is local.
+    let code = unsafe {
+        fxcffi::fx_wrap_child_key(
+            parent.as_ptr(),
+            parent.len(),
+            child_id as u64,
+            value.as_ptr(),
+            value.len(),
+            &mut out,
+        )
+    };
+    take_out(code, &mut out, "wrap child")
+}

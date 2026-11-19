@@ -34,7 +34,7 @@ data class Row(
 }
 
 /** One breadcrumb segment. */
-data class Crumb(val id: Long?, val name: String, val nameEnc: Int)
+data class Crumb(val id: Long?, val name: String, val nameEnc: Int, val namesEnc: Int)
 
 /**
  * The app's key chain (concepts/android.md A4): the same walk
@@ -62,6 +62,45 @@ object Chain {
             val c = crumbs.getJSONObject(i)
             if (c.isNull("id") || c.isNull("enc_key")) continue
             key = FxCore.unwrapChild(key, c.getLong("id"), c.getString("enc_key"))
+        }
+        cache[folderId] = key
+        return key
+    }
+
+    /** Fresh bytes for keys and temp names (S3). */
+    fun randomBytes(n: Int): ByteArray {
+        val bytes = ByteArray(n)
+        java.security.SecureRandom().nextBytes(bytes)
+        return bytes
+    }
+
+    /**
+     * The folder's key for a write: the same walk as `keyFor`, but a
+     * folder whose record is missing (created before the account was
+     * encrypted) gains one here - the web's `ensureChainKey`. Upload is
+     * the only caller; reads never write, so `keyFor` stays pure and a
+     * recordless folder shows placeholders there (S2's rule).
+     */
+    fun ensureKey(api: ApiClient, rootKey: ByteArray, folderId: Long?): ByteArray {
+        if (folderId == null) return rootKey
+        val reply = api.get("/api/files/breadcrumb?id=$folderId")
+        require(reply.code == 200) { "breadcrumb: ${reply.code}" }
+        val crumbs = JSONObject(reply.body).getJSONArray("breadcrumbs")
+        var key = rootKey
+        for (i in 0 until crumbs.length()) {
+            val c = crumbs.getJSONObject(i)
+            if (c.isNull("id")) continue
+            val id = c.getLong("id")
+            if (!c.isNull("enc_key")) {
+                key = FxCore.unwrapChild(key, id, c.getString("enc_key"))
+            } else {
+                // No record yet: this folder's key is brand new, wrapped
+                // under whatever the walk holds (its parent's key).
+                val fresh = randomBytes(32)
+                val wrapped = FxCore.wrapChild(key, id, fresh)
+                api.putKey(id, java.util.Base64.getEncoder().encodeToString(wrapped))
+                key = fresh
+            }
         }
         cache[folderId] = key
         return key
@@ -95,6 +134,7 @@ object Chain {
             val id = if (c.isNull("id")) null else c.getLong("id")
             var name = c.getString("name")
             val nameEnc = c.optInt("name_enc", 0)
+            val namesEnc = c.optInt("names_enc", 0)
             if (id != null && nameEnc != 0 && key != null) {
                 name = try {
                     String(FxCore.unwrapChild(key, id, name), Charsets.UTF_8)
@@ -102,7 +142,7 @@ object Chain {
                     "(encrypted)"
                 }
             }
-            out.add(Crumb(id, name, nameEnc))
+            out.add(Crumb(id, name, nameEnc, namesEnc))
             if (id != null && key != null && !c.isNull("enc_key")) {
                 key = try {
                     FxCore.unwrapChild(key, id, c.getString("enc_key"))

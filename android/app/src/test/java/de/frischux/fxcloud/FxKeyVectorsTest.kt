@@ -184,4 +184,23 @@ class FxKeyVectorsTest {
             )
         }
     }
+
+    @Test
+    fun wrapChildRoundtripsThroughJni() {
+        Native.load()
+        val c = caseOf("child")
+        val parent = hexToBytes(c.getString("parent_key_hex"))
+        val id = c.getLong("child_id")
+        val childKey = hexToBytes(c.getString("child_key_hex"))
+        // wrap draws a fresh nonce (like the JS twin), so the pin is
+        // the roundtrip through both JNI directions; the fixture pins
+        // the read side byte-for-byte in goldenChildUnwrapThroughJni.
+        val wrapped = FxCore.wrapChild(parent, id, childKey)
+        assertArrayEquals(
+            childKey,
+            FxCore.unwrapChild(
+                parent, id, java.util.Base64.getEncoder().encodeToString(wrapped)
+            )
+        )
+    }
 }

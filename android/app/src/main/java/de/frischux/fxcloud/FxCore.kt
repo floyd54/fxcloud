@@ -39,6 +39,13 @@ object FxCore {
     external fun unwrapChild(parentKey: ByteArray, childId: Long, wrapped: String): ByteArray
 
     /**
+     * Wrap a value under a parent key bound to the child id (S3): the
+     * content-key record of an upload and the id-bound name blob (N3)
+     * are both this call - the raw wrap out, the caller encodes it.
+     */
+    external fun wrapChild(parentKey: ByteArray, childId: Long, value: ByteArray): ByteArray
+
+    /**
      * FXE1-encrypt a file body (S3): file id +32-byte content key in,
      * the container out - bound to the id, a row move fails decryption.
      */

@@ -4,12 +4,15 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.view.View
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -122,6 +125,13 @@ class MainActivity : ComponentActivity() {
 
     /** Non-null replaces the whole list area with the S3b preview. */
     private var preview by mutableStateOf<Preview?>(null)
+
+    /** The system picker for S3c: any file, read through the content
+     *  resolver - the picker's URI needs no storage permission. */
+    private val pickFile =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri != null) doUpload(uri)
+        }
 
     /** Folder ids visited since the root - what the system back button
      *  walks out of (UI thread only). */
@@ -486,6 +496,94 @@ class MainActivity : ComponentActivity() {
         ) ?: bitmap
     }
 
+    // ------------------------------------------------------------- upload (S3c)
+
+    private fun startUpload() {
+        if (busy) return
+        pickFile.launch("*/*")
+    }
+
+    /**
+     * The S3c flow, mirrored from app.js/fxenc.js: create the row (a
+     * random server-meaningless name under a names_enc folder, then
+     * rename to the id-bound blob - N3/N5), give a recordless folder
+     * its record (ensureChainKey), fresh file key, encrypt, PUT the
+     * container. A failure after the row exists discards it, so no
+     * half-written or plaintext leftover stays behind.
+     */
+    private fun doUpload(uri: Uri) {
+        val c = api ?: return
+        if (busy) return
+        val target = parent
+        val namesEnc = rootKey != null && crumbs.lastOrNull()?.namesEnc == 1
+        busy = true
+        notice = null
+        Thread {
+            var createdId: Long? = null
+            try {
+                val name = queryName(uri) ?: "upload.bin"
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw RuntimeException("Cannot read the selected file")
+                if (bytes.size > 50_000_000) {
+                    throw RuntimeException(
+                        "Uploads up to50 MB for now (${bytes.size / 1_000_000} MB)"
+                    )
+                }
+                val rk = rootKey
+                val parentKey = if (rk == null) null else Chain.ensureKey(c, rk, target)
+                val temp = if (namesEnc) {
+                    "n" + java.util.Base64.getUrlEncoder()
+                        .encodeToString(Chain.randomBytes(16))
+                } else {
+                    null
+                }
+                val id = c.createFile(target, temp ?: name)
+                createdId = id
+                if (temp != null && parentKey != null) {
+                    val wrapped = FxCore.wrapChild(
+                        parentKey, id, name.toByteArray(Charsets.UTF_8)
+                    )
+                    c.rename(
+                        id,
+                        java.util.Base64.getUrlEncoder().encodeToString(wrapped)
+                    )
+                }
+                if (parentKey != null) {
+                    val fileKey = Chain.randomBytes(32)
+                    val wrappedKey = FxCore.wrapChild(parentKey, id, fileKey)
+                    val container = FxCore.encryptBytes(id, fileKey, bytes)
+                    c.putContent(
+                        id, container, java.util.Base64.getEncoder().encodeToString(wrappedKey)
+                    )
+                } else {
+                    c.putContent(id, bytes, null)
+                }
+                runOnUiThread {
+                    busy = false
+                    loadTree() // clears the notice; set it after
+                    notice = "Uploaded $name"
+                }
+            } catch (e: Throwable) {
+                createdId?.let { c.discard(it) }
+                runOnUiThread {
+                    busy = false
+                    notice = "Upload failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    private fun queryName(uri: Uri): String? {
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) return cursor.getString(idx)
+                }
+            }
+        return null
+    }
+
     // ------------------------------------------------------------------- ui
 
     @Composable
@@ -628,7 +726,7 @@ class MainActivity : ComponentActivity() {
                         .horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val path = crumbs.ifEmpty { listOf(Crumb(null, "Home", 0)) }
+                    val path = crumbs.ifEmpty { listOf(Crumb(null, "Home", 0, 0)) }
                     path.forEachIndexed { i, crumb ->
                         if (i > 0) {
                             Text(
@@ -661,6 +759,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                TextButton({ startUpload() }, enabled = !busy) { Text("Upload") }
                 if (busy) {
                     CircularProgressIndicator(Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp)
                 }

@@ -1,7 +1,9 @@
 package de.frischux.fxcloud
 
 import java.net.HttpURLConnection
+import java.net.URLEncoder
 import java.net.URL
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -30,7 +32,7 @@ class ApiClient(var baseUrl: String) {
         }
     }
 
-    private fun open(path: String, method: String, body: String?): HttpURLConnection {
+    private fun openRaw(path: String, method: String, readTimeoutMs: Int): HttpURLConnection {
         val conn = URL(normalizeBaseUrl(baseUrl) + path).openConnection()
         if (conn !is HttpURLConnection) {
             // Only reachable for a scheme we do not speak (ftp:, file:)
@@ -39,8 +41,13 @@ class ApiClient(var baseUrl: String) {
         }
         conn.requestMethod = method
         conn.connectTimeout = 10_000
-        conn.readTimeout = 15_000
+        conn.readTimeout = readTimeoutMs
         sessionCookie?.let { conn.setRequestProperty("Cookie", "fxcloud_session=$it") }
+        return conn
+    }
+
+    private fun open(path: String, method: String, body: String?): HttpURLConnection {
+        val conn = openRaw(path, method, 15_000)
         if (body != null) {
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json")
@@ -103,6 +110,99 @@ class ApiClient(var baseUrl: String) {
         val bytes = conn.inputStream.use { it.readBytes() }
         conn.disconnect()
         return bytes
+    }
+
+    /** Fail with the server's own message when it sent one. */
+    private fun serverError(reply: Reply, what: String): Nothing {
+        val msg = try {
+            JSONObject(reply.body).optString("error")
+        } catch (e: Throwable) {
+            ""
+        }
+        throw java.io.IOException(
+            if (msg.isNotEmpty()) "$what: $msg" else "$what (${reply.code})"
+        )
+    }
+
+    /** POST /api/files/file - a new empty row (blob included); parent
+     *  null = root. The id comes back for the two-phase write. */
+    fun createFile(parentId: Long?, name: String): Long {
+        val body = JSONObject()
+        if (parentId == null) {
+            body.put("parent_id", JSONObject.NULL)
+        } else {
+            body.put("parent_id", parentId)
+        }
+        body.put("name", name)
+        val reply = post("/api/files/file", body)
+        if (reply.code != 200) serverError(reply, "Create")
+        return JSONObject(reply.body).getJSONObject("entry").getLong("id")
+    }
+
+    /** POST /api/files/rename - phase two of a name-at-rest upload. */
+    fun rename(id: Long, name: String) {
+        val reply = post("/api/files/rename", JSONObject().put("id", id).put("name", name))
+        if (reply.code != 200) serverError(reply, "Rename")
+    }
+
+    /** PUT /api/files/key - give a folder its key record (5.4). */
+    fun putKey(id: Long, keyB64: String) {
+        val reply = open(
+            "/api/files/key", "PUT",
+            JSONObject().put("id", id).put("key", keyB64).toString()
+        ).let { read(it) }
+        if (reply.code != 200) serverError(reply, "Key record")
+    }
+
+    /**
+     * PUT /api/files/content?id= - the body is the FXE1 container when
+     * `encKeyB64` is given (enc=1&key=, standard base64 like the web's
+     * encodeURIComponent), the plaintext otherwise. Generous read
+     * timeout: this is the upload itself.
+     */
+    fun putContent(id: Long, bytes: ByteArray, encKeyB64: String?) {
+        val path = if (encKeyB64 != null) {
+            "/api/files/content?id=$id&enc=1&key=" +
+                URLEncoder.encode(encKeyB64, "UTF-8")
+        } else {
+            "/api/files/content?id=$id"
+        }
+        val conn = openRaw(path, "PUT", 120_000)
+        conn.doOutput = true
+        conn.setRequestProperty("Content-Type", "application/octet-stream")
+        conn.outputStream.use { it.write(bytes) }
+        val code = conn.responseCode
+        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+        val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+        conn.disconnect()
+        if (code !in 200..299) {
+            val msg = try {
+                JSONObject(body).optString("error")
+            } catch (e: Throwable) {
+                ""
+            }
+            throw java.io.IOException(
+                if (msg.isNotEmpty()) "Save: $msg" else "Save ($code)"
+            )
+        }
+    }
+
+    /**
+     * Undo a row that was created but could not be written: delete it
+     * and empty the trash entry - the web's discardCreated, best
+     * effort, because the caller is already reporting the failure.
+     */
+    fun discard(id: Long) {
+        try {
+            post("/api/files/batch/delete", JSONObject().put("ids", JSONArray().put(id)))
+        } catch (e: Throwable) {
+            // already gone
+        }
+        try {
+            post("/api/files/trash/purge", JSONObject().put("id", id))
+        } catch (e: Throwable) {
+            // already gone
+        }
     }
 
     /** GET /api/keys/me - the wrapped material, or null when the
