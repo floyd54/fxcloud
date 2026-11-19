@@ -19,8 +19,24 @@ class ApiClient(var baseUrl: String) {
 
     data class Reply(val code: Int, val body: String, val setCookie: String?)
 
+    companion object {
+        /** Accept a bare host like a browser's address bar: anything
+         *  without a scheme becomes https (a scheme-less value would
+         *  otherwise become a file: URL and blow up on the connection). */
+        fun normalizeBaseUrl(raw: String): String {
+            val b = raw.trim().trimEnd('/')
+            return if (b.startsWith("http://") || b.startsWith("https://")) b
+            else "https://$b"
+        }
+    }
+
     private fun open(path: String, method: String, body: String?): HttpURLConnection {
-        val conn = URL(baseUrl.trimEnd('/') + path) as HttpURLConnection
+        val conn = URL(normalizeBaseUrl(baseUrl) + path).openConnection()
+        if (conn !is HttpURLConnection) {
+            // Only reachable for a scheme we do not speak (ftp:, file:)
+            // - a clear sentence instead of a ClassCastException.
+            throw java.io.IOException("Not an http(s) address: $baseUrl")
+        }
         conn.requestMethod = method
         conn.connectTimeout = 10_000
         conn.readTimeout = 15_000

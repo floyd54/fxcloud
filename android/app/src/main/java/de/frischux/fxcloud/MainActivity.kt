@@ -22,6 +22,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -137,7 +138,7 @@ class MainActivity : ComponentActivity() {
                 val reply = c.login(user, password)
                 if (reply.code != 200) throw RuntimeException("Sign-in failed (${reply.code})")
                 prefs.edit()
-                    .putString("base", server.trimEnd('/'))
+                    .putString("base", ApiClient.normalizeBaseUrl(server))
                     .putString("user", user)
                     .putString("session", c.sessionCookie)
                     .apply()
@@ -281,10 +282,15 @@ class MainActivity : ComponentActivity() {
         MaterialTheme(
             colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
         ) {
-            when (step) {
-                Step.LOGIN -> LoginUi()
-                Step.PASSPHRASE -> UnlockUi()
-                Step.FILES -> FilesUi()
+            // MaterialTheme only provides colors; Surface paints them.
+            // Without this the screens are transparent and the dark XML
+            // window shows through under light-mode text - unreadable.
+            Surface(Modifier.fillMaxSize()) {
+                when (step) {
+                    Step.LOGIN -> LoginUi()
+                    Step.PASSPHRASE -> UnlockUi()
+                    Step.FILES -> FilesUi()
+                }
             }
         }
     }
