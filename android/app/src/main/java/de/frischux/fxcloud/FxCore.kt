@@ -46,6 +46,19 @@ object FxCore {
     external fun wrapChild(parentKey: ByteArray, childId: Long, value: ByteArray): ByteArray
 
     /**
+     * Wrap with a caller-supplied AAD (S3d/S4): a mount's display label
+     * uses the share AAD (N4), not a child AAD.
+     */
+    external fun wrap(key: ByteArray, value: ByteArray, aad: ByteArray): ByteArray
+
+    /**
+     * Unwrap with a caller-supplied AAD (S3d/S4); wrong key, tampering
+     * and a foreign AAD all arrive as FX_ERR_UNWRAP. The blob may be
+     * standard or URL-safe base64.
+     */
+    external fun unwrap(key: ByteArray, blob: String, aad: ByteArray): ByteArray
+
+    /**
      * FXE1-encrypt a file body (S3): file id +32-byte content key in,
      * the container out - bound to the id, a row move fails decryption.
      */

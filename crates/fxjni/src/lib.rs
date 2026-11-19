@@ -359,12 +359,7 @@ fn unwrap_child_impl(
         env.get_string(wrapped)
             .map_err(|e| format!("wrapped: {e}"))?,
     );
-    // Names are URL-safe, key records standard: normalize, then one
-    // decoder handles both (both arrive padded).
-    let normalized = blob_str.replace('-', "+").replace('_', "/");
-    let blob = base64::engine::general_purpose::STANDARD
-        .decode(normalized.trim())
-        .map_err(|e| format!("base64: {e}"))?;
+    let blob = decode_blob(&blob_str)?;
 
     let mut aad = fxcffi::FxBytes {
         ptr: std::ptr::null_mut(),
@@ -739,4 +734,99 @@ fn wrap_child_impl(
         )
     };
     take_out(code, &mut out, "wrap child")
+}
+
+/// One decoder for both encodings: names arrive URL-safe, key records
+/// standard - normalize, then standard (both arrive padded).
+fn decode_blob(s: &str) -> Result<Vec<u8>, String> {
+    let normalized = s.replace('-', "+").replace('_', "/");
+    base64::engine::general_purpose::STANDARD
+        .decode(normalized.trim())
+        .map_err(|e| format!("base64: {e}"))
+}
+
+/// Wrap with a caller-supplied AAD (S3d/S4): a mount's display label
+/// wraps under the shared node's key with the *share* AAD (N4), not
+/// with a child AAD - that difference is what tells the two apart.
+///
+/// # Safety
+/// Standard JNI contract: the arrays are valid JVM objects for this call.
+#[no_mangle]
+pub extern "system" fn Java_de_frischux_fxcloud_FxCore_wrap(
+    mut env: JNIEnv,
+    _class: JClass,
+    key: JByteArray,
+    value: JByteArray,
+    aad: JByteArray,
+) -> jni::sys::jbyteArray {
+    let result = wrap_impl(&mut env, &key, &value, &aad);
+    to_jbytes(&mut env, result)
+}
+
+fn wrap_impl(
+    env: &mut JNIEnv,
+    key: &JByteArray,
+    value: &JByteArray,
+    aad: &JByteArray,
+) -> Result<Vec<u8>, String> {
+    let key = bytes_arg(env, key, "key")?;
+    let value = bytes_arg(env, value, "value")?;
+    let aad = bytes_arg(env, aad, "aad")?;
+    let mut out = empty_bytes();
+    // SAFETY: our copies are readable, out is local.
+    let code = unsafe {
+        fxcffi::fx_wrap(
+            key.as_ptr(),
+            key.len(),
+            value.as_ptr(),
+            value.len(),
+            aad.as_ptr(),
+            aad.len(),
+            &mut out,
+        )
+    };
+    take_out(code, &mut out, "wrap")
+}
+
+/// Unwrap with a caller-supplied AAD (S3d/S4); one `FX_ERR_UNWRAP` for
+/// wrong key, tampering and a foreign AAD (5.4/5.5).
+///
+/// # Safety
+/// Standard JNI contract: the arrays are valid JVM objects for this call.
+#[no_mangle]
+pub extern "system" fn Java_de_frischux_fxcloud_FxCore_unwrap(
+    mut env: JNIEnv,
+    _class: JClass,
+    key: JByteArray,
+    blob: JString,
+    aad: JByteArray,
+) -> jni::sys::jbyteArray {
+    let result = unwrap_impl(&mut env, &key, &blob, &aad);
+    to_jbytes(&mut env, result)
+}
+
+fn unwrap_impl(
+    env: &mut JNIEnv,
+    key: &JByteArray,
+    blob: &JString,
+    aad: &JByteArray,
+) -> Result<Vec<u8>, String> {
+    let key = bytes_arg(env, key, "key")?;
+    let aad = bytes_arg(env, aad, "aad")?;
+    let blob_str = String::from(env.get_string(blob).map_err(|e| format!("blob: {e}"))?);
+    let blob = decode_blob(&blob_str)?;
+    let mut out = empty_bytes();
+    // SAFETY: our copies are readable, out is local.
+    let code = unsafe {
+        fxcffi::fx_unwrap(
+            key.as_ptr(),
+            key.len(),
+            blob.as_ptr(),
+            blob.len(),
+            aad.as_ptr(),
+            aad.len(),
+            &mut out,
+        )
+    };
+    take_out(code, &mut out, "unwrap")
 }

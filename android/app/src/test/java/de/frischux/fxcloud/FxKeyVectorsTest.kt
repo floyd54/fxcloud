@@ -203,4 +203,31 @@ class FxKeyVectorsTest {
             )
         )
     }
+
+    @Test
+    fun wrapUnwrapWithShareAadRoundtrip() {
+        Native.load()
+        // N4's shape: a mount label under the node's key with the share
+        // AAD - url-safe on the wire like the web's b64url.
+        val ecies = casesOf("ecies_open").first { !it.optBoolean("expect_error", false) }
+        val aadObj = ecies.getJSONObject("aad")
+        val sourceId = aadObj.getLong("source_id")
+        val grantee = aadObj.getString("grantee")
+        val key = hexToBytes(caseOf("child").getString("parent_key_hex"))
+        val aad = FxCore.shareEnvelopeAad(sourceId, grantee)
+        val label = "Geteilter Ordner".toByteArray(Charsets.UTF_8)
+        val wrapped = FxCore.wrap(key, label, aad)
+        val blob = java.util.Base64.getUrlEncoder().encodeToString(wrapped)
+        assertArrayEquals(label, FxCore.unwrap(key, blob, aad))
+        // The AAD binds share id and grantee: another share's id fails.
+        try {
+            FxCore.unwrap(key, blob, FxCore.shareEnvelopeAad(sourceId + 1, grantee))
+            throw AssertionError("another share id must not open this label")
+        } catch (e: RuntimeException) {
+            assertTrue(
+                "unified unwrap message: ${e.message}",
+                (e.message ?: "").contains("FX_ERR_UNWRAP")
+            )
+        }
+    }
 }

@@ -57,6 +57,7 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -106,6 +107,9 @@ class MainActivity : ComponentActivity() {
     @Volatile private var api: ApiClient? = null
     @Volatile private var keysJson: String? = null
     @Volatile private var myId: Long = -1
+
+    /** The grantee half of every share AAD (N4) - from /api/me. */
+    @Volatile private var myUsername: String = ""
 
     /**
      * Unlock output and the root key live in memory only - never in
@@ -173,11 +177,12 @@ class MainActivity : ComponentActivity() {
         Thread {
             try {
                 val c = ApiClient(base).withSession(token)
-                val id = c.me() // throws when the session is gone
+                val me = c.me() // throws when the session is gone
                 val keys = c.keysOrNull()
                 runOnUiThread {
                     api = c
-                    myId = id
+                    myId = me.id
+                    myUsername = me.username
                     keysJson = keys
                     busy = false
                     if (keys != null) {
@@ -212,11 +217,12 @@ class MainActivity : ComponentActivity() {
                     .putString("user", user)
                     .putString("session", c.sessionCookie)
                     .apply()
-                val id = c.me()
+                val me = c.me()
                 val keys = c.keysOrNull()
                 runOnUiThread {
                     api = c
-                    myId = id
+                    myId = me.id
+                    myUsername = me.username
                     keysJson = keys
                     busy = false
                     history.clear()
@@ -230,7 +236,7 @@ class MainActivity : ComponentActivity() {
                         // signed in with unlocks right away - the web
                         // carries it across its redirect the same way.
                         separatePassphrase(keys) -> step = Step.PASSPHRASE
-                        else -> unlockWith(password) { step = Step.PASSPHRASE }
+                        else -> unlockWith(password, false) { step = Step.PASSPHRASE }
                     }
                 }
             } catch (e: Throwable) {
@@ -242,8 +248,13 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
-    private fun doUnlock(password: String) = unlockWith(password) { msg ->
+    private fun doUnlock(password: String) = unlockWith(password, false) { msg ->
         notice = msg ?: "Unlock failed"
+    }
+
+    /** The recovery-key pane's way in (S3d): the32-byte key as hex. */
+    private fun doRecovery(key: String) = unlockWith(key, true) { msg ->
+        notice = msg ?: "Recovery failed"
     }
 
     /**
@@ -253,13 +264,25 @@ class MainActivity : ComponentActivity() {
      * web's handoff failing is "the pane is the fallback, not an
      * error"), the same screen with a message when typed there.
      */
-    private fun unlockWith(password: String, onFail: (String?) -> Unit) {
+    private fun unlockWith(secret: String, recovery: Boolean, onFail: (String?) -> Unit) {
         val material = keysJson ?: return
         busy = true
         notice = null
         Thread {
             try {
-                val packed = FxCore.unlock(material, password)
+                val packed = if (recovery) {
+                    FxCore.unlockWithRecovery(material, secret)
+                } else {
+                    FxCore.unlock(material, secret)
+                }
+                // The private half rides along in the packed session
+                // (S2's promise): open every share envelope now (5.5),
+                // before the first listing needs them.
+                if (packed.size > 36 && myUsername.isNotEmpty()) {
+                    api?.let { c ->
+                        Chain.openShares(c, myUsername, packed.copyOfRange(36, packed.size))
+                    }
+                }
                 runOnUiThread {
                     packedSession = packed
                     rootKey = packed.copyOfRange(0, 32)
@@ -666,40 +689,65 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun UnlockUi() {
-        var password by remember { mutableStateOf("") }
+        var secret by remember { mutableStateOf("") }
+        var recovery by remember { mutableStateOf(false) }
         Column(
             Modifier.fillMaxSize().padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.Center
         ) {
-            Text("This account is encrypted.")
+            Text(
+                if (recovery) "Lost the passphrase?"
+                else "This account is encrypted."
+            )
             Spacer(Modifier.height(4.dp))
             Text(
-                "Enter your storage passphrase to unlock it for this session.",
+                if (recovery) {
+                    "Enter the32-byte recovery key as hex (grouping is ignored)."
+                } else {
+                    "Enter your storage passphrase to unlock it for this session."
+                },
                 fontSize = 14.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
             )
             Spacer(Modifier.height(16.dp))
             OutlinedTextField(
-                password, { password = it },
-                label = { Text("Storage passphrase") },
+                secret, { secret = it },
+                label = {
+                    Text(if (recovery) "Recovery key (hex)" else "Storage passphrase")
+                },
                 singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
+                visualTransformation = if (recovery) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
                 modifier = Modifier.fillMaxWidth()
             )
             Spacer(Modifier.height(16.dp))
             Button(
-                { doUnlock(password) },
-                enabled = !busy && password.isNotBlank(),
+                {
+                    if (recovery) doRecovery(secret) else doUnlock(secret)
+                },
+                enabled = !busy && secret.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 if (busy) {
                     CircularProgressIndicator(Modifier.height(18.dp).width(18.dp), strokeWidth = 2.dp)
                 } else {
-                    Text("Unlock")
+                    Text(if (recovery) "Unlock with recovery key" else "Unlock")
                 }
             }
+            TextButton({
+                recovery = !recovery
+                secret = ""
+                notice = null
+            }) {
+                Text(
+                    if (recovery) "Use the passphrase instead"
+                    else "Forgot the passphrase? Use the recovery key"
+                )
+            }
             notice?.let {
-                Spacer(Modifier.height(8.dp))
                 Text(it, color = MaterialTheme.colorScheme.error)
             }
         }

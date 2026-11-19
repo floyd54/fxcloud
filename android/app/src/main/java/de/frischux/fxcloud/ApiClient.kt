@@ -88,11 +88,15 @@ class ApiClient(var baseUrl: String) {
         if (token.isNotEmpty()) sessionCookie = token
     }
 
-    /** GET /api/me - who am I (id for mount detection), flat JSON. */
-    fun me(): Long {
+    /** Who am I: id (mount detection) and username - the grantee the
+     *  share AAD binds to - flat JSON from GET /api/me. */
+    data class Me(val id: Long, val username: String)
+
+    fun me(): Me {
         val reply = get("/api/me")
         require(reply.code == 200) { "session expired (${reply.code})" }
-        return JSONObject(reply.body).optLong("id", -1)
+        val o = JSONObject(reply.body)
+        return Me(o.optLong("id", -1), o.optString("username", ""))
     }
 
     /**

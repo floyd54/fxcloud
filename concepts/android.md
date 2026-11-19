@@ -128,9 +128,10 @@ public-link management, admin dialog (web only).
 
 Status: S1 shipped (on-device pass done). S2 on the device: sign-in,
 one-event unlock, tree with path bar, back gesture and header logout
-confirmed by the user; preview and upload arrive with S3 (design
-below). The BOM stays at `2026.06.01` because newer ones demand an
-unreleased `compileSdk 37` (see `android/README.md`).
+confirmed by the user. S3: primitives, preview and upload confirmed on
+the device; S3d (recovery pane, envelope-opened mounts) built, device
+pass pending. The BOM stays at `2026.06.01` because newer ones demand
+an unreleased `compileSdk 37` (see `android/README.md`).
 
 ## S3 design (crypto flows)
 
