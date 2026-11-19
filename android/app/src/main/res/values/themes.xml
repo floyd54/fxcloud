@@ -1,13 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The proven S1 window: Material.Light with an action bar + an
-     inflated layout was the combination that rendered on the first
-     real device (the two prior builds, NoActionBar + programmatic
-     view, showed a blank screen - the exact culprit between those two
-     changes was never isolated, so this stays the shape that works).
-     The window background matches the content panel so nothing flashes
-     green-ish or white before the first frame. -->
+<!-- The proven S1 window: Material.Light parent with an inflated layout
+     was the combination that rendered on the first real device (an
+     earlier NoActionBar build also swapped in a programmatic view and
+     showed a blank screen - the culprit between those two changes was
+     never isolated, so setContentView on an XML layout stays). The
+     ActionBar itself only duplicated the XML header on device and cost
+     a bar of height (device pass), so the window's title features are
+     off while everything else stays as it was. The window background
+     matches the content panel so nothing flashes green-ish or white
+     before the first frame. -->
 <resources>
     <style name="Theme.Fxcloud" parent="@android:style/Theme.Material.Light">
         <item name="android:windowBackground">#14161B</item>
+        <!-- The title bar showed the app label a second time; the XML
+             header carries the name and the Logout. -->
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <!-- Keep the system strip the window's own colour instead of the
+             light theme's default, so the top of the screen stays one
+             dark unit (the icons flip to light automatically). -->
+        <item name="android:statusBarColor">#14161B</item>
     </style>
 </resources>
