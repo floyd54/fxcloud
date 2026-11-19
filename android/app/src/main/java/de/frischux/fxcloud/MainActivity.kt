@@ -3,6 +3,7 @@ package de.frischux.fxcloud
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -35,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -75,8 +77,17 @@ class MainActivity : ComponentActivity() {
     private var crumbs by mutableStateOf<List<Crumb>>(emptyList())
     private var parent by mutableStateOf<Long?>(null)
 
+    /** Folder ids visited since the root - what the system back button
+     *  walks out of (UI thread only). */
+    private val history = ArrayList<Long?>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Back walks the tree instead of closing the app: up one level,
+        // at the passphrase back to the sign-in, at the root out.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = goBack()
+        })
         try {
             setContentView(R.layout.activity_main)
             findViewById<ComposeView>(R.id.compose).setContent { AppUi() }
@@ -149,11 +160,18 @@ class MainActivity : ComponentActivity() {
                     myId = id
                     keysJson = keys
                     busy = false
-                    if (keys != null) {
-                        step = Step.PASSPHRASE
-                    } else {
-                        step = Step.FILES
-                        loadTree()
+                    history.clear()
+                    when {
+                        keys == null -> {
+                            step = Step.FILES
+                            loadTree()
+                        }
+                        // One event (DECISION 3): unless the account opted
+                        // into a separate storage secret, the password just
+                        // signed in with unlocks right away - the web
+                        // carries it across its redirect the same way.
+                        separatePassphrase(keys) -> step = Step.PASSPHRASE
+                        else -> unlockWith(password) { step = Step.PASSPHRASE }
                     }
                 }
             } catch (e: Throwable) {
@@ -165,19 +183,27 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
-    private fun doUnlock(password: String) {
+    private fun doUnlock(password: String) = unlockWith(password) { msg ->
+        notice = msg ?: "Unlock failed"
+    }
+
+    /**
+     * Argon2id and the ARK chain run in Rust (S2a); a wrong secret
+     * throws with the unified unwrap message. `onFail` decides where a
+     * failure lands - the passphrase screen after a fresh sign-in (the
+     * web's handoff failing is "the pane is the fallback, not an
+     * error"), the same screen with a message when typed there.
+     */
+    private fun unlockWith(password: String, onFail: (String?) -> Unit) {
         val material = keysJson ?: return
         busy = true
         notice = null
         Thread {
             try {
-                // Argon2id and the ARK chain run in Rust (S2a); throws on a
-                // wrong passphrase with the unified unwrap message.
                 val packed = FxCore.unlock(material, password)
-                val root = packed.copyOfRange(0, 32)
                 runOnUiThread {
                     packedSession = packed
-                    rootKey = root
+                    rootKey = packed.copyOfRange(0, 32)
                     busy = false
                     step = Step.FILES
                     loadTree()
@@ -185,10 +211,18 @@ class MainActivity : ComponentActivity() {
             } catch (e: Throwable) {
                 runOnUiThread {
                     busy = false
-                    notice = e.message ?: "Unlock failed"
+                    onFail(e.message)
                 }
             }
         }.start()
+    }
+
+    /** The web's handoff skips accounts that chose their own storage
+     *  secret (kdf_params.secret === "separate"). */
+    private fun separatePassphrase(keys: String): Boolean = try {
+        JSONObject(keys).optJSONObject("kdf_params")?.optString("secret") == "separate"
+    } catch (e: Throwable) {
+        false
     }
 
     private fun logout() {
@@ -201,6 +235,7 @@ class MainActivity : ComponentActivity() {
         rows = emptyList()
         crumbs = emptyList()
         parent = null
+        history.clear()
         notice = null
         step = Step.LOGIN
     }
@@ -262,8 +297,25 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openFolder(id: Long?) {
+        history.add(parent)
         parent = id
         loadTree()
+    }
+
+    /** System back: up one directory (history, like the browser's),
+     *  back to sign-in from the passphrase, out of the app at the root. */
+    private fun goBack() {
+        when {
+            step == Step.FILES && history.isNotEmpty() -> {
+                parent = history.removeAt(history.size - 1)
+                loadTree()
+            }
+            step == Step.PASSPHRASE -> {
+                notice = null
+                step = Step.LOGIN
+            }
+            else -> finish()
+        }
     }
 
     private fun onRow(row: Row) {
@@ -392,17 +444,30 @@ class MainActivity : ComponentActivity() {
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // The path bar, the web's renderBreadcrumb in kind:
+                // earlier segments are links, the current one is text,
+                // separated by "›" (app.js uses the same three parts).
                 Row(
                     Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     crumbs.forEachIndexed { i, crumb ->
-                        TextButton({
-                            if (crumb.id != parent) openFolder(crumb.id)
-                        }) {
-                            Text(if (i == 0) "\u2302" else crumb.name, maxLines = 1)
+                        if (i > 0) {
+                            Text(
+                                "›",
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                modifier = Modifier.padding(horizontal = 2.dp)
+                            )
                         }
-                        if (i < crumbs.lastIndex) Text("/")
+                        if (i == crumbs.lastIndex) {
+                            Text(crumb.name, maxLines = 1, fontWeight = FontWeight.Medium)
+                        } else {
+                            TextButton({
+                                if (crumb.id != parent) openFolder(crumb.id)
+                            }) {
+                                Text(crumb.name, maxLines = 1)
+                            }
+                        }
                     }
                 }
                 if (busy) {
