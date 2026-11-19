@@ -126,9 +126,28 @@ public-link management, admin dialog (web only).
 | S4 shares + device | share dialog with fingerprints, revoke, re-key/rotate entry points as they make sense on a phone, Keystore auto-unlock (+ the fxcffi device-blob pair) |
 | S5 polish + store | versions, trash, settings parity, signing, Play listing ($25) |
 
-Status: S1 shipped (on-device pass done). S2 built - JVM vectors and CI
-green, device pass pending; the BOM stays at `2026.06.01` because newer
-ones demand an unreleased `compileSdk 37` (see `android/README.md`).
+Status: S1 shipped (on-device pass done). S2 on the device: sign-in,
+one-event unlock, tree with path bar, back gesture and header logout
+confirmed by the user; preview and upload arrive with S3 (design
+below). The BOM stays at `2026.06.01` because newer ones demand an
+unreleased `compileSdk 37` (see `android/README.md`).
+
+## S3 design (crypto flows)
+
+Four flows in four sub-slices; every crypto step is a call into the
+`fxcffi` C ABI (the one the vectors pin) and every request shape
+mirrors the web twin (`app.js` / `fxenc.js`).
+
+| Sub-slice | Contents |
+|-----------|----------|
+| S3a primitives | JNI: `encryptBytes`/`decryptBytes` (FXE1, bound to the file id - a row move fails decryption, as on the web), `unlockWithRecovery` (same packed session as S2), `shareEnvelopeAad`/`eciesOpen`/`eciesSeal`. Golden pins: `fx1-vectors.json` (read side - the write side is the JS roundtrip's), `recovery_open`, `ecies_open`, `ecies_seal` (error cases; success = seal->open roundtrip, the envelope carries an ephemeral key). |
+| S3b preview | file tap -> `GET /api/files/download?id=` -> content key (`Chain.keyFor` + `unwrapChild` on the row's `enc_key`) -> `decryptBytes` -> render. v1 renders image and text; the web's other `PREVIEW_EXT` kinds (video/audio/pdf/html) say so instead of pretending. Plaintext rows preview straight with the server's mime, encrypted rows decide by extension because the server only ever answers `octet-stream`. Whole file into memory - streaming/range is deliberately later. |
+| S3c upload | `POST /api/files/file` (random temp name under a `names_enc` folder, then `rename` to the id-bound blob - N3/N5), fresh file key, wrap under the destination folder's key (`PUT /api/files/key` gives a recordless folder one first, mirror `ensureChainKey`), `encryptBytes`, `PUT /api/files/content?id=&enc=1&key=`. A plaintext account takes the same path without `enc`. v1 = one file at a time; folder trees come later. |
+| S3d recovery + share envelopes | recovery pane on the passphrase screen (32-byte key typed as hex -> `unlockWithRecovery`, packed session exactly as S2); incoming share envelopes open with the packed session's private key (`eciesOpen` + `share_envelope_aad`) so mounts show real names and their subtree keys instead of S2's `(encrypted)` placeholders; `eciesSeal` lands the primitive S4's share dialog uses. |
+
+Rules carried over: one undecryptable row shows the placeholder and
+never takes a listing or preview down (S2's rule); nothing key-shaped
+is ever written to prefs or logs (DECISION 7).
 
 ## Tests
 

@@ -37,6 +37,54 @@ object FxCore {
      * twin's null. Blobs may be standard or URL-safe base64.
      */
     external fun unwrapChild(parentKey: ByteArray, childId: Long, wrapped: String): ByteArray
+
+    /**
+     * FXE1-encrypt a file body (S3): file id +32-byte content key in,
+     * the container out - bound to the id, a row move fails decryption.
+     */
+    external fun encryptBytes(fileId: Long, key: ByteArray, plain: ByteArray): ByteArray
+
+    /**
+     * Decrypt an FXE1 container (S3); wrong key, wrong id, tampering
+     * and non-containers arrive as FX_ERR_* exceptions.
+     */
+    external fun decryptBytes(fileId: Long, key: ByteArray, container: ByteArray): ByteArray
+
+    /**
+     * Open the account with the32-byte recovery key (S3): hex in, the
+     * same packed session unlock returns. Grouping spaces/dashes in the
+     * typed key are ignored.
+     */
+    external fun unlockWithRecovery(keysJson: String, recoveryKeyHex: String): ByteArray
+
+    /**
+     * The AAD binding a share envelope to source id + grantee (5.5) -
+     * an envelope from another share or user cannot open.
+     */
+    external fun shareEnvelopeAad(sourceId: Long, grantee: String): ByteArray
+
+    /**
+     * Open an envelope sealed to me with my pkcs8 (S3/S4): the share
+     * record out; wrong recipient, tampering or a foreign AAD throw the
+     * unified FX_ERR_UNWRAP.
+     */
+    external fun eciesOpen(
+        envelope: ByteArray,
+        recipientPkcs8: ByteArray,
+        sourceId: Long,
+        grantee: String
+    ): ByteArray
+
+    /**
+     * Seal a share record to a recipient's public key (S4's primitive,
+     * landed in S3): ephemeral key inside, bytes fresh every call.
+     */
+    external fun eciesSeal(
+        recipientPublic: ByteArray,
+        plain: ByteArray,
+        sourceId: Long,
+        grantee: String
+    ): ByteArray
 }
 
 /** Hex string -> bytes; the golden fixtures speak hex and base64. */

@@ -152,74 +152,92 @@ pub extern "system" fn Java_de_frischux_fxcloud_FxCore_unlock(
     }
 }
 
-fn unlock_impl(env: &mut JNIEnv, keys: &JString, passphrase: &JString) -> Result<Vec<u8>, String> {
-    let keys_json = String::from(env.get_string(keys).map_err(|e| format!("keys: {e}"))?);
-    let pass = String::from(
-        env.get_string(passphrase)
-            .map_err(|e| format!("passphrase: {e}"))?,
-    );
-    let payload: KeysPayload =
-        serde_json::from_str(&keys_json).map_err(|e| format!("keys json: {e}"))?;
-    let b64 = |s: &str| {
-        base64::engine::general_purpose::STANDARD
-            .decode(s)
-            .map_err(|e| format!("base64: {e}"))
-    };
-    // Decode first, then borrow into the C struct: the Vecs must outlive
-    // the call (the same discipline every C caller of fxcffi follows).
-    let kdf_salt = b64(&payload.kdf_salt)?;
-    let wrapped_ark = b64(&payload.wrapped_ark)?;
-    let wrapped_root_key = b64(&payload.wrapped_root_key)?;
-    let private_key_wrapped = b64(&payload.private_key_wrapped)?;
-    let public_key = b64(&payload.public_key)?;
-    let wrapped_ark_recovery = b64(&payload.wrapped_ark_recovery)?;
-    let borrow = |v: &Vec<u8>| fxcffi::FxBytes {
-        ptr: v.as_ptr() as *mut u8,
-        len: v.len(),
-    };
-    let account = fxcffi::FxAccountKeys {
-        kdf_salt: borrow(&kdf_salt),
-        wrapped_ark: borrow(&wrapped_ark),
-        wrapped_root_key: borrow(&wrapped_root_key),
-        private_key_wrapped: borrow(&private_key_wrapped),
-        public_key: borrow(&public_key),
-        wrapped_ark_recovery: borrow(&wrapped_ark_recovery),
-        kdf_m: payload.kdf_params.m.unwrap_or(0),
-        kdf_t: payload.kdf_params.t.unwrap_or(0),
-        kdf_p: payload.kdf_params.p.unwrap_or(0),
-    };
-    let c_pass =
-        std::ffi::CString::new(pass).map_err(|_| "passphrase contains a NUL".to_string())?;
+/// The account material decoded from the /api/keys/me JSON: the Vecs the
+/// C struct borrows from, so they outlive the call - the same discipline
+/// every C caller of fxcffi follows.
+struct DecodedKeys {
+    kdf_salt: Vec<u8>,
+    wrapped_ark: Vec<u8>,
+    wrapped_root_key: Vec<u8>,
+    private_key_wrapped: Vec<u8>,
+    public_key: Vec<u8>,
+    wrapped_ark_recovery: Vec<u8>,
+    kdf_m: u32,
+    kdf_t: u32,
+    kdf_p: u32,
+}
+
+impl DecodedKeys {
+    fn from_json(keys_json: &str) -> Result<Self, String> {
+        let payload: KeysPayload =
+            serde_json::from_str(keys_json).map_err(|e| format!("keys json: {e}"))?;
+        let b64 = |s: &str| {
+            base64::engine::general_purpose::STANDARD
+                .decode(s)
+                .map_err(|e| format!("base64: {e}"))
+        };
+        Ok(Self {
+            kdf_salt: b64(&payload.kdf_salt)?,
+            wrapped_ark: b64(&payload.wrapped_ark)?,
+            wrapped_root_key: b64(&payload.wrapped_root_key)?,
+            private_key_wrapped: b64(&payload.private_key_wrapped)?,
+            public_key: b64(&payload.public_key)?,
+            wrapped_ark_recovery: b64(&payload.wrapped_ark_recovery)?,
+            kdf_m: payload.kdf_params.m.unwrap_or(0),
+            kdf_t: payload.kdf_params.t.unwrap_or(0),
+            kdf_p: payload.kdf_params.p.unwrap_or(0),
+        })
+    }
+
+    fn account(&self) -> fxcffi::FxAccountKeys {
+        let borrow = |v: &Vec<u8>| fxcffi::FxBytes {
+            ptr: v.as_ptr() as *mut u8,
+            len: v.len(),
+        };
+        fxcffi::FxAccountKeys {
+            kdf_salt: borrow(&self.kdf_salt),
+            wrapped_ark: borrow(&self.wrapped_ark),
+            wrapped_root_key: borrow(&self.wrapped_root_key),
+            private_key_wrapped: borrow(&self.private_key_wrapped),
+            public_key: borrow(&self.public_key),
+            wrapped_ark_recovery: borrow(&self.wrapped_ark_recovery),
+            kdf_m: self.kdf_m,
+            kdf_t: self.kdf_t,
+            kdf_p: self.kdf_p,
+        }
+    }
+}
+
+fn empty_session() -> fxcffi::FxSession {
     let empty = || fxcffi::FxBytes {
         ptr: std::ptr::null_mut(),
         len: 0,
     };
-    let mut out = fxcffi::FxSession {
+    fxcffi::FxSession {
         ark: empty(),
         root_key: empty(),
         private_key_pkcs8: empty(),
         public_blob: empty(),
         suite: 0,
-    };
-    // SAFETY: the account borrows live Vecs, the passphrase is NUL-
-    // terminated, out is our local - all valid for the duration of the
-    // call, which is exactly fxcffi.h's contract.
-    let code = unsafe { fxcffi::fx_unlock_account(&account, c_pass.as_ptr(), &mut out) };
-    let read = |b: &fxcffi::FxBytes| -> Vec<u8> {
-        if b.ptr.is_null() {
-            Vec::new()
-        } else {
-            // SAFETY: the core filled this buffer; copied before free.
-            unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
-        }
-    };
-    let root = read(&out.root_key);
-    let pkcs8 = read(&out.private_key_pkcs8);
-    // SAFETY: a session from fx_unlock_account goes back through its free.
-    unsafe { fxcffi::fx_session_free(&mut out) };
-    if code != fxcffi::FX_OK {
-        return Err(format!("unlock: {}", unsafe_name(code)));
     }
+}
+
+fn read_bytes(b: &fxcffi::FxBytes) -> Vec<u8> {
+    if b.ptr.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: the core filled this buffer; copied before free.
+        unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
+    }
+}
+
+/// Read a session's root key and pkcs8, release it, and pack them the
+/// way Kotlin expects: root(32) || u32be(pkcs8_len) || pkcs8.
+fn take_packed_session(out: &mut fxcffi::FxSession) -> Result<Vec<u8>, String> {
+    let root = read_bytes(&out.root_key);
+    let pkcs8 = read_bytes(&out.private_key_pkcs8);
+    // SAFETY: a session from fxcffi goes back through its free, once.
+    unsafe { fxcffi::fx_session_free(out) };
     if root.len() != 32 {
         return Err(format!("root key is {} bytes", root.len()));
     }
@@ -228,6 +246,69 @@ fn unlock_impl(env: &mut JNIEnv, keys: &JString, passphrase: &JString) -> Result
     packed.extend_from_slice(&(pkcs8.len() as u32).to_be_bytes());
     packed.extend_from_slice(&pkcs8);
     Ok(packed)
+}
+
+/// The recovery key as the web shows it: hex, possibly grouped with
+/// spaces or dashes - anything that is not a hex digit is dropped.
+fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
+    let filtered: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if filtered.is_empty() || !filtered.len().is_multiple_of(2) {
+        return Err("recovery key is not hex".to_string());
+    }
+    (0..filtered.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&filtered[i..i + 2], 16).map_err(|e| e.to_string()))
+        .collect()
+}
+
+fn unlock_impl(env: &mut JNIEnv, keys: &JString, passphrase: &JString) -> Result<Vec<u8>, String> {
+    let keys_json = String::from(env.get_string(keys).map_err(|e| format!("keys: {e}"))?);
+    let pass = String::from(
+        env.get_string(passphrase)
+            .map_err(|e| format!("passphrase: {e}"))?,
+    );
+    let decoded = DecodedKeys::from_json(&keys_json)?;
+    let account = decoded.account();
+    let c_pass =
+        std::ffi::CString::new(pass).map_err(|_| "passphrase contains a NUL".to_string())?;
+    let mut out = empty_session();
+    // SAFETY: the account borrows live Vecs, the passphrase is NUL-
+    // terminated, out is our local - all valid for the duration of the
+    // call, which is exactly fxcffi.h's contract.
+    let code = unsafe { fxcffi::fx_unlock_account(&account, c_pass.as_ptr(), &mut out) };
+    let packed = take_packed_session(&mut out);
+    if code != fxcffi::FX_OK {
+        return Err(format!("unlock: {}", unsafe_name(code)));
+    }
+    packed
+}
+
+/// The same session, opened with the recovery key instead of the
+/// passphrase (S3: `unlock (passphrase + recovery)`).
+fn unlock_recovery_impl(
+    env: &mut JNIEnv,
+    keys: &JString,
+    recovery_hex: &JString,
+) -> Result<Vec<u8>, String> {
+    let keys_json = String::from(env.get_string(keys).map_err(|e| format!("keys: {e}"))?);
+    let hex = String::from(
+        env.get_string(recovery_hex)
+            .map_err(|e| format!("recovery key: {e}"))?,
+    );
+    let decoded = DecodedKeys::from_json(&keys_json)?;
+    let account = decoded.account();
+    let recovery = decode_hex(&hex)?;
+    let mut out = empty_session();
+    // SAFETY: account borrows live Vecs, recovery is our own buffer,
+    // out is our local - all valid for the call (fxcffi.h's contract).
+    let code = unsafe {
+        fxcffi::fx_open_with_recovery(&account, recovery.as_ptr(), recovery.len(), &mut out)
+    };
+    let packed = take_packed_session(&mut out);
+    if code != fxcffi::FX_OK {
+        return Err(format!("recovery: {}", unsafe_name(code)));
+    }
+    packed
 }
 
 /// Unwrap a child record or a wrapped name under its parent key:
@@ -337,4 +418,284 @@ fn unsafe_name(code: i32) -> String {
             .to_string_lossy()
             .into_owned()
     }
+}
+
+// ---- S3: content crypto, recovery sessions, share envelopes -------------
+
+fn empty_bytes() -> fxcffi::FxBytes {
+    fxcffi::FxBytes {
+        ptr: std::ptr::null_mut(),
+        len: 0,
+    }
+}
+
+fn bytes_arg(env: &mut JNIEnv, arr: &JByteArray, what: &str) -> Result<Vec<u8>, String> {
+    env.convert_byte_array(arr)
+        .map_err(|e| format!("{what}: {e}"))
+}
+
+/// Copy an fxcffi result out, release it, and translate a failing code
+/// into the exception text (the code name, as everywhere in this glue).
+fn take_out(code: i32, out: &mut fxcffi::FxBytes, what: &str) -> Result<Vec<u8>, String> {
+    let bytes = read_bytes(out);
+    // SAFETY: a buffer from fxcffi goes back through fx_free (NULL is a no-op).
+    unsafe { fxcffi::fx_free(out.ptr, out.len) };
+    if code != fxcffi::FX_OK {
+        return Err(format!("{what}: {}", unsafe_name(code)));
+    }
+    Ok(bytes)
+}
+
+/// The AAD binding a share envelope to its source id and grantee (5.5).
+fn envelope_aad(source_id: u64, grantee: &std::ffi::CStr) -> Result<Vec<u8>, String> {
+    let mut out = empty_bytes();
+    // SAFETY: grantee is our CString, out is our local.
+    let code = unsafe { fxcffi::fx_share_envelope_aad(source_id, grantee.as_ptr(), &mut out) };
+    take_out(code, &mut out, "envelope aad")
+}
+
+fn to_jbytes(env: &mut JNIEnv, result: Result<Vec<u8>, String>) -> jni::sys::jbyteArray {
+    match result {
+        Ok(bytes) => match env.byte_array_from_slice(&bytes) {
+            Ok(arr) => arr.into_raw(),
+            Err(e) => {
+                let _ = env.throw_new("java/lang/IllegalStateException", e.to_string());
+                std::ptr::null_mut()
+            }
+        },
+        Err(msg) => {
+            let _ = env.throw_new("java/lang/RuntimeException", &msg);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// FXE1-encrypt a file body (S3): file id +32-byte content key in, the
+/// container the server stores without reading it out. Bound to the id:
+/// a row move fails decryption, exactly like the web's write side.
+///
+/// # Safety
+/// Standard JNI contract: the arrays are valid JVM objects for this call.
+#[no_mangle]
+pub extern "system" fn Java_de_frischux_fxcloud_FxCore_encryptBytes(
+    mut env: JNIEnv,
+    _class: JClass,
+    file_id: jni::sys::jlong,
+    key: JByteArray,
+    plain: JByteArray,
+) -> jni::sys::jbyteArray {
+    let result = encrypt_impl(&mut env, file_id, &key, &plain);
+    to_jbytes(&mut env, result)
+}
+
+fn encrypt_impl(
+    env: &mut JNIEnv,
+    file_id: jni::sys::jlong,
+    key: &JByteArray,
+    plain: &JByteArray,
+) -> Result<Vec<u8>, String> {
+    let key = bytes_arg(env, key, "key")?;
+    let plain = bytes_arg(env, plain, "plain")?;
+    let mut out = empty_bytes();
+    // SAFETY: our copies are readable for their lengths, out is local.
+    let code = unsafe {
+        fxcffi::fx1_encrypt(
+            file_id as u64,
+            key.as_ptr(),
+            key.len(),
+            plain.as_ptr(),
+            plain.len(),
+            &mut out,
+        )
+    };
+    take_out(code, &mut out, "encrypt")
+}
+
+/// Decrypt an FXE1 container (S3 read side); wrong key, wrong id,
+/// tampering and non-containers all arrive as `FX_ERR_*` exceptions.
+///
+/// # Safety
+/// Standard JNI contract: the arrays are valid JVM objects for this call.
+#[no_mangle]
+pub extern "system" fn Java_de_frischux_fxcloud_FxCore_decryptBytes(
+    mut env: JNIEnv,
+    _class: JClass,
+    file_id: jni::sys::jlong,
+    key: JByteArray,
+    container: JByteArray,
+) -> jni::sys::jbyteArray {
+    let result = decrypt_impl(&mut env, file_id, &key, &container);
+    to_jbytes(&mut env, result)
+}
+
+fn decrypt_impl(
+    env: &mut JNIEnv,
+    file_id: jni::sys::jlong,
+    key: &JByteArray,
+    container: &JByteArray,
+) -> Result<Vec<u8>, String> {
+    let key = bytes_arg(env, key, "key")?;
+    let container = bytes_arg(env, container, "container")?;
+    let mut out = empty_bytes();
+    // SAFETY: our copies are readable for their lengths, out is local.
+    let code = unsafe {
+        fxcffi::fx1_decrypt(
+            file_id as u64,
+            key.as_ptr(),
+            key.len(),
+            container.as_ptr(),
+            container.len(),
+            &mut out,
+        )
+    };
+    take_out(code, &mut out, "decrypt")
+}
+
+/// Open the account with the32-byte recovery key instead of the
+/// passphrase (S3): hex in, the same packed session `unlock` returns.
+///
+/// # Safety
+/// Standard JNI contract: both strings are valid JVM objects for this call.
+#[no_mangle]
+pub extern "system" fn Java_de_frischux_fxcloud_FxCore_unlockWithRecovery(
+    mut env: JNIEnv,
+    _class: JClass,
+    keys: JString,
+    recovery_hex: JString,
+) -> jni::sys::jbyteArray {
+    let result = unlock_recovery_impl(&mut env, &keys, &recovery_hex);
+    to_jbytes(&mut env, result)
+}
+
+/// The AAD that binds a share envelope to source id + grantee (5.5),
+/// so an envelope from another share or user cannot open.
+///
+/// # Safety
+/// Standard JNI contract: both arguments are valid JVM objects.
+#[no_mangle]
+pub extern "system" fn Java_de_frischux_fxcloud_FxCore_shareEnvelopeAad(
+    mut env: JNIEnv,
+    _class: JClass,
+    source_id: jni::sys::jlong,
+    grantee: JString,
+) -> jni::sys::jbyteArray {
+    let result = share_aad_impl(&mut env, source_id, &grantee);
+    to_jbytes(&mut env, result)
+}
+
+fn share_aad_impl(
+    env: &mut JNIEnv,
+    source_id: jni::sys::jlong,
+    grantee: &JString,
+) -> Result<Vec<u8>, String> {
+    let grantee = String::from(
+        env.get_string(grantee)
+            .map_err(|e| format!("grantee: {e}"))?,
+    );
+    let c_grantee =
+        std::ffi::CString::new(grantee).map_err(|_| "grantee contains a NUL".to_string())?;
+    envelope_aad(source_id as u64, &c_grantee)
+}
+
+/// Open an envelope sealed to me with my pkcs8 (S3/S4): the share
+/// record out, `FX_ERR_UNWRAP` for a wrong recipient, a tampered blob
+/// or a foreign AAD - one message on purpose (5.5).
+///
+/// # Safety
+/// Standard JNI contract: the arrays are valid JVM objects for this call.
+#[no_mangle]
+pub extern "system" fn Java_de_frischux_fxcloud_FxCore_eciesOpen(
+    mut env: JNIEnv,
+    _class: JClass,
+    envelope: JByteArray,
+    recipient_pkcs8: JByteArray,
+    source_id: jni::sys::jlong,
+    grantee: JString,
+) -> jni::sys::jbyteArray {
+    let result = ecies_open_impl(&mut env, &envelope, &recipient_pkcs8, source_id, &grantee);
+    to_jbytes(&mut env, result)
+}
+
+fn ecies_open_impl(
+    env: &mut JNIEnv,
+    envelope: &JByteArray,
+    recipient_pkcs8: &JByteArray,
+    source_id: jni::sys::jlong,
+    grantee: &JString,
+) -> Result<Vec<u8>, String> {
+    let envelope = bytes_arg(env, envelope, "envelope")?;
+    let pkcs8 = bytes_arg(env, recipient_pkcs8, "recipient key")?;
+    let grantee = String::from(
+        env.get_string(grantee)
+            .map_err(|e| format!("grantee: {e}"))?,
+    );
+    let c_grantee =
+        std::ffi::CString::new(grantee).map_err(|_| "grantee contains a NUL".to_string())?;
+    let aad = envelope_aad(source_id as u64, &c_grantee)?;
+    let mut out = empty_bytes();
+    // SAFETY: our copies and the aad are readable, out is local.
+    let code = unsafe {
+        fxcffi::fx_ecies_open(
+            pkcs8.as_ptr(),
+            pkcs8.len(),
+            envelope.as_ptr(),
+            envelope.len(),
+            aad.as_ptr(),
+            aad.len(),
+            &mut out,
+        )
+    };
+    take_out(code, &mut out, "ecies open")
+}
+
+/// Seal a share record to a recipient's public key (the primitive S4's
+/// share dialog calls): ephemeral key inside, so the envelope bytes are
+/// fresh every time - the golden pin is the error side plus a
+/// seal->open roundtrip on the JVM.
+///
+/// # Safety
+/// Standard JNI contract: the arrays are valid JVM objects for this call.
+#[no_mangle]
+pub extern "system" fn Java_de_frischux_fxcloud_FxCore_eciesSeal(
+    mut env: JNIEnv,
+    _class: JClass,
+    recipient_public: JByteArray,
+    plain: JByteArray,
+    source_id: jni::sys::jlong,
+    grantee: JString,
+) -> jni::sys::jbyteArray {
+    let result = ecies_seal_impl(&mut env, &recipient_public, &plain, source_id, &grantee);
+    to_jbytes(&mut env, result)
+}
+
+fn ecies_seal_impl(
+    env: &mut JNIEnv,
+    recipient_public: &JByteArray,
+    plain: &JByteArray,
+    source_id: jni::sys::jlong,
+    grantee: &JString,
+) -> Result<Vec<u8>, String> {
+    let recipient = bytes_arg(env, recipient_public, "recipient public key")?;
+    let plain = bytes_arg(env, plain, "plain")?;
+    let grantee = String::from(
+        env.get_string(grantee)
+            .map_err(|e| format!("grantee: {e}"))?,
+    );
+    let c_grantee =
+        std::ffi::CString::new(grantee).map_err(|_| "grantee contains a NUL".to_string())?;
+    let aad = envelope_aad(source_id as u64, &c_grantee)?;
+    let mut out = empty_bytes();
+    // SAFETY: our copies and the aad are readable, out is local.
+    let code = unsafe {
+        fxcffi::fx_ecies_seal(
+            recipient.as_ptr(),
+            recipient.len(),
+            plain.as_ptr(),
+            plain.len(),
+            aad.as_ptr(),
+            aad.len(),
+            &mut out,
+        )
+    };
+    take_out(code, &mut out, "ecies seal")
 }
