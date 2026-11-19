@@ -209,6 +209,125 @@ class ApiClient(var baseUrl: String) {
         }
     }
 
+    // ------------------------------------------------------------ sharing (S4a)
+
+    /** One account as the share dialog lists it (GET /api/users). */
+    data class Target(val username: String, val displayName: String, val active: Boolean)
+
+    fun users(): List<Target> {
+        val reply = get("/api/users")
+        if (reply.code != 200) serverError(reply, "Accounts")
+        val arr = JSONArray(reply.body)
+        val out = ArrayList<Target>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            out.add(
+                Target(
+                    o.getString("username"),
+                    o.optString("display_name", ""),
+                    o.optBoolean("is_active", true)
+                )
+            )
+        }
+        return out
+    }
+
+    /** The grantee's public key + fingerprint; null on404 - the account
+     *  has no key row and can only receive plaintext shares. */
+    data class PublicKey(val public: String, val fingerprint: String)
+
+    fun publicKeyOf(username: String): PublicKey? {
+        val reply = get("/api/keys/" + URLEncoder.encode(username, "UTF-8"))
+        if (reply.code == 404) return null
+        if (reply.code != 200) serverError(reply, "Public key")
+        val key = JSONObject(reply.body).getJSONObject("key")
+        return PublicKey(key.getString("public_key"), key.getString("fingerprint"))
+    }
+
+    /** One share I created (GET /api/shares/outgoing[?file_id=]). */
+    data class Outgoing(
+        val id: Long,
+        val fileId: Long,
+        val username: String,
+        val permissions: Int,
+        val permissionNames: List<String>
+    )
+
+    fun outgoingShares(fileId: Long?): List<Outgoing> {
+        val path = if (fileId == null) {
+            "/api/shares/outgoing"
+        } else {
+            "/api/shares/outgoing?file_id=$fileId"
+        }
+        val reply = get(path)
+        if (reply.code != 200) serverError(reply, "Outgoing shares")
+        val arr = JSONObject(reply.body).getJSONArray("shares")
+        val out = ArrayList<Outgoing>(arr.length())
+        for (i in 0 until arr.length()) {
+            val s = arr.getJSONObject(i)
+            val names = ArrayList<String>()
+            val pn = s.optJSONArray("permission_names")
+            if (pn != null) {
+                for (j in 0 until pn.length()) names.add(pn.getString(j))
+            }
+            out.add(
+                Outgoing(
+                    s.getLong("id"),
+                    s.getLong("file_id"),
+                    s.getString("username"),
+                    s.optInt("permissions", 0),
+                    names
+                )
+            )
+        }
+        return out
+    }
+
+    /**
+     * POST /api/shares/batch - the web sends a single item as a
+     * one-element array too; answers {ok: [], failed: [{id, name,
+     * error}]} (returned unparsed for the caller's notice).
+     */
+    fun shareBatch(
+        fileId: Long,
+        username: String,
+        permissions: Int,
+        envelope: String?,
+        displayName: String?
+    ): JSONObject {
+        val item = JSONObject().put("file_id", fileId)
+        if (envelope != null) item.put("envelope", envelope)
+        if (displayName != null) item.put("display_name", displayName)
+        val body = JSONObject()
+            .put("items", JSONArray().put(item))
+            .put("username", username)
+            .put("permissions", permissions)
+        val reply = post("/api/shares/batch", body)
+        if (reply.code != 200) serverError(reply, "Share")
+        return JSONObject(reply.body)
+    }
+
+    /** DELETE /api/shares/{id} - revoke one of my shares. */
+    fun revokeShare(id: Long) {
+        val conn = openRaw("/api/shares/$id", "DELETE", 15_000)
+        val code = conn.responseCode
+        if (code !in 200..299) {
+            val stream = conn.errorStream
+            val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            conn.disconnect()
+            val msg = try {
+                JSONObject(body).optString("error")
+            } catch (e: Throwable) {
+                ""
+            }
+            throw java.io.IOException(
+                if (msg.isNotEmpty()) "Revoke: $msg" else "Revoke ($code)"
+            )
+        }
+        conn.inputStream.use { it.readBytes() }
+        conn.disconnect()
+    }
+
     /** GET /api/keys/me - the wrapped material, or null when the
      *  account has no encryption set up (404 is the normal answer). */
     fun keysOrNull(): String? {

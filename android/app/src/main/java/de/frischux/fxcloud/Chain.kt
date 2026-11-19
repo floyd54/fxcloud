@@ -60,7 +60,8 @@ object Chain {
         grantee = null
     }
 
-    private fun b64d(s: String): ByteArray = try {
+    /** One decoder for both encodings (standard and url-safe). */
+    fun decodeB64(s: String): ByteArray = try {
         Base64.getDecoder().decode(s)
     } catch (e: Throwable) {
         Base64.getUrlDecoder().decode(s)
@@ -83,7 +84,7 @@ object Chain {
             val s = shares.getJSONObject(i)
             if (s.isNull("envelope")) continue // plaintext share: nothing sealed
             try {
-                val envelope = b64d(s.getString("envelope"))
+                val envelope = decodeB64(s.getString("envelope"))
                 val sourceId = s.getLong("file_id")
                 shareKeys[sourceId] = FxCore.eciesOpen(envelope, pkcs8, sourceId, username)
                 opened++
@@ -181,6 +182,72 @@ object Chain {
         }
         cache[folderId] = key
         return key
+    }
+
+    /**
+     * The value an envelope seals (5.5): the folder's key - after the
+     * web's ensureChainKey plus the keySubtree fix-up - or the file's
+     * content key; null when there is nothing to seal (plaintext row).
+     */
+    fun shareSealValue(api: ApiClient, rootKey: ByteArray, entry: Row): ByteArray? {
+        if (entry.isDir) {
+            val folderKey = ensureKey(api, rootKey, entry.id)
+            rebindSubtree(api, rootKey, entry.id)
+            return folderKey
+        }
+        if (entry.encVersion > 0 && entry.encKey != null) {
+            val parentKey = keyFor(api, rootKey, entry.parentId)
+            return FxCore.unwrapChild(parentKey, entry.id, entry.encKey!!)
+        }
+        return null
+    }
+
+    /**
+     * keySubtree (5.5): every encrypted file's record opens under its
+     * parent, so one envelope reaches every level below the mount.
+     * Legacy records (wrapped to the root key) are re-bound to the
+     * parent; a record that already opens where it stands is left
+     * alone - the web's unconditional re-bind, minus the writes.
+     */
+    fun rebindSubtree(api: ApiClient, rootKey: ByteArray, folderId: Long) {
+        val reply = api.get("/api/files?parent=$folderId")
+        require(reply.code == 200) { "listing: ${reply.code}" }
+        val entries = JSONObject(reply.body).getJSONArray("entries")
+        val parentKey = ensureKey(api, rootKey, folderId)
+        for (i in 0 until entries.length()) {
+            val row = Row.from(entries.getJSONObject(i))
+            if (row.isDir) {
+                rebindSubtree(api, rootKey, row.id)
+                continue
+            }
+            if (row.encVersion == 0 || row.encKey == null) continue
+            val bound = try {
+                FxCore.unwrapChild(parentKey, row.id, row.encKey!!)
+                true
+            } catch (e: Throwable) {
+                false
+            }
+            if (bound) continue
+            // Legacy flat record (5.4): wrapped straight to my root key.
+            val raw = FxCore.unwrapChild(rootKey, row.id, row.encKey!!)
+            val wrapped = FxCore.wrapChild(parentKey, row.id, raw)
+            api.putKey(row.id, java.util.Base64.getEncoder().encodeToString(wrapped))
+        }
+    }
+
+    /**
+     * The N4 display label for a name-flagged row: its key + the share
+     * AAD, url-safe like the web's b64url; null when there is no blob
+     * to write or no key to wrap it under.
+     */
+    fun shareLabel(entry: Row, sealKey: ByteArray?, grantee: String): String? {
+        if (entry.nameEnc == 0 || sealKey == null) return null
+        val wrapped = FxCore.wrap(
+            sealKey,
+            entry.name.toByteArray(Charsets.UTF_8),
+            FxCore.shareEnvelopeAad(entry.id, grantee)
+        )
+        return Base64.getUrlEncoder().encodeToString(wrapped)
     }
 
     /**

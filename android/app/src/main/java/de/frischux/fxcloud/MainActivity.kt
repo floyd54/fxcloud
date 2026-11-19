@@ -13,9 +13,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -34,8 +36,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -93,6 +99,23 @@ private class Preview(
     val text: String? = null
 )
 
+/** The confirmations the share flow needs before anything is sealed
+ *  (TOFU and the web's no-key warning - app.js confirmFingerprint). */
+private sealed class ShareDialog {
+    data class FirstUse(val user: String, val fp: String, val pub: String, val mask: Int) :
+        ShareDialog()
+
+    data class Changed(
+        val user: String,
+        val old: String,
+        val fp: String,
+        val pub: String,
+        val mask: Int
+    ) : ShareDialog()
+
+    data class NoKey(val user: String, val mask: Int) : ShareDialog()
+}
+
 /**
  * S2: sign in against a live instance, unlock the account material, list
  * the tree with its breadcrumb and decrypt names-at-rest through JNI
@@ -136,6 +159,22 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
             if (uri != null) doUpload(uri)
         }
+
+    // ------------------------------------------------------------ sharing (S4a)
+
+    /** Non-null replaces the list area with the share screen. */
+    private var shareFor by mutableStateOf<Row?>(null)
+    private var shareTargets by mutableStateOf<List<ApiClient.Target>>(emptyList())
+    private var shareOutgoing by mutableStateOf<List<ApiClient.Outgoing>>(emptyList())
+    private var shareTarget by mutableStateOf<String?>(null)
+    private var shareKey by mutableStateOf<ApiClient.PublicKey?>(null)
+    private var sharePerms by mutableStateOf(setOf(1, 2, 4, 8, 16))
+    private var shareDialog by mutableStateOf<ShareDialog?>(null)
+
+    /** The permission checkboxes of the web's share dialog, in order. */
+    private val permOptions = listOf(
+        1 to "Read", 2 to "Write", 4 to "Create", 8 to "Delete", 16 to "Share"
+    )
 
     /** Folder ids visited since the root - what the system back button
      *  walks out of (UI thread only). */
@@ -319,6 +358,12 @@ class MainActivity : ComponentActivity() {
         parent = null
         history.clear()
         preview = null
+        shareFor = null
+        shareDialog = null
+        shareTargets = emptyList()
+        shareOutgoing = emptyList()
+        shareTarget = null
+        shareKey = null
         notice = null
         step = Step.LOGIN
     }
@@ -389,8 +434,13 @@ class MainActivity : ComponentActivity() {
      *  back to sign-in from the passphrase, out of the app at the root. */
     private fun goBack() {
         when {
-            // A preview closes before the tree walks: back means "out of
-            // the file", then "up a directory", then "out of the app".
+            // The share screen closes first, then a preview, then the
+            // tree walks up; at the root of it all the app exits.
+            shareFor != null -> {
+                shareFor = null
+                shareDialog = null
+                notice = null
+            }
             preview != null -> preview = null
             step == Step.FILES && history.isNotEmpty() -> {
                 parent = history.removeAt(history.size - 1)
@@ -607,6 +657,227 @@ class MainActivity : ComponentActivity() {
         return null
     }
 
+    // ------------------------------------------------------------ sharing (S4a)
+
+    /** Long-press on a row: open the share screen and load its world. */
+    private fun openShare(row: Row) {
+        val c = api ?: return
+        if (busy) return
+        shareFor = row
+        shareTarget = null
+        shareKey = null
+        sharePerms = setOf(1, 2, 4, 8, 16)
+        shareDialog = null
+        busy = true
+        notice = null
+        Thread {
+            try {
+                val users = c.users()
+                val outgoing = c.outgoingShares(row.id)
+                runOnUiThread {
+                    shareTargets = users
+                    shareOutgoing = outgoing
+                    busy = false
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    shareFor = null
+                    notice = "Share: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    /** The grantee's fingerprint line (web's showShareFingerprint). */
+    private fun selectShareTarget(user: String) {
+        val c = api ?: return
+        shareTarget = user
+        shareKey = null
+        busy = true
+        Thread {
+            try {
+                val key = c.publicKeyOf(user)
+                runOnUiThread {
+                    shareKey = key
+                    busy = false
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = e.message
+                }
+            }
+        }.start()
+    }
+
+    /** The web's shareAdd: keys first, TOFU, then seal. */
+    private fun confirmShare() {
+        val c = api ?: return
+        val row = shareFor ?: return
+        val user = shareTarget ?: run {
+            notice = "Pick an account first"
+            return
+        }
+        val mask = sharePerms.sum()
+        busy = true
+        notice = null
+        Thread {
+            try {
+                val key = c.publicKeyOf(user)
+                if (key == null) {
+                    // No key row: plaintext shares still work, anything
+                    // encrypted below stays unreadable for them - say it.
+                    val keyed = row.encVersion > 0 || row.isDir
+                    runOnUiThread {
+                        busy = false
+                        if (keyed) {
+                            shareDialog = ShareDialog.NoKey(user, mask)
+                        } else {
+                            doSealShare(row, user, null, mask)
+                        }
+                    }
+                    return@Thread
+                }
+                val known = peerFingerprint(user)
+                runOnUiThread {
+                    busy = false
+                    when {
+                        known == null ->
+                            shareDialog = ShareDialog.FirstUse(user, key.fingerprint, key.public, mask)
+                        known != key.fingerprint ->
+                            shareDialog = ShareDialog.Changed(
+                                user, known, key.fingerprint, key.public, mask
+                            )
+                        else -> doSealShare(row, user, key.public, mask)
+                    }
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = e.message
+                }
+            }
+        }.start()
+    }
+
+    /** Seal (5.5) and POST - the one envelope per item, plus the N4 label. */
+    private fun doSealShare(row: Row, user: String, pub: String?, mask: Int) {
+        val c = api ?: return
+        // Names at rest (N4): a flagged plaintext file has no key to
+        // wrap its label under - the server refuses that shape too.
+        if (row.nameEnc != 0 && !row.isDir && row.encVersion == 0) {
+            notice = "This name is flagged but the file carries no key - nothing to seal"
+            return
+        }
+        busy = true
+        notice = null
+        Thread {
+            try {
+                var envelope: String? = null
+                var label: String? = null
+                if (pub != null) {
+                    val rk = rootKey
+                        ?: throw RuntimeException("Locked - unlock first")
+                    val sealKey = Chain.shareSealValue(c, rk, row)
+                    if (sealKey != null) {
+                        val sealed = FxCore.eciesSeal(
+                            Chain.decodeB64(pub), sealKey, row.id, user
+                        )
+                        envelope = java.util.Base64.getEncoder().encodeToString(sealed)
+                        label = Chain.shareLabel(row, sealKey, user)
+                    }
+                }
+                val out = c.shareBatch(row.id, user, mask, envelope, label)
+                val ok = out.optJSONArray("ok") ?: JSONArray()
+                val failed = out.optJSONArray("failed") ?: JSONArray()
+                val detail = if (failed.length() > 0) {
+                    val f = failed.optJSONObject(0)
+                    val err = f?.optString("error")?.takeIf { it.isNotEmpty() }
+                        ?: f?.optString("name") ?: "unknown"
+                    ", ${failed.length()} failed: $err"
+                } else {
+                    ""
+                }
+                runOnUiThread {
+                    busy = false
+                    notice = if (ok.length() > 0) {
+                        "Shared with $user$detail"
+                    } else {
+                        "Nothing shared$detail"
+                    }
+                    refreshOutgoing(c, row)
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = "Share failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    private fun refreshOutgoing(c: ApiClient, row: Row) {
+        Thread {
+            try {
+                val outgoing = c.outgoingShares(row.id)
+                runOnUiThread { shareOutgoing = outgoing }
+            } catch (e: Throwable) {
+                // the list stays as it was
+            }
+        }.start()
+    }
+
+    /** Revoke one of my shares (DELETE /api/shares/{id}). */
+    private fun revokeShare(id: Long) {
+        val c = api ?: return
+        val row = shareFor ?: return
+        if (busy) return
+        busy = true
+        Thread {
+            try {
+                c.revokeShare(id)
+                val outgoing = c.outgoingShares(row.id)
+                runOnUiThread {
+                    shareOutgoing = outgoing
+                    busy = false
+                    notice = "Share revoked"
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = "Revoke failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    /** Trust on first use (DECISION 6): a hash of a published key -
+     *  the one thing the web keeps in localStorage, and the app keeps
+     *  in prefs. It opens nothing. */
+    private fun peerFingerprint(user: String): String? = try {
+        val raw = prefs.getString("peerfp", null) ?: return null
+        JSONObject(raw).optString(user).takeIf { it.isNotEmpty() }
+    } catch (e: Throwable) {
+        null
+    }
+
+    private fun rememberPeer(user: String, fingerprint: String) {
+        val obj = try {
+            JSONObject(prefs.getString("peerfp", null) ?: "{}")
+        } catch (e: Throwable) {
+            JSONObject()
+        }
+        obj.put(user, fingerprint)
+        prefs.edit().putString("peerfp", obj.toString()).apply()
+    }
+
+    /** The web's formatFingerprint:8-8-8-8 hex groups. */
+    private fun formatFingerprint(hex: String): String {
+        val s = hex.lowercase()
+        return if (s.length == 32) s.chunked(8).joinToString(" ") else s
+    }
+
     // ------------------------------------------------------------------- ui
 
     @Composable
@@ -624,15 +895,14 @@ class MainActivity : ComponentActivity() {
             // Without this the screens are transparent and the dark XML
             // window shows through under light-mode text - unreadable.
             Surface(Modifier.fillMaxSize()) {
+                val sharing = shareFor
                 val shown = preview
-                if (shown != null) {
-                    PreviewUi(shown)
-                } else {
-                    when (step) {
-                        Step.LOGIN -> LoginUi()
-                        Step.PASSPHRASE -> UnlockUi()
-                        Step.FILES -> FilesUi()
-                    }
+                when {
+                    sharing != null -> ShareUi(sharing)
+                    shown != null -> PreviewUi(shown)
+                    step == Step.LOGIN -> LoginUi()
+                    step == Step.PASSPHRASE -> UnlockUi()
+                    else -> FilesUi()
                 }
             }
         }
@@ -753,6 +1023,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun FilesUi() {
         Column(Modifier.fillMaxSize()) {
@@ -835,7 +1106,10 @@ class MainActivity : ComponentActivity() {
                 items(rows, key = { it.id }) { row ->
                     Row(
                         Modifier.fillMaxWidth()
-                            .clickable { onRow(row) }
+                            .combinedClickable(
+                                onClick = { onRow(row) },
+                                onLongClick = { openShare(row) }
+                            )
                             .padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -855,6 +1129,226 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** S4a: share one row - grantee picker, fingerprint with TOFU,
+     *  permissions, the existing shares with revoke, and the confirm
+     *  dialogs before anything is sealed. */
+    @Composable
+    private fun ShareUi(row: Row) {
+        var menuOpen by remember { mutableStateOf(false) }
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton({
+                    shareFor = null
+                    shareDialog = null
+                    notice = null
+                }) { Text("\u2190 Back") }
+                Text(
+                    "Share: ${row.name}",
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    fontWeight = FontWeight.Medium
+                )
+                if (busy) {
+                    CircularProgressIndicator(
+                        Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp
+                    )
+                }
+            }
+            Column(
+                Modifier.weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp)
+            ) {
+                Text("Grantee", fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Box {
+                    TextButton({ menuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text(shareTarget ?: "Pick an account")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        if (shareTargets.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("No accounts yet") },
+                                onClick = { menuOpen = false }
+                            )
+                        }
+                        shareTargets.forEach { t ->
+                            val label = buildString {
+                                append(t.username)
+                                if (t.displayName.isNotEmpty() && t.displayName != t.username) {
+                                    append(" (${t.displayName})")
+                                }
+                                if (!t.active) append(" (inactive)")
+                            }
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    menuOpen = false
+                                    selectShareTarget(t.username)
+                                }
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                val target = shareTarget
+                val key = shareKey
+                when {
+                    target == null -> {}
+                    busy && key == null -> Text(
+                        "Looking up keys...",
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    key == null -> Text(
+                        // No key row (404): plaintext shares only - the
+                        // web says this out loud instead of silence.
+                        "No encryption keys for $target - plaintext shares only",
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    else -> Text(
+                        "Fingerprint for $target:\n${formatFingerprint(key.fingerprint)}",
+                        fontSize = 14.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("Permissions", fontWeight = FontWeight.SemiBold)
+                permOptions.forEach { (bit, label) ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { togglePerm(bit) },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = bit in sharePerms,
+                            onCheckedChange = { togglePerm(bit) }
+                        )
+                        Text(label)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    { confirmShare() },
+                    enabled = !busy && target != null,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Share")
+                }
+                Spacer(Modifier.height(16.dp))
+                Text("Existing shares", fontWeight = FontWeight.SemiBold)
+                if (shareOutgoing.isEmpty()) {
+                    Text(
+                        "None yet",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+                shareOutgoing.forEach { s ->
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(s.username, fontSize = 15.sp)
+                            Text(
+                                s.permissionNames.joinToString(", "),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
+                        TextButton({ revokeShare(s.id) }, enabled = !busy) {
+                            Text("Revoke", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+                notice?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
+        shareDialog?.let { ShareDialogUi(it, row) }
+    }
+
+    /** The two TOFU states and the web's no-key warning (app.js). */
+    @Composable
+    private fun ShareDialogUi(d: ShareDialog, row: Row) {
+        when (d) {
+            is ShareDialog.FirstUse -> AlertDialog(
+                onDismissRequest = { shareDialog = null },
+                title = { Text("First time with ${d.user}") },
+                text = {
+                    Text(
+                        "Compare this fingerprint with ${d.user} out of band " +
+                            "before you trust it - a stranger's key looks exactly " +
+                            "like a friend's.\n\n${formatFingerprint(d.fp)}"
+                    )
+                },
+                confirmButton = {
+                    TextButton({
+                        rememberPeer(d.user, d.fp)
+                        shareDialog = null
+                        doSealShare(row, d.user, d.pub, d.mask)
+                    }) { Text("Matches - share") }
+                },
+                dismissButton = {
+                    TextButton({ shareDialog = null }) { Text("Cancel") }
+                }
+            )
+            is ShareDialog.Changed -> AlertDialog(
+                onDismissRequest = { shareDialog = null },
+                title = { Text("Fingerprint changed") },
+                text = {
+                    Text(
+                        "The key for ${d.user} is DIFFERENT from the one you " +
+                            "trusted before:\n\nwas: ${formatFingerprint(d.old)}\n" +
+                            "is:  ${formatFingerprint(d.fp)}\n\nA change can mean a " +
+                            "new device - or someone in between. Do not continue " +
+                            "unless you can verify it out of band."
+                    )
+                },
+                confirmButton = {
+                    TextButton({
+                        rememberPeer(d.user, d.fp)
+                        shareDialog = null
+                        doSealShare(row, d.user, d.pub, d.mask)
+                    }) { Text("Verified - share anyway") }
+                },
+                dismissButton = {
+                    TextButton({ shareDialog = null }) { Text("Cancel") }
+                }
+            )
+            is ShareDialog.NoKey -> AlertDialog(
+                onDismissRequest = { shareDialog = null },
+                title = { Text("${d.user} has no keys") },
+                text = {
+                    Text(
+                        "This account cannot read anything encrypted - a " +
+                            "plaintext file or folder still shares fine, but " +
+                            "encrypted content and folders would stay " +
+                            "unreadable for them."
+                    )
+                },
+                confirmButton = {
+                    TextButton({
+                        shareDialog = null
+                        doSealShare(row, d.user, null, d.mask)
+                    }) { Text("Share plaintext anyway") }
+                },
+                dismissButton = {
+                    TextButton({ shareDialog = null }) { Text("Cancel") }
+                }
+            )
+        }
+    }
+
+    private fun togglePerm(bit: Int) {
+        sharePerms = if (bit in sharePerms) sharePerms - bit else sharePerms + bit
     }
 
     /** The S3b preview: a top bar with back and name, then the content. */

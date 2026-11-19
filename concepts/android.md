@@ -150,6 +150,18 @@ Rules carried over: one undecryptable row shows the placeholder and
 never takes a listing or preview down (S2's rule); nothing key-shaped
 is ever written to prefs or logs (DECISION 7).
 
+## S4 design (shares + device)
+
+Three sub-slices; the crypto primitives already shipped in S3a/S3d
+(`eciesSeal/Open`, `shareEnvelopeAad`, `wrap/unwrap`, the packed
+session).
+
+| Sub-slice | Contents |
+|-----------|----------|
+| S4a share dialog | Long-press a row -> share screen: grantee picker (`GET /api/users`), fingerprint in the web's 8-8-8-8 format (`GET /api/keys/{u}`) with TOFU (first use confirms, a change is spelled out as the risk it is; the hashes live in prefs like the web's `peerfp` - a hash of a published key opens nothing), the five permission checkboxes (READ/UPDATE/CREATE/DELETE/SHARE, all on = 31). Per item one envelope: folders get `ensureChainKey` + `keySubtree` first (legacy records re-bound to their parent - a record that already opens there is left alone, same end state), the sealed value is the row's key under `shareEnvelopeAad(id, grantee)`; a name-flagged row's display label wraps under the same pair (N4, url-safe like the web's `b64url`). `POST /api/shares/batch` with one item, outgoing list (`GET /api/shares/outgoing?file_id=`), revoke (`DELETE /api/shares/{id}`). Plaintext rows share without an envelope; a no-key account gets the web's warning instead of silence. |
+| S4b device auto-unlock | The packed session grows an ark tail: `root(32) \|\| u32 pkcs8Len \|\| pkcs8 \|\| u32 arkLen \|\| ark` (root/pkcs8 positions unchanged, every reader updated). After an unlock with the server's `auto_unlock` switch on, store `{v:1, deviceKeyEnc, wrappedArk}` per account: a random device key wrapped by the Android Keystore (hardware-backed - the web's localStorage upgraded), the ARK under it with `fx1:device-ark:v1`. On start the blob opens the session without a prompt (Keystore decrypt -> `unwrap` -> `sessionFromArk`); anything absent, stale or tampered falls back to the passphrase pane, and the switch off deletes the blob (the server flag is the truth). |
+| S4c rotate | The web's rotate on a phone: for an encrypted file the owner rotates - download, decrypt under the current key, fresh key, encrypt, `PUT /files/content?enc=1&key=&history=drop` (old history drops with the old key), then `resealOutgoing`: every outgoing share gets the new key sealed to its grantee (`GET /keys/{u}` per grantee -> `eciesSeal` -> `PUT /shares/{id}`), so nobody's envelope goes stale. Entry point where it makes sense on a phone: the preview bar. |
+
 ## Tests
 
 - Host JUnit: the golden fixtures through JNI (the app's `ffi_vectors`
