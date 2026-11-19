@@ -88,15 +88,20 @@ class ApiClient(var baseUrl: String) {
         if (token.isNotEmpty()) sessionCookie = token
     }
 
-    /** Who am I: id (mount detection) and username - the grantee the
-     *  share AAD binds to - flat JSON from GET /api/me. */
-    data class Me(val id: Long, val username: String)
+    /** Who am I: id (mount detection), username - the grantee the
+     *  share AAD binds to - and the account's auto-unlock switch
+     *  (server-side flag of DECISION 7), flat JSON from GET /api/me. */
+    data class Me(val id: Long, val username: String, val autoUnlock: Boolean)
 
     fun me(): Me {
         val reply = get("/api/me")
         require(reply.code == 200) { "session expired (${reply.code})" }
         val o = JSONObject(reply.body)
-        return Me(o.optLong("id", -1), o.optString("username", ""))
+        return Me(
+            o.optLong("id", -1),
+            o.optString("username", ""),
+            o.optBoolean("auto_unlock", false)
+        )
     }
 
     /**

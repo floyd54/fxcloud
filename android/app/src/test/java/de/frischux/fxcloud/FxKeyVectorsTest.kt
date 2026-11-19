@@ -53,26 +53,7 @@ class FxKeyVectorsTest {
         Native.load()
         val c = caseOf("unlock")
         val packed = FxCore.unlock(c.getJSONObject("keys").toString(), c.getString("passphrase"))
-        assertTrue("packed session is root+length+pkcs8", packed.size >= 36)
-        val pkcs8Len =
-            ((packed[32].toInt() and 0xff) shl 24) or
-                ((packed[33].toInt() and 0xff) shl 16) or
-                ((packed[34].toInt() and 0xff) shl 8) or
-                (packed[35].toInt() and 0xff)
-        assertEquals("packed layout", 36 + pkcs8Len, packed.size)
-        val root = packed.copyOfRange(0, 32)
-        val pkcs8 = packed.copyOfRange(36, packed.size)
-        val expect = c.getJSONObject("expect")
-        assertArrayEquals(
-            "root key",
-            b64(expect.getString("root_key_b64")),
-            root
-        )
-        assertArrayEquals(
-            "pkcs8",
-            b64(expect.getString("private_key_pkcs8_b64")),
-            pkcs8
-        )
+        assertPackedSession(packed, c.getJSONObject("expect"))
     }
 
     @Test
@@ -106,21 +87,39 @@ class FxKeyVectorsTest {
         bytes.joinToString("") { String.format("%02x", it.toInt() and 0xff) }
 
     /** The packed session assertions the unlock test also makes. */
+    /** The packed layout since S4b: root(32) || u32 pkcs8Len || pkcs8
+     *  || u32 arkLen || ark - every field byte-compared against the
+     *  fixture; the ark tail is what the device blob stores (S4b). */
     private fun assertPackedSession(packed: ByteArray, expect: JSONObject) {
-        assertTrue("packed session is root+length+pkcs8", packed.size >= 36)
-        val pkcs8Len =
-            ((packed[32].toInt() and 0xff) shl 24) or
-                ((packed[33].toInt() and 0xff) shl 16) or
-                ((packed[34].toInt() and 0xff) shl 8) or
-                (packed[35].toInt() and 0xff)
-        assertEquals("packed layout", 36 + pkcs8Len, packed.size)
-        assertArrayEquals("root key", b64(expect.getString("root_key_b64")), packed.copyOfRange(0, 32))
+        assertTrue("packed session is root+lengths+tails", packed.size >= 40)
+        val pkcs8Len = u32(packed, 32)
+        val arkLen = u32(packed, 36 + pkcs8Len)
+        assertEquals("packed layout", 40 + pkcs8Len + arkLen, packed.size)
+        assertArrayEquals(
+            "root key",
+            b64(expect.getString("root_key_b64")),
+            packed.copyOfRange(0, 32)
+        )
         assertArrayEquals(
             "pkcs8",
             b64(expect.getString("private_key_pkcs8_b64")),
-            packed.copyOfRange(36, packed.size)
+            packed.copyOfRange(36, 36 + pkcs8Len)
         )
+        val arkExpect = expect.optString("ark_b64")
+        if (arkExpect.isNotEmpty()) {
+            assertArrayEquals(
+                "ark",
+                b64(arkExpect),
+                packed.copyOfRange(40 + pkcs8Len, packed.size)
+            )
+        }
     }
+
+    private fun u32(p: ByteArray, at: Int): Int =
+        ((p[at].toInt() and 0xff) shl 24) or
+            ((p[at + 1].toInt() and 0xff) shl 16) or
+            ((p[at + 2].toInt() and 0xff) shl 8) or
+            (p[at + 3].toInt() and 0xff)
 
     @Test
     fun goldenRecoveryOpenThroughJni() {
@@ -227,6 +226,39 @@ class FxKeyVectorsTest {
             assertTrue(
                 "unified unwrap message: ${e.message}",
                 (e.message ?: "").contains("FX_ERR_UNWRAP")
+            )
+        }
+    }
+
+    @Test
+    fun goldenSessionFromArkThroughJni() {
+        Native.load()
+        val c = casesOf("session").first { !it.optBoolean("expect_error", false) }
+        val ark = b64(c.getString("ark_b64"))
+        val packed = FxCore.sessionFromArk(c.getJSONObject("keys").toString(), ark)
+        assertPackedSession(packed, c.getJSONObject("expect"))
+        // The ark rides back unchanged - the device blob's roundtrip.
+        val pkcs8Len = u32(packed, 32)
+        assertArrayEquals(
+            "ark tail",
+            ark,
+            packed.copyOfRange(40 + pkcs8Len, packed.size)
+        )
+    }
+
+    @Test
+    fun foreignArkIsAnException() {
+        Native.load()
+        val c = casesOf("session").first { !it.optBoolean("expect_error", false) }
+        val ark = b64(c.getString("ark_b64"))
+        ark[0] = (ark[0].toInt() xor 0xff).toByte()
+        try {
+            FxCore.sessionFromArk(c.getJSONObject("keys").toString(), ark)
+            throw AssertionError("a foreign ark must not open a session")
+        } catch (e: RuntimeException) {
+            assertTrue(
+                "code name: ${e.message}",
+                (e.message ?: "").contains("FX_ERR")
             )
         }
     }

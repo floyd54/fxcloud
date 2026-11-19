@@ -116,6 +116,33 @@ private sealed class ShareDialog {
     data class NoKey(val user: String, val mask: Int) : ShareDialog()
 }
 
+/** The AAD under which the ARK rides in a device blob (fxcrypto's
+ *  AAD.deviceArk): a purpose tag, so this blob can never be mistaken
+ *  for any other wrap. */
+private val DEVICE_AAD = "fx1:device-ark:v1".toByteArray(Charsets.UTF_8)
+
+/** The packed session layout (S2, ark tail since S4b): root(32) ||
+ *  u32 pkcs8Len || pkcs8 || u32 arkLen || ark. */
+private class SessionParts(val root: ByteArray, val pkcs8: ByteArray, val ark: ByteArray)
+
+private fun unpackSession(packed: ByteArray): SessionParts {
+    fun u32(at: Int): Int =
+        ((packed[at].toInt() and 0xff) shl 24) or
+            ((packed[at + 1].toInt() and 0xff) shl 16) or
+            ((packed[at + 2].toInt() and 0xff) shl 8) or
+            (packed[at + 3].toInt() and 0xff)
+    require(packed.size >= 40) { "packed session is ${packed.size} bytes" }
+    val pkcs8Len = u32(32)
+    require(packed.size >= 40 + pkcs8Len) { "packed session truncated" }
+    val arkLen = u32(36 + pkcs8Len)
+    require(packed.size == 40 + pkcs8Len + arkLen) { "packed session layout" }
+    return SessionParts(
+        packed.copyOfRange(0, 32),
+        packed.copyOfRange(36, 36 + pkcs8Len),
+        packed.copyOfRange(40 + pkcs8Len, packed.size)
+    )
+}
+
 /**
  * S2: sign in against a live instance, unlock the account material, list
  * the tree with its breadcrumb and decrypt names-at-rest through JNI
@@ -133,6 +160,9 @@ class MainActivity : ComponentActivity() {
 
     /** The grantee half of every share AAD (N4) - from /api/me. */
     @Volatile private var myUsername: String = ""
+
+    /** The account's auto-unlock switch (server-side, /api/me). */
+    @Volatile private var autoUnlock: Boolean = false
 
     /**
      * Unlock output and the root key live in memory only - never in
@@ -218,19 +248,39 @@ class MainActivity : ComponentActivity() {
                 val c = ApiClient(base).withSession(token)
                 val me = c.me() // throws when the session is gone
                 val keys = c.keysOrNull()
+                // Auto-unlock (S4b): the server flag is the truth - off
+                // deletes the stored blob, on lets it open the session
+                // without a prompt; anything stale or tampered falls
+                // back to the pane (the web's adoptDeviceUnlock).
+                var adopted: ByteArray? = null
+                if (keys != null && prefs.contains("device.${me.id}")) {
+                    if (!me.autoUnlock) {
+                        prefs.edit().remove("device.${me.id}").apply()
+                    } else {
+                        adopted = tryAdoptDevice(c, keys, me.id)
+                    }
+                }
                 runOnUiThread {
                     api = c
                     myId = me.id
                     myUsername = me.username
+                    autoUnlock = me.autoUnlock
                     keysJson = keys
                     busy = false
-                    if (keys != null) {
+                    when {
+                        adopted != null -> {
+                            packedSession = adopted
+                            rootKey = unpackSession(adopted).root
+                            step = Step.FILES
+                            loadTree()
+                        }
                         // Memory-only material: unlock again, exactly like
                         // the browser does after a reload.
-                        step = Step.PASSPHRASE
-                    } else {
-                        step = Step.FILES
-                        loadTree()
+                        keys != null -> step = Step.PASSPHRASE
+                        else -> {
+                            step = Step.FILES
+                            loadTree()
+                        }
                     }
                 }
             } catch (e: Throwable) {
@@ -262,6 +312,7 @@ class MainActivity : ComponentActivity() {
                     api = c
                     myId = me.id
                     myUsername = me.username
+                    autoUnlock = me.autoUnlock
                     keysJson = keys
                     busy = false
                     history.clear()
@@ -314,17 +365,22 @@ class MainActivity : ComponentActivity() {
                 } else {
                     FxCore.unlock(material, secret)
                 }
+                val parts = unpackSession(packed)
                 // The private half rides along in the packed session
                 // (S2's promise): open every share envelope now (5.5),
                 // before the first listing needs them.
-                if (packed.size > 36 && myUsername.isNotEmpty()) {
-                    api?.let { c ->
-                        Chain.openShares(c, myUsername, packed.copyOfRange(36, packed.size))
-                    }
+                if (myUsername.isNotEmpty()) {
+                    api?.let { c -> Chain.openShares(c, myUsername, parts.pkcs8) }
+                }
+                // Auto-unlock (S4b): while the server's switch is on,
+                // keep a device blob like the web keeps one in
+                // localStorage - best effort, like the web's.
+                if (autoUnlock && parts.ark.isNotEmpty()) {
+                    storeDeviceBlob(parts.ark)
                 }
                 runOnUiThread {
                     packedSession = packed
-                    rootKey = packed.copyOfRange(0, 32)
+                    rootKey = parts.root
                     busy = false
                     step = Step.FILES
                     loadTree()
@@ -876,6 +932,53 @@ class MainActivity : ComponentActivity() {
     private fun formatFingerprint(hex: String): String {
         val s = hex.lowercase()
         return if (s.length == 32) s.chunked(8).joinToString(" ") else s
+    }
+
+    // ------------------------------------------------- device unlock (S4b)
+
+    /** Keep the device blob after an unlock while the switch is on:
+     *  {v:1, deviceKeyEnc, wrappedArk} in prefs - the web's
+     *  device_unlock entry, with the device key in the Keystore.
+     *  Best effort: no blob just means the pane next time. */
+    private fun storeDeviceBlob(ark: ByteArray) {
+        try {
+            val id = myId
+            if (id == -1L) return
+            val deviceKey = Chain.randomBytes(32)
+            val sealed = DeviceUnlock.seal(id, deviceKey) ?: return
+            val wrapped = java.util.Base64.getEncoder().encodeToString(
+                FxCore.wrap(deviceKey, ark, DEVICE_AAD)
+            )
+            val blob = JSONObject()
+                .put("v", 1)
+                .put("deviceKeyEnc", sealed)
+                .put("wrappedArk", wrapped)
+            prefs.edit().putString("device.$id", blob.toString()).apply()
+        } catch (e: Throwable) {
+            // no storage that works: no auto-unlock, pane stays
+        }
+    }
+
+    /** Open the stored blob: Keystore, unwrap with the device AAD,
+     *  sessionFromArk, share envelopes - or null on anything stale or
+     *  tampered, so the passphrase pane stays the fallback exactly
+     *  like the web's adoptDeviceUnlock. */
+    private fun tryAdoptDevice(c: ApiClient, keys: String, userId: Long): ByteArray? {
+        return try {
+            val raw = prefs.getString("device.$userId", null) ?: return null
+            val blob = JSONObject(raw)
+            if (blob.optInt("v", 0) != 1) return null
+            val deviceKey =
+                DeviceUnlock.open(userId, blob.getString("deviceKeyEnc")) ?: return null
+            val ark = FxCore.unwrap(deviceKey, blob.getString("wrappedArk"), DEVICE_AAD)
+            val packed = FxCore.sessionFromArk(keys, ark)
+            if (myUsername.isNotEmpty()) {
+                Chain.openShares(c, myUsername, unpackSession(packed).pkcs8)
+            }
+            packed
+        } catch (e: Throwable) {
+            null
+        }
     }
 
     // ------------------------------------------------------------------- ui

@@ -78,6 +78,13 @@ object FxCore {
     external fun unlockWithRecovery(keysJson: String, recoveryKeyHex: String): ByteArray
 
     /**
+     * Rebuild the full session from a known ARK (S4b): what a stored
+     * device blob hands back after the Keystore unwraps it - the same
+     * packed layout as unlock.
+     */
+    external fun sessionFromArk(keysJson: String, ark: ByteArray): ByteArray
+
+    /**
      * The AAD binding a share envelope to source id + grantee (5.5) -
      * an envelope from another share or user cannot open.
      */

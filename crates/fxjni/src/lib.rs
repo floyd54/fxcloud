@@ -231,20 +231,25 @@ fn read_bytes(b: &fxcffi::FxBytes) -> Vec<u8> {
     }
 }
 
-/// Read a session's root key and pkcs8, release it, and pack them the
-/// way Kotlin expects: root(32) || u32be(pkcs8_len) || pkcs8.
+/// Read a session's root key, pkcs8 and ARK, release it, and pack them
+/// the way Kotlin expects: root(32) || u32be(pkcs8_len) || pkcs8 ||
+/// u32be(ark_len) || ark. The root/pkcs8 positions are S2's contract;
+/// the ark tail is S4b's device-unlock path.
 fn take_packed_session(out: &mut fxcffi::FxSession) -> Result<Vec<u8>, String> {
     let root = read_bytes(&out.root_key);
     let pkcs8 = read_bytes(&out.private_key_pkcs8);
+    let ark = read_bytes(&out.ark);
     // SAFETY: a session from fxcffi goes back through its free, once.
     unsafe { fxcffi::fx_session_free(out) };
     if root.len() != 32 {
         return Err(format!("root key is {} bytes", root.len()));
     }
-    let mut packed = Vec::with_capacity(36 + pkcs8.len());
+    let mut packed = Vec::with_capacity(40 + pkcs8.len() + ark.len());
     packed.extend_from_slice(&root);
     packed.extend_from_slice(&(pkcs8.len() as u32).to_be_bytes());
     packed.extend_from_slice(&pkcs8);
+    packed.extend_from_slice(&(ark.len() as u32).to_be_bytes());
+    packed.extend_from_slice(&ark);
     Ok(packed)
 }
 
@@ -829,4 +834,43 @@ fn unwrap_impl(
         )
     };
     take_out(code, &mut out, "unwrap")
+}
+
+// ---- S4b: the device-unlock path ----------------------------------------
+
+/// Rebuild the full session from a known ARK (S4b): what a stored
+/// device blob hands back after the Keystore unwraps it - the same
+/// packed layout `unlock` returns.
+///
+/// # Safety
+/// Standard JNI contract: both arguments are valid JVM objects.
+#[no_mangle]
+pub extern "system" fn Java_de_frischux_fxcloud_FxCore_sessionFromArk(
+    mut env: JNIEnv,
+    _class: JClass,
+    keys: JString,
+    ark: JByteArray,
+) -> jni::sys::jbyteArray {
+    let result = session_from_ark_impl(&mut env, &keys, &ark);
+    to_jbytes(&mut env, result)
+}
+
+fn session_from_ark_impl(
+    env: &mut JNIEnv,
+    keys: &JString,
+    ark: &JByteArray,
+) -> Result<Vec<u8>, String> {
+    let keys_json = String::from(env.get_string(keys).map_err(|e| format!("keys: {e}"))?);
+    let ark = bytes_arg(env, ark, "ark")?;
+    let decoded = DecodedKeys::from_json(&keys_json)?;
+    let account = decoded.account();
+    let mut out = empty_session();
+    // SAFETY: the account borrows live Vecs, the ark is our buffer,
+    // out is our local - all valid for the call (fxcffi.h's contract).
+    let code = unsafe { fxcffi::fx_session_from_ark(&account, ark.as_ptr(), ark.len(), &mut out) };
+    let packed = take_packed_session(&mut out);
+    if code != fxcffi::FX_OK {
+        return Err(format!("session: {}", unsafe_name(code)));
+    }
+    packed
 }
