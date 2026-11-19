@@ -91,9 +91,10 @@ private val TEXT_EXTS = setOf(
     "vue", "svelte", "css", "scss", "sass", "less", "svg"
 )
 
-/** A rendered preview (S3b): decoded bitmap or text, held in memory. */
+/** A rendered preview (S3b): the row it belongs to (S4c rotates from
+ *  the bar), decoded bitmap or text, held in memory. */
 private class Preview(
-    val name: String,
+    val row: Row,
     val kind: Kind,
     val bitmap: Bitmap? = null,
     val text: String? = null
@@ -182,6 +183,9 @@ class MainActivity : ComponentActivity() {
 
     /** Non-null replaces the whole list area with the S3b preview. */
     private var preview by mutableStateOf<Preview?>(null)
+
+    /** The S4c confirmation before a key rotation drops history. */
+    private var rotateConfirm by mutableStateOf(false)
 
     /** The system picker for S3c: any file, read through the content
      *  resolver - the picker's URI needs no storage permission. */
@@ -414,6 +418,7 @@ class MainActivity : ComponentActivity() {
         parent = null
         history.clear()
         preview = null
+        rotateConfirm = false
         shareFor = null
         shareDialog = null
         shareTargets = emptyList()
@@ -497,7 +502,10 @@ class MainActivity : ComponentActivity() {
                 shareDialog = null
                 notice = null
             }
-            preview != null -> preview = null
+            preview != null -> {
+                preview = null
+                rotateConfirm = false
+            }
             step == Step.FILES && history.isNotEmpty() -> {
                 parent = history.removeAt(history.size - 1)
                 loadTree()
@@ -565,7 +573,7 @@ class MainActivity : ComponentActivity() {
                     Kind.IMAGE -> {
                         val bitmap = decodeImage(content)
                             ?: throw RuntimeException("This image cannot be displayed")
-                        Preview(row.name, kind, bitmap = bitmap)
+                        Preview(row, kind, bitmap = bitmap)
                     }
                     else -> {
                         if (content.size > 4_000_000) {
@@ -573,7 +581,7 @@ class MainActivity : ComponentActivity() {
                                 "Text too large to display (${content.size / 1_000} KB)"
                             )
                         }
-                        Preview(row.name, kind, text = String(content, Charsets.UTF_8))
+                        Preview(row, kind, text = String(content, Charsets.UTF_8))
                     }
                 }
                 runOnUiThread {
@@ -979,6 +987,85 @@ class MainActivity : ComponentActivity() {
         } catch (e: Throwable) {
             null
         }
+    }
+
+    // ---------------------------------------------------- rotate (S4c)
+
+    /**
+     * The web's rotateFileKey on a phone: fresh content key, old
+     * history dropped with the old key (history=drop), then every
+     * outgoing envelope re-sealed to the new key so no grant goes
+     * stale (resealOutgoing).
+     */
+    private fun rotateFile(row: Row) {
+        val c = api ?: return
+        val rk = rootKey ?: return
+        if (busy) return
+        if (row.encVersion <= 0 || row.isDir || row.encKey == null) {
+            notice = "Nothing to rotate here"
+            return
+        }
+        busy = true
+        notice = null
+        Thread {
+            try {
+                val parentKey = Chain.keyFor(c, rk, row.parentId)
+                val oldKey = FxCore.unwrapChild(parentKey, row.id, row.encKey!!)
+                val container = c.download(row.id)
+                val plain = FxCore.decryptBytes(row.id, oldKey, container)
+                val newKey = Chain.randomBytes(32)
+                val rotated = FxCore.encryptBytes(row.id, newKey, plain)
+                val wrapped = FxCore.wrapChild(parentKey, row.id, newKey)
+                c.putContent(
+                    row.id,
+                    rotated,
+                    java.util.Base64.getEncoder().encodeToString(wrapped),
+                    dropHistory = true
+                )
+                // Reseal every outgoing envelope (5.5): the raw key is
+                // the same value the grantee's envelope must now carry.
+                val outgoing = c.outgoingShares(row.id)
+                var resealed = 0
+                val failed = ArrayList<String>()
+                for (s in outgoing) {
+                    val pub = try {
+                        c.publicKeyOf(s.username)
+                    } catch (e: Throwable) {
+                        null
+                    }
+                    if (pub == null) {
+                        failed.add(s.username)
+                        continue
+                    }
+                    try {
+                        val env = java.util.Base64.getEncoder().encodeToString(
+                            FxCore.eciesSeal(
+                                Chain.decodeB64(pub.public), newKey, row.id, s.username
+                            )
+                        )
+                        c.putShareEnvelope(s.id, env)
+                        resealed++
+                    } catch (e: Throwable) {
+                        failed.add(s.username)
+                    }
+                }
+                val failedMsg = if (failed.isEmpty()) "" else " (${failed.joinToString()} failed)"
+                runOnUiThread {
+                    busy = false
+                    loadTree() // refreshes the row's key record
+                    notice = if (outgoing.isEmpty()) {
+                        "Key rotated"
+                    } else {
+                        "Key rotated, resealed for $resealed$failedMsg"
+                    }
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = "Rotate failed: ${e.message}"
+                }
+            }
+        }.start()
     }
 
     // ------------------------------------------------------------------- ui
@@ -1454,7 +1541,8 @@ class MainActivity : ComponentActivity() {
         sharePerms = if (bit in sharePerms) sharePerms - bit else sharePerms + bit
     }
 
-    /** The S3b preview: a top bar with back and name, then the content. */
+    /** The S3b preview: a top bar with back, name and - for an
+     *  encrypted file the owner holds - the S4c rotate entry. */
     @Composable
     private fun PreviewUi(p: Preview) {
         Column(Modifier.fillMaxSize()) {
@@ -1464,11 +1552,16 @@ class MainActivity : ComponentActivity() {
             ) {
                 TextButton({ preview = null }) { Text("\u2190 Back") }
                 Text(
-                    p.name,
+                    p.row.name,
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                     fontWeight = FontWeight.Medium
                 )
+                if (p.row.encVersion > 0 && !p.row.isDir && p.row.ownerId == myId) {
+                    TextButton({ rotateConfirm = true }, enabled = !busy) {
+                        Text("Rotate")
+                    }
+                }
                 if (busy) {
                     CircularProgressIndicator(
                         Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp
@@ -1482,7 +1575,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Image(
                         bitmap = p.bitmap!!.asImageBitmap(),
-                        contentDescription = p.name,
+                        contentDescription = p.row.name,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Fit
                     )
@@ -1498,6 +1591,30 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+        if (rotateConfirm) {
+            AlertDialog(
+                onDismissRequest = { rotateConfirm = false },
+                title = { Text("Rotate the key?") },
+                text = {
+                    Text(
+                        "${p.row.name} gets a fresh content key and the " +
+                            "old versions drop with the old one - that " +
+                            "history cannot come back. Outgoing shares " +
+                            "are re-sealed to the new key so nobody's " +
+                            "grant goes stale."
+                    )
+                },
+                confirmButton = {
+                    TextButton({
+                        rotateConfirm = false
+                        rotateFile(p.row)
+                    }) { Text("Rotate") }
+                },
+                dismissButton = {
+                    TextButton({ rotateConfirm = false }) { Text("Cancel") }
+                }
+            )
         }
     }
 

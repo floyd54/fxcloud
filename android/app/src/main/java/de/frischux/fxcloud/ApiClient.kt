@@ -167,14 +167,16 @@ class ApiClient(var baseUrl: String) {
      * PUT /api/files/content?id= - the body is the FXE1 container when
      * `encKeyB64` is given (enc=1&key=, standard base64 like the web's
      * encodeURIComponent), the plaintext otherwise. Generous read
-     * timeout: this is the upload itself.
+     * timeout: this is the upload itself. `dropHistory` is the
+     * rotation's destructive half: old versions fall with the old key.
      */
-    fun putContent(id: Long, bytes: ByteArray, encKeyB64: String?) {
-        val path = if (encKeyB64 != null) {
-            "/api/files/content?id=$id&enc=1&key=" +
-                URLEncoder.encode(encKeyB64, "UTF-8")
-        } else {
-            "/api/files/content?id=$id"
+    fun putContent(id: Long, bytes: ByteArray, encKeyB64: String?, dropHistory: Boolean = false) {
+        val path = buildString {
+            append("/api/files/content?id=").append(id)
+            if (encKeyB64 != null) {
+                append("&enc=1&key=").append(URLEncoder.encode(encKeyB64, "UTF-8"))
+            }
+            if (dropHistory) append("&history=drop")
         }
         val conn = openRaw(path, "PUT", 120_000)
         conn.doOutput = true
@@ -331,6 +333,16 @@ class ApiClient(var baseUrl: String) {
         }
         conn.inputStream.use { it.readBytes() }
         conn.disconnect()
+    }
+
+    /** PUT /api/shares/{id} - re-seal an envelope of mine to a fresh
+     *  key (rotation: nobody's grant may go stale,5.5). */
+    fun putShareEnvelope(id: Long, envelopeB64: String) {
+        val reply = open(
+            "/api/shares/$id", "PUT",
+            JSONObject().put("envelope", envelopeB64).toString()
+        ).let { read(it) }
+        if (reply.code != 200) serverError(reply, "Re-seal")
     }
 
     /** GET /api/keys/me - the wrapped material, or null when the
