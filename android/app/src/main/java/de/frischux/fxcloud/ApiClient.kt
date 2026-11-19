@@ -88,6 +88,23 @@ class ApiClient(var baseUrl: String) {
         return JSONObject(reply.body).optLong("id", -1)
     }
 
+    /**
+     * GET /api/files/download?id= - the raw bytes: the FXE1 container
+     * when the row is encrypted (the server answers octet-stream, it
+     * cannot read them), the plaintext with its mime otherwise.
+     */
+    fun download(id: Long): ByteArray {
+        val conn = open("/api/files/download?id=$id", "GET", null)
+        val code = conn.responseCode
+        if (code !in 200..299) {
+            conn.disconnect()
+            throw java.io.IOException("download failed ($code)")
+        }
+        val bytes = conn.inputStream.use { it.readBytes() }
+        conn.disconnect()
+        return bytes
+    }
+
     /** GET /api/keys/me - the wrapped material, or null when the
      *  account has no encryption set up (404 is the normal answer). */
     fun keysOrNull(): String? {

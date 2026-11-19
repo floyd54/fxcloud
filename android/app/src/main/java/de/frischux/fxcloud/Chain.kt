@@ -12,7 +12,10 @@ data class Row(
     val size: Long,
     val parentId: Long?,
     val ownerId: Long,
-    val nameEnc: Int
+    val nameEnc: Int,
+    val encVersion: Int,
+    val encKey: String?,
+    val mime: String?
 ) {
     companion object {
         fun from(o: JSONObject): Row = Row(
@@ -22,7 +25,10 @@ data class Row(
             size = o.optLong("size", 0),
             parentId = if (o.isNull("parent_id")) null else o.getLong("parent_id"),
             ownerId = o.optLong("owner_id", -1),
-            nameEnc = o.optInt("name_enc", 0)
+            nameEnc = o.optInt("name_enc", 0),
+            encVersion = o.optInt("enc_version", 0),
+            encKey = if (o.isNull("enc_key")) null else o.getString("enc_key"),
+            mime = if (o.isNull("mime")) null else o.getString("mime")
         )
     }
 }

@@ -1,16 +1,22 @@
 package de.frischux.fxcloud
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.os.Bundle
 import android.view.View
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +29,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -40,17 +48,46 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.io.ByteArrayInputStream
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** The three stops of S2: sign in, unlock (encrypted accounts), browse. */
 private enum class Step { LOGIN, PASSPHRASE, FILES }
+
+/** What a preview can show in v1 (S3b): image and text, nothing else. */
+private enum class Kind { IMAGE, TEXT, OTHER }
+
+/** The extension tables of the web's PREVIEW_EXT, minus what the app
+ *  cannot render in-process (video/audio/pdf/html say so instead). */
+private val IMAGE_EXTS = setOf(
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "apng", "avif"
+)
+private val TEXT_EXTS = setOf(
+    "txt", "text", "md", "markdown", "csv", "tsv", "log", "json", "xml",
+    "yml", "yaml", "toml", "ini", "cfg", "conf", "env", "sql", "rst",
+    "tex", "diff", "patch", "rs", "js", "mjs", "cjs", "jsx", "ts", "tsx",
+    "py", "rb", "go", "java", "c", "h", "cc", "cpp", "hpp", "cs", "php",
+    "sh", "bash", "zsh", "pl", "lua", "swift", "kt", "kts", "scala", "r",
+    "vue", "svelte", "css", "scss", "sass", "less", "svg"
+)
+
+/** A rendered preview (S3b): decoded bitmap or text, held in memory. */
+private class Preview(
+    val name: String,
+    val kind: Kind,
+    val bitmap: Bitmap? = null,
+    val text: String? = null
+)
 
 /**
  * S2: sign in against a live instance, unlock the account material, list
@@ -82,6 +119,9 @@ class MainActivity : ComponentActivity() {
     private var rows by mutableStateOf<List<Row>>(emptyList())
     private var crumbs by mutableStateOf<List<Crumb>>(emptyList())
     private var parent by mutableStateOf<Long?>(null)
+
+    /** Non-null replaces the whole list area with the S3b preview. */
+    private var preview by mutableStateOf<Preview?>(null)
 
     /** Folder ids visited since the root - what the system back button
      *  walks out of (UI thread only). */
@@ -245,6 +285,7 @@ class MainActivity : ComponentActivity() {
         crumbs = emptyList()
         parent = null
         history.clear()
+        preview = null
         notice = null
         step = Step.LOGIN
     }
@@ -315,6 +356,9 @@ class MainActivity : ComponentActivity() {
      *  back to sign-in from the passphrase, out of the app at the root. */
     private fun goBack() {
         when {
+            // A preview closes before the tree walks: back means "out of
+            // the file", then "up a directory", then "out of the app".
+            preview != null -> preview = null
             step == Step.FILES && history.isNotEmpty() -> {
                 parent = history.removeAt(history.size - 1)
                 loadTree()
@@ -331,9 +375,115 @@ class MainActivity : ComponentActivity() {
         if (row.isDir) {
             openFolder(row.id)
         } else {
-            // S3: download, preview, upload (concepts/android.md).
-            notice = "Opening files arrives with S3 (download and preview)"
+            loadPreview(row)
         }
+    }
+
+    // ------------------------------------------------------------- preview (S3b)
+
+    /** The web's previewKind in kind: extension first, sniffed mime second. */
+    private fun previewKind(name: String, mime: String?): Kind {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        if (ext in IMAGE_EXTS) return Kind.IMAGE
+        if (ext in TEXT_EXTS) return Kind.TEXT
+        if (mime?.startsWith("text/") == true) return Kind.TEXT
+        if (mime?.startsWith("image/") == true) return Kind.IMAGE
+        return Kind.OTHER
+    }
+
+    /**
+     * Download, unwrap the content key, decrypt, render - the S3b flow.
+     * Kinds the app cannot render never touch the network; every
+     * failure lands as a notice, never as a crash.
+     */
+    private fun loadPreview(row: Row) {
+        val c = api ?: return
+        val kind = previewKind(row.name, row.mime)
+        if (kind == Kind.OTHER) {
+            val ext = row.name.substringAfterLast('.', "").uppercase()
+            notice = "$ext preview comes later - image and text open today"
+            return
+        }
+        busy = true
+        notice = null
+        Thread {
+            try {
+                val raw = c.download(row.id)
+                if (raw.size > 50_000_000) {
+                    throw RuntimeException("Too large to preview (${raw.size / 1_000_000} MB)")
+                }
+                val content = if (row.encVersion > 0) {
+                    val rk = rootKey ?: throw RuntimeException("Locked - unlock first")
+                    val encKey =
+                        row.encKey ?: throw RuntimeException("This row carries no key record")
+                    val parentKey = Chain.keyFor(c, rk, row.parentId)
+                    val contentKey = FxCore.unwrapChild(parentKey, row.id, encKey)
+                    FxCore.decryptBytes(row.id, contentKey, raw)
+                } else {
+                    raw
+                }
+                val shown = when (kind) {
+                    Kind.IMAGE -> {
+                        val bitmap = decodeImage(content)
+                            ?: throw RuntimeException("This image cannot be displayed")
+                        Preview(row.name, kind, bitmap = bitmap)
+                    }
+                    else -> {
+                        if (content.size > 4_000_000) {
+                            throw RuntimeException(
+                                "Text too large to display (${content.size / 1_000} KB)"
+                            )
+                        }
+                        Preview(row.name, kind, text = String(content, Charsets.UTF_8))
+                    }
+                }
+                runOnUiThread {
+                    preview = shown
+                    busy = false
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = "Preview failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    /**
+     * Decode with a sample size (a modern phone photo would otherwise
+     * cost hundreds of MB) and honour the EXIF orientation every
+     * camera tags - without it, portraits lie on their side.
+     */
+    private fun decodeImage(bytes: ByteArray): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / sample > 4096 || bounds.outHeight / sample > 4096) {
+            sample *= 2
+        }
+        val bitmap = BitmapFactory.decodeByteArray(
+            bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }
+        ) ?: return null
+        val orientation = try {
+            ExifInterface(ByteArrayInputStream(bytes)).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
+            )
+        } catch (e: Throwable) {
+            ExifInterface.ORIENTATION_NORMAL
+        }
+        val degrees = when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+        if (degrees == 0f) return bitmap
+        val matrix = Matrix().apply { postRotate(degrees) }
+        return Bitmap.createBitmap(
+            bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
+        ) ?: bitmap
     }
 
     // ------------------------------------------------------------------- ui
@@ -353,10 +503,15 @@ class MainActivity : ComponentActivity() {
             // Without this the screens are transparent and the dark XML
             // window shows through under light-mode text - unreadable.
             Surface(Modifier.fillMaxSize()) {
-                when (step) {
-                    Step.LOGIN -> LoginUi()
-                    Step.PASSPHRASE -> UnlockUi()
-                    Step.FILES -> FilesUi()
+                val shown = preview
+                if (shown != null) {
+                    PreviewUi(shown)
+                } else {
+                    when (step) {
+                        Step.LOGIN -> LoginUi()
+                        Step.PASSPHRASE -> UnlockUi()
+                        Step.FILES -> FilesUi()
+                    }
                 }
             }
         }
@@ -550,6 +705,53 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /** The S3b preview: a top bar with back and name, then the content. */
+    @Composable
+    private fun PreviewUi(p: Preview) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton({ preview = null }) { Text("\u2190 Back") }
+                Text(
+                    p.name,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    fontWeight = FontWeight.Medium
+                )
+                if (busy) {
+                    CircularProgressIndicator(
+                        Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp
+                    )
+                }
+            }
+            when (p.kind) {
+                Kind.IMAGE -> Box(
+                    Modifier.fillMaxSize().padding(8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        bitmap = p.bitmap!!.asImageBitmap(),
+                        contentDescription = p.name,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+                else -> SelectionContainer {
+                    Text(
+                        p.text ?: "",
+                        modifier = Modifier.fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp),
+                        fontSize = 14.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
                 }
             }
         }
