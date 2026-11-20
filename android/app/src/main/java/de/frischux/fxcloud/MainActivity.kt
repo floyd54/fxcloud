@@ -75,6 +75,10 @@ import org.json.JSONObject
 /** The three stops of S2: sign in, unlock (encrypted accounts), browse. */
 private enum class Step { LOGIN, PASSPHRASE, FILES }
 
+/** Pre-filled on the login form (changeable) - the instance this app
+ *  was built for; any other fxcloud address works the same. */
+private const val DEFAULT_SERVER = "https://fxcloud.frischux.de"
+
 /** What a preview can show in v1 (S3b): image and text, nothing else. */
 private enum class Kind { IMAGE, TEXT, OTHER }
 
@@ -320,7 +324,7 @@ class MainActivity : ComponentActivity() {
                     myId = me.id
                     myUsername = me.username
                     autoUnlock = me.autoUnlock
-                    themeMode = me.theme.ifEmpty { "system" }
+                    themeMode = prefs.getString("thememode", null) ?: me.theme.ifEmpty { "system" }
                     myDisplayName = me.displayName
                     settingsName = me.displayName
                     keysJson = keys
@@ -359,37 +363,7 @@ class MainActivity : ComponentActivity() {
                 val c = ApiClient(server)
                 val reply = c.login(user, password)
                 if (reply.code != 200) throw RuntimeException("Sign-in failed (${reply.code})")
-                prefs.edit()
-                    .putString("base", ApiClient.normalizeBaseUrl(server))
-                    .putString("user", user)
-                    .putString("session", c.sessionCookie)
-                    .apply()
-                val me = c.me()
-                val keys = c.keysOrNull()
-                runOnUiThread {
-                    api = c
-                    myId = me.id
-                    myUsername = me.username
-                    autoUnlock = me.autoUnlock
-                    themeMode = me.theme.ifEmpty { "system" }
-                    myDisplayName = me.displayName
-                    settingsName = me.displayName
-                    keysJson = keys
-                    busy = false
-                    history.clear()
-                    when {
-                        keys == null -> {
-                            step = Step.FILES
-                            loadTree()
-                        }
-                        // One event (DECISION 3): unless the account opted
-                        // into a separate storage secret, the password just
-                        // signed in with unlocks right away - the web
-                        // carries it across its redirect the same way.
-                        separatePassphrase(keys) -> step = Step.PASSPHRASE
-                        else -> unlockWith(password, false) { step = Step.PASSPHRASE }
-                    }
-                }
+                finishLogin(c, server, user, password)
             } catch (e: Throwable) {
                 runOnUiThread {
                     busy = false
@@ -397,6 +371,84 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }.start()
+    }
+
+    /** Sign up from the login page (the web's register tab): an active
+     *  account comes back with its session cookie, a pending one with
+     * 202 and no cookie - which then simply says so. */
+    private fun doRegister(server: String, user: String, password: String, displayName: String) {
+        busy = true
+        notice = null
+        Thread {
+            try {
+                val c = ApiClient(server)
+                val reply = c.register(user, password, displayName.ifBlank { null })
+                if (reply.code == 202) {
+                    runOnUiThread {
+                        busy = false
+                        notice = "Account created - it waits for activation before it can sign in."
+                    }
+                    return@Thread
+                }
+                if (reply.code != 200) throw RuntimeException("Sign-up failed (${reply.code})")
+                finishLogin(c, server, user, password)
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = e.message ?: "Sign-up failed"
+                }
+            }
+        }.start()
+    }
+
+    /** Everything after a session exists: persist it, learn who I am,
+     *  then device-blob, passphrase pane or list - the same three-way
+     *  the restore path takes (the web adopts the device blob after a
+     *  fresh login too). */
+    private fun finishLogin(c: ApiClient, server: String, user: String, password: String) {
+        prefs.edit()
+            .putString("base", ApiClient.normalizeBaseUrl(server))
+            .putString("user", user)
+            .putString("session", c.sessionCookie)
+            .apply()
+        val me = c.me()
+        val keys = c.keysOrNull()
+        var adopted: ByteArray? = null
+        if (keys != null && prefs.contains("device.${me.id}")) {
+            if (!me.autoUnlock) {
+                prefs.edit().remove("device.${me.id}").apply()
+            } else {
+                adopted = tryAdoptDevice(c, keys, me.id)
+            }
+        }
+        runOnUiThread {
+            api = c
+            myId = me.id
+            myUsername = me.username
+            autoUnlock = me.autoUnlock
+            themeMode = prefs.getString("thememode", null) ?: me.theme.ifEmpty { "system" }
+            myDisplayName = me.displayName
+            settingsName = me.displayName
+            keysJson = keys
+            busy = false
+            history.clear()
+            when {
+                adopted != null -> {
+                    packedSession = adopted
+                    rootKey = unpackSession(adopted).root
+                    step = Step.FILES
+                    loadTree()
+                }
+                keys == null -> {
+                    step = Step.FILES
+                    loadTree()
+                }
+                // One event (DECISION 3): the password that just signed
+                // in unlocks right away; a separate storage secret fails
+                // here and lands on the pane - the fallback, not an error.
+                else -> unlockWith(password, false) { step = Step.PASSPHRASE }
+            }
+        }
     }
 
     private fun doUnlock(password: String) = unlockWith(password, false) { msg ->
@@ -453,14 +505,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }.start()
-    }
-
-    /** The web's handoff skips accounts that chose their own storage
-     *  secret (kdf_params.secret === "separate"). */
-    private fun separatePassphrase(keys: String): Boolean = try {
-        JSONObject(keys).optJSONObject("kdf_params")?.optString("secret") == "separate"
-    } catch (e: Throwable) {
-        false
     }
 
     private fun logout() {
@@ -1307,8 +1351,14 @@ class MainActivity : ComponentActivity() {
         // The call lambda explicit: a trailing one would bind to onDone.
         saveMe("Display name saved", { it.updateMe(displayName = name) })
 
-    private fun saveTheme(theme: String) =
-        saveMe("Theme saved", { it.updateMe(theme = theme) })
+    /** The phone's theme is the phone's choice (the web keeps its own
+     *  per account, and the server knows only light|dark): three modes
+     *  in prefs, "system" never travels. */
+    private fun saveTheme(theme: String) {
+        prefs.edit().putString("thememode", theme).apply()
+        themeMode = theme
+        notice = "Theme saved"
+    }
 
     /** The web's setAutoUnlock: off deletes the stored blob, on keeps
      *  a fresh one while the session is unlocked - the server flag is
@@ -1913,9 +1963,14 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun LoginUi() {
-        var server by remember { mutableStateOf(prefs.getString("base", "") ?: "") }
+        val storedServer = prefs.getString("base", "") ?: ""
+        var server by remember {
+            mutableStateOf(if (storedServer.isEmpty()) DEFAULT_SERVER else storedServer)
+        }
         var user by remember { mutableStateOf(prefs.getString("user", "") ?: "") }
         var password by remember { mutableStateOf("") }
+        var displayName by remember { mutableStateOf("") }
+        var registerMode by remember { mutableStateOf(false) }
         Column(
             Modifier.fillMaxSize().padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.Center
@@ -1936,25 +1991,60 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 password, { password = it },
-                label = { Text("Password") },
+                label = {
+                    Text(if (registerMode) "Password (min8 characters)" else "Password")
+                },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth()
             )
+            if (registerMode) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    displayName, { displayName = it },
+                    label = { Text("Display name (optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "A username needs3+ characters, a password8+.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            }
             Spacer(Modifier.height(16.dp))
             Button(
-                { doLogin(server, user, password) },
-                enabled = !busy && server.isNotBlank() && user.isNotBlank() && password.isNotBlank(),
+                {
+                    if (registerMode) {
+                        doRegister(server, user, password, displayName)
+                    } else {
+                        doLogin(server, user, password)
+                    }
+                },
+                enabled = !busy && server.isNotBlank() && user.isNotBlank() &&
+                    password.isNotBlank() &&
+                    (!registerMode || (password.length >= 8 && user.length >= 3)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 if (busy) {
                     CircularProgressIndicator(Modifier.height(18.dp).width(18.dp), strokeWidth = 2.dp)
                 } else {
-                    Text("Sign in")
+                    Text(if (registerMode) "Create account" else "Sign in")
                 }
             }
+            TextButton({
+                registerMode = !registerMode
+                password = ""
+                notice = null
+            }) {
+                Text(
+                    if (registerMode) "Have an account? Sign in"
+                    else "No account yet? Create one"
+                )
+            }
             notice?.let {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
                 Text(it, color = MaterialTheme.colorScheme.error)
             }
         }

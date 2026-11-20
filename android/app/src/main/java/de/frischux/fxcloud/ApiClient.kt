@@ -75,6 +75,19 @@ class ApiClient(var baseUrl: String) {
         return reply
     }
 
+    /** POST /api/register - the web's register tab: an active account
+     *  comes back with its session cookie (200), a pending one with202
+     *  and no cookie; both answers are the caller's to interpret. */
+    fun register(user: String, password: String, displayName: String?): Reply {
+        val body = JSONObject()
+            .put("username", user)
+            .put("password", password)
+        if (displayName != null) body.put("display_name", displayName)
+        val reply = post("/api/register", body)
+        if (reply.code == 200) rememberSession(reply)
+        return reply
+    }
+
     /** Restore a stored token (app start) without a network call. */
     fun withSession(token: String): ApiClient {
         sessionCookie = token
@@ -120,12 +133,10 @@ class ApiClient(var baseUrl: String) {
      */
     fun updateMe(
         displayName: String? = null,
-        theme: String? = null,
         autoUnlock: Boolean? = null
     ): Me {
         val body = JSONObject()
         if (displayName != null) body.put("display_name", displayName)
-        if (theme != null) body.put("theme", theme)
         if (autoUnlock != null) body.put("auto_unlock", autoUnlock)
         require(body.length() > 0) { "nothing to update" }
         val conn = open("/api/me", "PUT", body.toString())
