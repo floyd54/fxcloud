@@ -12,8 +12,9 @@
  *
  * The mark (device pass feedback, concepts/android.md): a light blue
  * field (#D5EEFB -> #C5E5F8), the brand cloud in solid #0082c9 -
- * clearly darker than the field - with a soft drop shadow below it,
- * and a white fx inside a cloud run40% larger so the letters breathe.
+ * clearly darker than the field - with a second cloud in #00598F
+ * offset down-left behind it (light from the upper right), and a
+ * white fx inside a cloud run40% larger so the letters breathe.
  * Full-bleed: no pre-rounded corners, because every consumer (iOS
  * home screen, Android launcher masks, Chrome) applies its own mask and a
  * maskable icon must bleed to the edge. The cloud stays inside the maskable
@@ -26,13 +27,14 @@ const fs = require("fs");
 const path = require("path");
 
 const ACCENT = [0x00, 0x82, 0xc9]; // the cloud: solid, clearly darker blue
+const CLOUD_DARK = [0x00, 0x59, 0x8f]; // the shadow cloud behind it
 const LETTER = [0xff, 0xff, 0xff]; // the fx
 const BG_TOP = [0xd5, 0xee, 0xfb]; // light blue field, top
 const BG_BOTTOM = [0xc5, 0xe5, 0xf8]; // light blue field, bottom
-const SHADOW = [0x1b, 0x3a, 0x54]; // the drop shadow under the cloud
-const SHADOW_MAX = 0.3;
-const DROP = 0.018; // how far the shadow sits below the cloud
-const BLUR = 0.03; // half-width of the shadow's soft edge
+// The shadow is a second cloud offset down-left: light from the upper
+// right, the back cloud reading as the shadow (device feedback).
+const OFFSET_X = 5 / 108;
+const OFFSET_Y = 6 / 108;
 const CLOUD_SCALE = 1.4; // the cloud runs40% larger than the unit shapes
 const SS = 4; // supersampling: SS x SS sub-pixels per output pixel
 // The fx strokes:3.6/3.2 in the app icon's108 grid, halved, in unit
@@ -156,14 +158,12 @@ function render(size, scale) {
           const v = (y + (sy + 0.5) / SS) / size;
           // 1. the light blue field, full-bleed and unscaled
           let col = mix(BG_TOP, BG_BOTTOM, v);
-          // 2. the drop shadow: the cloud lifted up by DROP leaves its
-          // shadow below, with a soft edge over BLUR
-          const ds = cloudDistance(u, v - DROP, scale);
-          if (ds < BLUR) {
-            const t = Math.min(1, Math.max(0, (BLUR - ds) / (2 * BLUR)));
-            col = mix(col, SHADOW, SHADOW_MAX * t);
+          // 2. the shadow cloud: the same shape offset down-left - light
+          // from the upper right, the back cloud reading as the shadow
+          if (cloudDistance(u + OFFSET_X, v - OFFSET_Y, scale) < 0) {
+            col = CLOUD_DARK;
           }
-          // 3. the cloud: solid darker blue
+          // 3. the front cloud: solid blue over it
           const d = cloudDistance(u, v, scale);
           if (d < 0) col = ACCENT;
           // 4. the fx on top, padded with the maskable scale
