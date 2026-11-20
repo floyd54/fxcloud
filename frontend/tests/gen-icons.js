@@ -10,10 +10,10 @@
  * here by hand (zlib for the IDAT stream, CRC32 per chunk), which keeps the
  * whole pipeline dependency-free and byte-reproducible.
  *
- * The mark matches the Android launcher icon (concepts/android.md): a
- * dark vertical gradient (#1E2430 -> #14161B), the brand cloud as a
- * soft blue - fill 45% / rim 70% of the accent #0082c9, the same
- * AARRGGBB values the Android XML carries - and a white fx inside.
+ * The mark (device pass feedback, concepts/android.md): a light blue
+ * field (#D5EEFB -> #C5E5F8), the brand cloud in solid #0082c9 -
+ * clearly darker than the field - with a soft drop shadow below it,
+ * and a white fx inside a cloud run40% larger so the letters breathe.
  * Full-bleed: no pre-rounded corners, because every consumer (iOS
  * home screen, Android launcher masks, Chrome) applies its own mask and a
  * maskable icon must bleed to the edge. The cloud stays inside the maskable
@@ -25,20 +25,23 @@ const zlib = require("zlib");
 const fs = require("fs");
 const path = require("path");
 
-const ACCENT = [0x00, 0x82, 0xc9];
-const LETTER = [0xe6, 0xe9, 0xee]; // the fx, white like the app icon
-const BG_TOP = [0x1e, 0x24, 0x30];
-const BG_BOTTOM = [0x14, 0x16, 0x1b];
+const ACCENT = [0x00, 0x82, 0xc9]; // the cloud: solid, clearly darker blue
+const LETTER = [0xff, 0xff, 0xff]; // the fx
+const BG_TOP = [0xd5, 0xee, 0xfb]; // light blue field, top
+const BG_BOTTOM = [0xc5, 0xe5, 0xf8]; // light blue field, bottom
+const SHADOW = [0x1b, 0x3a, 0x54]; // the drop shadow under the cloud
+const SHADOW_MAX = 0.3;
+const DROP = 0.018; // how far the shadow sits below the cloud
+const BLUR = 0.03; // half-width of the shadow's soft edge
+const CLOUD_SCALE = 1.4; // the cloud runs40% larger than the unit shapes
 const SS = 4; // supersampling: SS x SS sub-pixels per output pixel
-// The cloud's rim: stroke width 2.4 in the app icon's 108 grid, halved
-// for a band centred on the outline; the fx strokes likewise (3.6/3.2).
-const RIM_HALF = (2.4 / 108) / 2;
+// The fx strokes:3.6/3.2 in the app icon's108 grid, halved, in unit
+// space. The letters keep their size while the cloud grows - that is
+// the breathing room the last mark lacked.
 const FX_HW = (3.6 / 108) / 2;
 const FX_HW_CROSS = (3.2 / 108) / 2;
 // The fx in icon space (0..1), the same letterforms the Android XML
-// draws: f hook + stem, crossbar, and the x - inside the cloud. This
-// cloud is narrower than the launcher's, so the letters shrink to the
-// same fraction of it (46-49% of the cloud's width).
+// draws: f hook + stem, crossbar, and the x - inside the cloud.
 const FX_SCALE = 0.8;
 const FX_CY = 0.483;
 const FX = [
@@ -114,9 +117,11 @@ function sdCircle(px, py, cx, cy, r) {
   return Math.hypot(px - cx, py - cy) - r;
 }
 function cloudDistance(u, v, scale) {
-  // Scale the whole cloud about its center; scale < 1 pads for maskable.
-  const x = (u - 0.5) / scale + 0.5;
-  const y = (v - 0.52) / scale + 0.52;
+  // The mark's cloud runs CLOUD_SCALE larger than the unit shapes;
+  // scale < 1 still pads it for maskable.
+  const s = scale * CLOUD_SCALE;
+  const x = (u - 0.5) / s + 0.5;
+  const y = (v - 0.52) / s + 0.52;
   // Three puffs only: the old base box sat at the coordinate origin and
   // painted a stray blob into the top-left corner instead of a base.
   const d2 = sdCircle(x, y, 0.37, 0.55, 0.09); // left puff
@@ -149,13 +154,19 @@ function render(size, scale) {
         for (let sx = 0; sx < SS; sx++) {
           const u = (x + (sx + 0.5) / SS) / size;
           const v = (y + (sy + 0.5) / SS) / size;
-          // 1. the gradient, full-bleed and unscaled
+          // 1. the light blue field, full-bleed and unscaled
           let col = mix(BG_TOP, BG_BOTTOM, v);
-          // 2. the cloud: rim band first, then the soft fill
+          // 2. the drop shadow: the cloud lifted up by DROP leaves its
+          // shadow below, with a soft edge over BLUR
+          const ds = cloudDistance(u, v - DROP, scale);
+          if (ds < BLUR) {
+            const t = Math.min(1, Math.max(0, (BLUR - ds) / (2 * BLUR)));
+            col = mix(col, SHADOW, SHADOW_MAX * t);
+          }
+          // 3. the cloud: solid darker blue
           const d = cloudDistance(u, v, scale);
-          if (Math.abs(d) <= RIM_HALF) col = mix(col, ACCENT, 0.7);
-          else if (d < 0) col = mix(col, ACCENT, 0.45);
-          // 3. the fx on top, scaled with the cloud (maskable padding)
+          if (d < 0) col = ACCENT;
+          // 4. the fx on top, padded with the maskable scale
           const ix = (u - 0.5) / scale + 0.5;
           const iy = (v - 0.52) / scale + 0.52;
           let fx = Infinity;
