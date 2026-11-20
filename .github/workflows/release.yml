@@ -115,9 +115,11 @@ jobs:
           cd android
           ./gradlew --no-daemon bundleRelease
 
+      # One line on purpose: a folded YAML scalar turns a trailing
+      # backslash into "backslash space" and cp then writes a file
+      # whose name starts with a space (the v0.4.0 second attempt).
       - name: Name the asset
-        run: cp android/app/build/outputs/bundle/release/app-release.aab \
-          "fxcloud-${GITHUB_REF_NAME}.aab"
+        run: cp android/app/build/outputs/bundle/release/app-release.aab "fxcloud-${GITHUB_REF_NAME}.aab"
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
