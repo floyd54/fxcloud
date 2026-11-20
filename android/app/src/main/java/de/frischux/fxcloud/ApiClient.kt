@@ -89,9 +89,16 @@ class ApiClient(var baseUrl: String) {
     }
 
     /** Who am I: id (mount detection), username - the grantee the
-     *  share AAD binds to - and the account's auto-unlock switch
-     *  (server-side flag of DECISION 7), flat JSON from GET /api/me. */
-    data class Me(val id: Long, val username: String, val autoUnlock: Boolean)
+     *  share AAD binds to - the account's auto-unlock switch
+     *  (server-side flag of DECISION 7), the display name and theme
+     *  (empty theme = system), flat JSON from GET /api/me. */
+    data class Me(
+        val id: Long,
+        val username: String,
+        val autoUnlock: Boolean,
+        val displayName: String,
+        val theme: String
+    )
 
     fun me(): Me {
         val reply = get("/api/me")
@@ -100,8 +107,48 @@ class ApiClient(var baseUrl: String) {
         return Me(
             o.optLong("id", -1),
             o.optString("username", ""),
-            o.optBoolean("auto_unlock", false)
+            o.optBoolean("auto_unlock", false),
+            o.optString("display_name", ""),
+            o.optString("theme", "")
         )
+    }
+
+    /**
+     * PUT /api/me - the settings dialog's sections save independently,
+     * so only the fields present move (the server answers "nothing to
+     * update" for an empty body). Returns the updated me().
+     */
+    fun updateMe(
+        displayName: String? = null,
+        theme: String? = null,
+        autoUnlock: Boolean? = null
+    ): Me {
+        val body = JSONObject()
+        if (displayName != null) body.put("display_name", displayName)
+        if (theme != null) body.put("theme", theme)
+        if (autoUnlock != null) body.put("auto_unlock", autoUnlock)
+        require(body.length() > 0) { "nothing to update" }
+        val conn = open("/api/me", "PUT", body.toString())
+        val reply = read(conn)
+        if (reply.code != 200) serverError(reply, "Settings")
+        val o = JSONObject(reply.body)
+        return Me(
+            o.optLong("id", -1),
+            o.optString("username", ""),
+            o.optBoolean("auto_unlock", false),
+            o.optString("display_name", ""),
+            o.optString("theme", "")
+        )
+    }
+
+    /** PUT /api/me/password - the current password has to match, the
+     *  new one is at least8 characters (the web's settings dialog). */
+    fun changePassword(current: String, new: String) {
+        val body = JSONObject()
+            .put("current_password", current)
+            .put("new_password", new)
+        val reply = open("/api/me/password", "PUT", body.toString()).let { read(it) }
+        if (reply.code != 200) serverError(reply, "Password")
     }
 
     /**

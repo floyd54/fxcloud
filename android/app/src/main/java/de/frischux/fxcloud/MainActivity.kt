@@ -45,6 +45,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -243,6 +244,19 @@ class MainActivity : ComponentActivity() {
     private var purgeConfirm by mutableStateOf<ApiClient.Trashed?>(null)
     private var emptyConfirm by mutableStateOf(false)
 
+    // --------------------------------------------------------- settings (S5b)
+
+    /** Non-null: the settings overlay is up. */
+    private var settingsOpen by mutableStateOf(false)
+
+    /** "system", "light" or "dark" - what the server knows, applied
+     *  over the system default (the web's theme section). */
+    private var themeMode by mutableStateOf("system")
+
+    /** The account's display name and the field buffer for the form. */
+    private var myDisplayName by mutableStateOf("")
+    private var settingsName by mutableStateOf("")
+
     /** Folder ids visited since the root - what the system back button
      *  walks out of (UI thread only). */
     private val history = ArrayList<Long?>()
@@ -261,6 +275,8 @@ class MainActivity : ComponentActivity() {
             findViewById<TextView>(R.id.headerLogout).setOnClickListener { logout() }
             // Top-level navigation beside it: the trash view (S5a).
             findViewById<TextView>(R.id.headerTrash).setOnClickListener { openTrash() }
+            // ... and the settings (S5b).
+            findViewById<TextView>(R.id.headerSettings).setOnClickListener { openSettings() }
             findViewById<ComposeView>(R.id.compose).setContent { AppUi() }
             restoreSession()
         } catch (t: Throwable) {
@@ -304,6 +320,9 @@ class MainActivity : ComponentActivity() {
                     myId = me.id
                     myUsername = me.username
                     autoUnlock = me.autoUnlock
+                    themeMode = me.theme.ifEmpty { "system" }
+                    myDisplayName = me.displayName
+                    settingsName = me.displayName
                     keysJson = keys
                     busy = false
                     when {
@@ -352,6 +371,9 @@ class MainActivity : ComponentActivity() {
                     myId = me.id
                     myUsername = me.username
                     autoUnlock = me.autoUnlock
+                    themeMode = me.theme.ifEmpty { "system" }
+                    myDisplayName = me.displayName
+                    settingsName = me.displayName
                     keysJson = keys
                     busy = false
                     history.clear()
@@ -468,6 +490,7 @@ class MainActivity : ComponentActivity() {
         trashItems = emptyList()
         purgeConfirm = null
         emptyConfirm = false
+        settingsOpen = false
         notice = null
         step = Step.LOGIN
     }
@@ -546,6 +569,7 @@ class MainActivity : ComponentActivity() {
             deleteConfirm != null -> deleteConfirm = null
             rowMenu != null -> rowMenu = null
             trashOpen -> closeTrash()
+            settingsOpen -> closeSettings()
             shareFor != null -> {
                 shareFor = null
                 shareDialog = null
@@ -1220,6 +1244,241 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
+    // --------------------------------------------------------- settings (S5b)
+
+    /** The header's Settings: one overlay at a time, form buffered. */
+    private fun openSettings() {
+        if (busy) return
+        shareFor = null
+        shareDialog = null
+        preview = null
+        rotateConfirm = false
+        rowMenu = null
+        deleteConfirm = null
+        selection = emptySet()
+        transfer = null
+        trashOpen = false
+        trashItems = emptyList()
+        purgeConfirm = null
+        emptyConfirm = false
+        settingsName = myDisplayName
+        notice = null
+        settingsOpen = true
+    }
+
+    private fun closeSettings() {
+        settingsOpen = false
+        notice = null
+    }
+
+    /** One PUT /api/me; the response refreshes every local copy and
+     *  `onDone` runs on the UI thread for the side effects. */
+    private fun saveMe(
+        message: String,
+        call: (ApiClient) -> ApiClient.Me,
+        onDone: ((ApiClient.Me) -> Unit)? = null
+    ) {
+        val c = api ?: return
+        if (busy) return
+        busy = true
+        notice = null
+        Thread {
+            try {
+                val updated = call(c)
+                runOnUiThread {
+                    busy = false
+                    myUsername = updated.username
+                    autoUnlock = updated.autoUnlock
+                    myDisplayName = updated.displayName
+                    themeMode = updated.theme.ifEmpty { "system" }
+                    onDone?.invoke(updated)
+                    notice = message
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = e.message
+                }
+            }
+        }.start()
+    }
+
+    private fun saveDisplayName(name: String) =
+        // The call lambda explicit: a trailing one would bind to onDone.
+        saveMe("Display name saved", { it.updateMe(displayName = name) })
+
+    private fun saveTheme(theme: String) =
+        saveMe("Theme saved", { it.updateMe(theme = theme) })
+
+    /** The web's setAutoUnlock: off deletes the stored blob, on keeps
+     *  a fresh one while the session is unlocked - the server flag is
+     *  what the next launch reads. */
+    private fun setAutoUnlock(enabled: Boolean) = saveMe(
+        if (enabled) "Auto-unlock on" else "Auto-unlock off",
+        { c -> c.updateMe(autoUnlock = enabled) },
+        { updated ->
+            if (updated.autoUnlock) {
+                packedSession?.let { p ->
+                    if (p.size > 40) {
+                        val ark = unpackSession(p).ark
+                        if (ark.isNotEmpty()) storeDeviceBlob(ark)
+                    }
+                }
+            } else {
+                prefs.edit().remove("device.${updated.id}").apply()
+            }
+        }
+    )
+
+    private fun changePassword(current: String, new: String) {
+        val c = api ?: return
+        if (busy) return
+        if (new.length <8) {
+            notice = "The new password needs at least8 characters"
+            return
+        }
+        busy = true
+        notice = null
+        Thread {
+            try {
+                c.changePassword(current, new)
+                runOnUiThread {
+                    busy = false
+                    notice = "Password changed"
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = e.message
+                }
+            }
+        }.start()
+    }
+
+    @Composable
+    private fun SettingsUi() {
+        var current by remember { mutableStateOf("") }
+        var fresh by remember { mutableStateOf("") }
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton({ closeSettings() }) { Text("\u2190 Back") }
+                Text(
+                    "Settings",
+                    modifier = Modifier.weight(1f),
+                    fontWeight = FontWeight.Medium
+                )
+                if (busy) {
+                    CircularProgressIndicator(
+                        Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp
+                    )
+                }
+            }
+            notice?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+            Column(
+                Modifier.weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp)
+            ) {
+                Text("Account", fontWeight = FontWeight.SemiBold)
+                Text(
+                    myUsername,
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+
+                Spacer(Modifier.height(20.dp))
+                Text("Display name", fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    settingsName, { settingsName = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    { saveDisplayName(settingsName.trim()) },
+                    enabled = !busy && settingsName.isNotBlank() &&
+                        settingsName.trim() != myDisplayName,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Save display name") }
+
+                Spacer(Modifier.height(20.dp))
+                Text("Theme", fontWeight = FontWeight.SemiBold)
+                Row {
+                    listOf(
+                        "system" to "System", "light" to "Light", "dark" to "Dark"
+                    ).forEach { (value, label) ->
+                        val active = themeMode == value
+                        TextButton({ saveTheme(value) }, enabled = !busy) {
+                            Text(
+                                label,
+                                color = if (active) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                fontWeight = if (active) FontWeight.SemiBold
+                                else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Unlock automatically", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Opens this account with the device key on the next " +
+                                "launch - the web's switch, hardware-backed here.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = autoUnlock,
+                        onCheckedChange = { setAutoUnlock(it) },
+                        enabled = !busy
+                    )
+                }
+
+                Spacer(Modifier.height(20.dp))
+                Text("Change password", fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    current, { current = it },
+                    label = { Text("Current password") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    fresh, { fresh = it },
+                    label = { Text("New password (at least8 characters)") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    { changePassword(current, fresh) },
+                    enabled = !busy && current.isNotBlank() && fresh.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Change password") }
+                Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+
     // -------------------------------------------------------------- trash (S5a)
 
     /** The header's Trash: close whatever else is up and load. */
@@ -1614,9 +1873,18 @@ class MainActivity : ComponentActivity() {
                 if (step == Step.LOGIN) View.GONE else View.VISIBLE
             findViewById<TextView>(R.id.headerTrash).visibility =
                 if (step == Step.FILES) View.VISIBLE else View.GONE
+            findViewById<TextView>(R.id.headerSettings).visibility =
+                if (step == Step.FILES) View.VISIBLE else View.GONE
+        }
+        // The server's theme over the system default (the web's
+        // theme section): "system" defers to the device.
+        val dark = when (themeMode) {
+            "dark" -> true
+            "light" -> false
+            else -> isSystemInDarkTheme()
         }
         MaterialTheme(
-            colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
+            colorScheme = if (dark) darkColorScheme() else lightColorScheme()
         ) {
             // MaterialTheme only provides colors; Surface paints them.
             // Without this the screens are transparent and the dark XML
@@ -1626,6 +1894,7 @@ class MainActivity : ComponentActivity() {
                 val shown = preview
                 when {
                     trashOpen -> TrashUi()
+                    settingsOpen -> SettingsUi()
                     sharing != null -> ShareUi(sharing)
                     shown != null -> PreviewUi(shown)
                     step == Step.LOGIN -> LoginUi()
