@@ -14,7 +14,7 @@
  * field (#D5EEFB -> #C5E5F8), the brand cloud in solid #0082c9 -
  * clearly darker than the field - with a second cloud in #00598F
  * offset down-left behind it (light from the upper right), and a
- * white fx inside a cloud run40% larger so the letters breathe.
+ * white fx inside a cloud run25% larger so the letters breathe.
  * Full-bleed: no pre-rounded corners, because every consumer (iOS
  * home screen, Android launcher masks, Chrome) applies its own mask and a
  * maskable icon must bleed to the edge. The cloud stays inside the maskable
@@ -35,7 +35,7 @@ const BG_BOTTOM = [0xc5, 0xe5, 0xf8]; // light blue field, bottom
 // right, the back cloud reading as the shadow (device feedback).
 const OFFSET_X = 5 / 108;
 const OFFSET_Y = 6 / 108;
-const CLOUD_SCALE = 1.4; // the cloud runs40% larger than the unit shapes
+const CLOUD_SCALE = 1.25; // the cloud runs25% larger than the unit shapes
 const SS = 4; // supersampling: SS x SS sub-pixels per output pixel
 // The fx strokes:3.6/3.2 in the app icon's108 grid, halved, in unit
 // space. The letters keep their size while the cloud grows - that is
@@ -44,7 +44,7 @@ const FX_HW = (3.6 / 108) / 2;
 const FX_HW_CROSS = (3.2 / 108) / 2;
 // The fx in icon space (0..1), the same letterforms the Android XML
 // draws: f hook + stem, crossbar, and the x - inside the cloud.
-const FX_SCALE = 0.8;
+const FX_SCALE = 0.71;
 const FX_CY = 0.483;
 const FX = [
   [0.426, 0.410, 0.426, 0.595, FX_HW], // f stem
