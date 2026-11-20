@@ -67,6 +67,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # cargo-ndk cross-compiles to this target; without it the build
+      # dies with E0463 (the v0.4.0 first attempt proved it).
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
