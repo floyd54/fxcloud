@@ -235,6 +235,14 @@ class MainActivity : ComponentActivity() {
         selection = if (id in selection) selection - id else selection + id
     }
 
+    // -------------------------------------------------------------- trash (S5a)
+
+    /** Non-null: the trash overlay is up. */
+    private var trashOpen by mutableStateOf(false)
+    private var trashItems by mutableStateOf<List<ApiClient.Trashed>>(emptyList())
+    private var purgeConfirm by mutableStateOf<ApiClient.Trashed?>(null)
+    private var emptyConfirm by mutableStateOf(false)
+
     /** Folder ids visited since the root - what the system back button
      *  walks out of (UI thread only). */
     private val history = ArrayList<Long?>()
@@ -251,6 +259,8 @@ class MainActivity : ComponentActivity() {
             // The way out, in the header that has always rendered: it
             // clears the stored session, so the next launch starts fresh.
             findViewById<TextView>(R.id.headerLogout).setOnClickListener { logout() }
+            // Top-level navigation beside it: the trash view (S5a).
+            findViewById<TextView>(R.id.headerTrash).setOnClickListener { openTrash() }
             findViewById<ComposeView>(R.id.compose).setContent { AppUi() }
             restoreSession()
         } catch (t: Throwable) {
@@ -454,6 +464,10 @@ class MainActivity : ComponentActivity() {
         selection = emptySet()
         deleteConfirm = null
         transfer = null
+        trashOpen = false
+        trashItems = emptyList()
+        purgeConfirm = null
+        emptyConfirm = false
         notice = null
         step = Step.LOGIN
     }
@@ -525,10 +539,13 @@ class MainActivity : ComponentActivity() {
     private fun goBack() {
         when {
             // Dialogs first (they usually eat the press themselves),
-            // then the share screen, a preview, an active selection or
-            // a destination pick - and only then the tree walks up.
+            // then the overlays, an active selection or a destination
+            // pick - and only then the tree walks up.
+            purgeConfirm != null -> purgeConfirm = null
+            emptyConfirm -> emptyConfirm = false
             deleteConfirm != null -> deleteConfirm = null
             rowMenu != null -> rowMenu = null
+            trashOpen -> closeTrash()
             shareFor != null -> {
                 shareFor = null
                 shareDialog = null
@@ -1203,6 +1220,262 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
+    // -------------------------------------------------------------- trash (S5a)
+
+    /** The header's Trash: close whatever else is up and load. */
+    private fun openTrash() {
+        val c = api ?: return
+        if (busy) return
+        shareFor = null
+        shareDialog = null
+        preview = null
+        rotateConfirm = false
+        rowMenu = null
+        deleteConfirm = null
+        selection = emptySet()
+        transfer = null
+        trashOpen = true
+        busy = true
+        notice = null
+        loadTrash(c)
+    }
+
+    private fun loadTrash(c: ApiClient) {
+        busy = true
+        Thread {
+            try {
+                val items = c.trashList().toMutableList()
+                // Names at rest in the trash too (the web's single-row
+                // decryptName path): what does not open keeps a marker.
+                val rk = rootKey
+                if (rk != null) {
+                    for (i in items.indices) {
+                        val t = items[i]
+                        if (t.row.nameEnc != 0) {
+                            items[i] = t.copy(
+                                row = t.row.copy(name = Chain.decryptName(c, rk, t.row))
+                            )
+                        }
+                    }
+                }
+                runOnUiThread {
+                    trashItems = items
+                    busy = false
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    // An initial load that fails leaves the view; a
+                    // reload after an action keeps what is on screen.
+                    if (trashItems.isEmpty()) trashOpen = false
+                    notice = "Trash: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    private fun closeTrash() {
+        trashOpen = false
+        trashItems = emptyList()
+        purgeConfirm = null
+        emptyConfirm = false
+        notice = null
+        loadTree() // restores and purges changed what is behind
+    }
+
+    private fun restoreTrashed(item: ApiClient.Trashed) {
+        val c = api ?: return
+        if (busy) return
+        busy = true
+        Thread {
+            try {
+                c.restoreTrash(item.row.id)
+                runOnUiThread {
+                    busy = false
+                    notice = "Restored ${item.row.name}"
+                    loadTrash(c)
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = "Restore failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    /** Called from the purge confirmation. */
+    private fun purgeTrashed(item: ApiClient.Trashed) {
+        val c = api ?: return
+        if (busy) return
+        busy = true
+        Thread {
+            try {
+                c.purgeTrash(item.row.id)
+                runOnUiThread {
+                    busy = false
+                    notice = "Deleted ${item.row.name} for good"
+                    loadTrash(c)
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = "Purge failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    /** Called from the empty confirmation. */
+    private fun emptyTrashNow() {
+        val c = api ?: return
+        if (busy) return
+        busy = true
+        Thread {
+            try {
+                c.emptyTrash()
+                runOnUiThread {
+                    busy = false
+                    notice = "Trash emptied"
+                    loadTrash(c)
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = "Empty failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    /** ISO timestamp -> "2026-11-20 09:15" (UTC as stored). */
+    private fun formatDate(iso: String): String =
+        if (iso.length >= 16) iso.replace('T', ' ').take(16) else iso
+
+    @Composable
+    private fun TrashUi() {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton({ closeTrash() }) { Text("\u2190 Back") }
+                Text(
+                    "Trash",
+                    modifier = Modifier.weight(1f),
+                    fontWeight = FontWeight.Medium
+                )
+                TextButton(
+                    { emptyConfirm = true },
+                    enabled = !busy && trashItems.isNotEmpty()
+                ) { Text("Empty", color = MaterialTheme.colorScheme.error) }
+                if (busy) {
+                    CircularProgressIndicator(
+                        Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp
+                    )
+                }
+            }
+            notice?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+            if (!busy && trashItems.isEmpty()) {
+                Text(
+                    "The trash is empty",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp)
+                )
+            }
+            LazyColumn(Modifier.weight(1f)) {
+                items(trashItems, key = { it.row.id }) { t ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(t.row.name, maxLines = 2, fontSize = 15.sp)
+                            val dates = buildString {
+                                if (t.deletedAt.isNotEmpty()) {
+                                    append("deleted ")
+                                    append(formatDate(t.deletedAt))
+                                }
+                                if (t.purgeAt.isNotEmpty()) {
+                                    append(" \u00b7 purges ")
+                                    append(formatDate(t.purgeAt))
+                                }
+                            }
+                            Text(
+                                dates,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                        TextButton(
+                            { restoreTrashed(t) },
+                            enabled = !busy
+                        ) { Text("Restore") }
+                        TextButton(
+                            { purgeConfirm = t },
+                            enabled = !busy
+                        ) { Text("Purge", color = MaterialTheme.colorScheme.error) }
+                    }
+                }
+            }
+        }
+    }
+
+    /** The confirmation before a purge: this one does not come back. */
+    @Composable
+    private fun PurgeUi(item: ApiClient.Trashed) {
+        AlertDialog(
+            onDismissRequest = { purgeConfirm = null },
+            title = { Text("Delete for good?") },
+            text = {
+                Text(
+                    "${item.row.name} is gone permanently - the trash is " +
+                        "its last stop and a purge cannot be undone."
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    purgeConfirm = null
+                    purgeTrashed(item)
+                }) { Text("Delete forever", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton({ purgeConfirm = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    /** The confirmation for the whole trash. */
+    @Composable
+    private fun EmptyTrashUi() {
+        AlertDialog(
+            onDismissRequest = { emptyConfirm = false },
+            title = { Text("Empty the trash?") },
+            text = {
+                Text(
+                    "All ${trashItems.size} entries are deleted for good - " +
+                        "this cannot be undone."
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    emptyConfirm = false
+                    emptyTrashNow()
+                }) { Text("Empty", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton({ emptyConfirm = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     // ------------------------------------------------- device unlock (S4b)
 
     /** Keep the device blob after an unlock while the switch is on:
@@ -1334,10 +1607,13 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun AppUi() {
         // The header's Logout follows the step: hidden on the sign-in
-        // form, present wherever a session exists to end.
+        // form, present wherever a session exists to end. Trash is a
+        // destination of the file screens only.
         LaunchedEffect(step) {
             findViewById<TextView>(R.id.headerLogout).visibility =
                 if (step == Step.LOGIN) View.GONE else View.VISIBLE
+            findViewById<TextView>(R.id.headerTrash).visibility =
+                if (step == Step.FILES) View.VISIBLE else View.GONE
         }
         MaterialTheme(
             colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
@@ -1349,6 +1625,7 @@ class MainActivity : ComponentActivity() {
                 val sharing = shareFor
                 val shown = preview
                 when {
+                    trashOpen -> TrashUi()
                     sharing != null -> ShareUi(sharing)
                     shown != null -> PreviewUi(shown)
                     step == Step.LOGIN -> LoginUi()
@@ -1359,6 +1636,8 @@ class MainActivity : ComponentActivity() {
                 // is up (AlertDialogs live in their own window).
                 rowMenu?.let { RowMenuUi(it) }
                 deleteConfirm?.let { DeleteUi(it) }
+                purgeConfirm?.let { PurgeUi(it) }
+                if (emptyConfirm) EmptyTrashUi()
             }
         }
     }

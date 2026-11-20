@@ -216,6 +216,48 @@ class ApiClient(var baseUrl: String) {
         }
     }
 
+    // ------------------------------------------------------------- trash (S5a)
+
+    /** A trashed entry: the row itself plus the two dates that say
+     *  when it arrived and when it goes for good. */
+    data class Trashed(val row: Row, val deletedAt: String, val purgeAt: String)
+
+    fun trashList(): List<Trashed> {
+        val reply = get("/api/files/trash")
+        if (reply.code != 200) serverError(reply, "Trash")
+        val arr = JSONObject(reply.body).getJSONArray("entries")
+        val out = ArrayList<Trashed>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            out.add(
+                Trashed(
+                    Row.from(o),
+                    if (o.isNull("deleted_at")) "" else o.getString("deleted_at"),
+                    if (o.isNull("purge_at")) "" else o.getString("purge_at")
+                )
+            )
+        }
+        return out
+    }
+
+    /** POST /api/files/trash/restore {id} - back to where it was. */
+    fun restoreTrash(id: Long) {
+        val reply = post("/api/files/trash/restore", JSONObject().put("id", id))
+        if (reply.code != 200) serverError(reply, "Restore")
+    }
+
+    /** POST /api/files/trash/purge {id} - gone for good. */
+    fun purgeTrash(id: Long) {
+        val reply = post("/api/files/trash/purge", JSONObject().put("id", id))
+        if (reply.code != 200) serverError(reply, "Purge")
+    }
+
+    /** POST /api/files/trash/empty - the web's "empty trash". */
+    fun emptyTrash() {
+        val reply = post("/api/files/trash/empty", JSONObject())
+        if (reply.code != 200) serverError(reply, "Empty trash")
+    }
+
     // ------------------------------------------------------------ sharing (S4a)
 
     /** One account as the share dialog lists it (GET /api/users). */
@@ -251,8 +293,7 @@ class ApiClient(var baseUrl: String) {
         return PublicKey(key.getString("public_key"), key.getString("fingerprint"))
     }
 
-    /** One share I created (GET /api/shares/outgoing[?file_id=]). */
-    data class Outgoing(
+    /** One share I created (GET /api/shares/outgoing[?file_id=]). */    data class Outgoing(
         val id: Long,
         val fileId: Long,
         val username: String,
