@@ -16,8 +16,8 @@ android {
         applicationId = "de.frischux.fxcloud"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0-s3"
+        versionCode = 4
+        versionName = "0.5.0-s5"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
@@ -27,9 +27,28 @@ android {
         compose = true
     }
 
+    signingConfigs {
+        create("play") {
+            // CI hands in the upload key from the repository secrets
+            // (PLAY_KEYSTORE_*); without them - local builds, the debug
+            // workflow - storeFile stays null and release falls back to
+            // the debug key, so nothing ever fails to build.
+            val path = System.getenv("PLAY_KEYSTORE_FILE")
+            if (!path.isNullOrBlank()) {
+                storeFile = file(path)
+                storePassword = System.getenv("PLAY_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("PLAY_KEY_ALIAS")
+                keyPassword = System.getenv("PLAY_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("play")
+                ?.takeIf { it.storeFile != null }
+                ?: signingConfigs.getByName("debug")
         }
     }
 

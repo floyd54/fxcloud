@@ -56,3 +56,65 @@ jobs:
             SHA256SUMS
           fail_on_unmatched_files: true
           body_path: release-notes.md
+
+  # The Play upload key lives in the repository secrets (PLAY_KEYSTORE_*,
+  # set up2026-11-20): this job builds the signed app bundle for the
+  # Play Console. Without the secrets the job fails loudly - a Play
+  # upload needs the real signature, never the debug fallback.
+  android-aab:
+    needs: linux-x86_64-musl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # The runner ships an Android SDK; its sdkmanager is simply not on
+      # PATH - the same find as the test workflow's android job.
+      - name: SDK packages (platform, build-tools, NDK)
+        run: |
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$(find "$SDK/cmdline-tools" -name sdkmanager -type f | sort | tail -1)"
+          if [ -z "$SDKMANAGER" ]; then echo "sdkmanager not found under $SDK"; exit 1; fi
+          yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses >/dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK" --install "platform-tools" \
+            "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+
+      - name: cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Unpack signing key
+        env:
+          PLAY_KEYSTORE_B64: ${{ secrets.PLAY_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$PLAY_KEYSTORE_B64" ]; then
+            echo "PLAY_KEYSTORE_B64 is missing - set the repository secrets"
+            exit 1
+          fi
+          printf '%s' "$PLAY_KEYSTORE_B64" | base64 -d > /tmp/play-upload.jks
+          echo "PLAY_KEYSTORE_FILE=/tmp/play-upload.jks" >> "$GITHUB_ENV"
+
+      - name: Build the app bundle
+        env:
+          PLAY_KEYSTORE_PASSWORD: ${{ secrets.PLAY_KEYSTORE_PASSWORD }}
+          PLAY_KEY_ALIAS: ${{ secrets.PLAY_KEY_ALIAS }}
+          PLAY_KEY_PASSWORD: ${{ secrets.PLAY_KEY_PASSWORD }}
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          cargo ndk -t arm64-v8a -P 26 build -p fxjni --release \
+            -o android/app/src/main/jniLibs
+          cd android
+          ./gradlew --no-daemon bundleRelease
+
+      - name: Name the asset
+        run: cp android/app/build/outputs/bundle/release/app-release.aab \
+          "fxcloud-${GITHUB_REF_NAME}.aab"
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "fxcloud-*.aab"
+          fail_on_unmatched_files: true
