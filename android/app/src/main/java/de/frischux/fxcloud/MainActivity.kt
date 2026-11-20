@@ -144,6 +144,10 @@ private fun unpackSession(packed: ByteArray): SessionParts {
     )
 }
 
+/** A copy/move in flight: the rows, the mode, and the folder to come
+ *  back to when it is done or cancelled. */
+private class Transfer(val rows: List<Row>, val copy: Boolean, val from: Long?)
+
 /**
  * S2: sign in against a live instance, unlock the account material, list
  * the tree with its breadcrumb and decrypt names-at-rest through JNI
@@ -196,8 +200,9 @@ class MainActivity : ComponentActivity() {
 
     // ------------------------------------------------------------ sharing (S4a)
 
-    /** Non-null replaces the list area with the share screen. */
-    private var shareFor by mutableStateOf<Row?>(null)
+    /** Non-null replaces the list area with the share screen (one row
+     *  or a selection). */
+    private var shareFor by mutableStateOf<List<Row>?>(null)
     private var shareTargets by mutableStateOf<List<ApiClient.Target>>(emptyList())
     private var shareOutgoing by mutableStateOf<List<ApiClient.Outgoing>>(emptyList())
     private var shareTarget by mutableStateOf<String?>(null)
@@ -209,6 +214,26 @@ class MainActivity : ComponentActivity() {
     private val permOptions = listOf(
         1 to "Read", 2 to "Write", 4 to "Create", 8 to "Delete", 16 to "Share"
     )
+
+    // ------------------------------------------------- row actions (S5 early)
+
+    /** The row whose ⋮ menu is open. */
+    private var rowMenu by mutableStateOf<Row?>(null)
+
+    /** Long-press multi-select: the ids selected in the listing. */
+    private var selection by mutableStateOf<Set<Long>>(emptySet())
+
+    /** Rows waiting for the trash confirmation. */
+    private var deleteConfirm by mutableStateOf<List<Row>?>(null)
+
+    /** Non-null: the listing is picking a destination for these rows. */
+    private var transfer by mutableStateOf<Transfer?>(null)
+
+    private fun selectedRows(): List<Row> = rows.filter { it.id in selection }
+
+    private fun toggleSelect(id: Long) {
+        selection = if (id in selection) selection - id else selection + id
+    }
 
     /** Folder ids visited since the root - what the system back button
      *  walks out of (UI thread only). */
@@ -425,6 +450,10 @@ class MainActivity : ComponentActivity() {
         shareOutgoing = emptyList()
         shareTarget = null
         shareKey = null
+        rowMenu = null
+        selection = emptySet()
+        deleteConfirm = null
+        transfer = null
         notice = null
         step = Step.LOGIN
     }
@@ -495,8 +524,11 @@ class MainActivity : ComponentActivity() {
      *  back to sign-in from the passphrase, out of the app at the root. */
     private fun goBack() {
         when {
-            // The share screen closes first, then a preview, then the
-            // tree walks up; at the root of it all the app exits.
+            // Dialogs first (they usually eat the press themselves),
+            // then the share screen, a preview, an active selection or
+            // a destination pick - and only then the tree walks up.
+            deleteConfirm != null -> deleteConfirm = null
+            rowMenu != null -> rowMenu = null
             shareFor != null -> {
                 shareFor = null
                 shareDialog = null
@@ -506,6 +538,8 @@ class MainActivity : ComponentActivity() {
                 preview = null
                 rotateConfirm = false
             }
+            selection.isNotEmpty() -> selection = emptySet()
+            transfer != null -> cancelTransfer()
             step == Step.FILES && history.isNotEmpty() -> {
                 parent = history.removeAt(history.size - 1)
                 loadTree()
@@ -519,6 +553,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onRow(row: Row) {
+        // A tap while selecting toggles; while picking a destination it
+        // only descends into folders - no preview, no share mid-flow.
+        if (selection.isNotEmpty()) {
+            toggleSelect(row.id)
+            return
+        }
+        if (transfer != null) {
+            if (row.isDir) openFolder(row.id)
+            return
+        }
         if (row.isDir) {
             openFolder(row.id)
         } else {
@@ -723,21 +767,26 @@ class MainActivity : ComponentActivity() {
 
     // ------------------------------------------------------------ sharing (S4a)
 
-    /** Long-press on a row: open the share screen and load its world. */
-    private fun openShare(row: Row) {
+    /** Open the share screen for one row or a selection (the row menu
+     *  and the selection bar both land here). */
+    private fun openShare(targets: List<Row>) {
         val c = api ?: return
-        if (busy) return
-        shareFor = row
+        if (busy || targets.isEmpty()) return
+        shareFor = targets
         shareTarget = null
         shareKey = null
         sharePerms = setOf(1, 2, 4, 8, 16)
         shareDialog = null
+        selection = emptySet()
         busy = true
         notice = null
         Thread {
             try {
                 val users = c.users()
-                val outgoing = c.outgoingShares(row.id)
+                // Existing shares only make sense item by item, like the
+                // web's bulk selection says.
+                val outgoing =
+                    if (targets.size == 1) c.outgoingShares(targets[0].id) else emptyList()
                 runOnUiThread {
                     shareTargets = users
                     shareOutgoing = outgoing
@@ -778,7 +827,7 @@ class MainActivity : ComponentActivity() {
     /** The web's shareAdd: keys first, TOFU, then seal. */
     private fun confirmShare() {
         val c = api ?: return
-        val row = shareFor ?: return
+        val rows = shareFor ?: return
         val user = shareTarget ?: run {
             notice = "Pick an account first"
             return
@@ -792,13 +841,13 @@ class MainActivity : ComponentActivity() {
                 if (key == null) {
                     // No key row: plaintext shares still work, anything
                     // encrypted below stays unreadable for them - say it.
-                    val keyed = row.encVersion > 0 || row.isDir
+                    val keyed = rows.any { it.encVersion > 0 || it.isDir }
                     runOnUiThread {
                         busy = false
                         if (keyed) {
                             shareDialog = ShareDialog.NoKey(user, mask)
                         } else {
-                            doSealShare(row, user, null, mask)
+                            doSealShare(rows, user, null, mask)
                         }
                     }
                     return@Thread
@@ -813,7 +862,7 @@ class MainActivity : ComponentActivity() {
                             shareDialog = ShareDialog.Changed(
                                 user, known, key.fingerprint, key.public, mask
                             )
-                        else -> doSealShare(row, user, key.public, mask)
+                        else -> doSealShare(rows, user, key.public, mask)
                     }
                 }
             } catch (e: Throwable) {
@@ -825,34 +874,44 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
-    /** Seal (5.5) and POST - the one envelope per item, plus the N4 label. */
-    private fun doSealShare(row: Row, user: String, pub: String?, mask: Int) {
+    /** Seal (5.5) and POST - one envelope per item, plus the N4 label
+     *  per flagged row; a single request for the whole selection. */
+    private fun doSealShare(rows: List<Row>, user: String, pub: String?, mask: Int) {
         val c = api ?: return
         // Names at rest (N4): a flagged plaintext file has no key to
         // wrap its label under - the server refuses that shape too.
-        if (row.nameEnc != 0 && !row.isDir && row.encVersion == 0) {
-            notice = "This name is flagged but the file carries no key - nothing to seal"
+        val bareFlagged = rows.filter { it.nameEnc != 0 && !it.isDir && it.encVersion == 0 }
+        if (bareFlagged.isNotEmpty()) {
+            notice = "A flagged name on a plaintext file - there is nothing to seal"
             return
         }
         busy = true
         notice = null
         Thread {
             try {
-                var envelope: String? = null
-                var label: String? = null
+                val items = ArrayList<ApiClient.ShareItem>()
                 if (pub != null) {
                     val rk = rootKey
                         ?: throw RuntimeException("Locked - unlock first")
-                    val sealKey = Chain.shareSealValue(c, rk, row)
-                    if (sealKey != null) {
-                        val sealed = FxCore.eciesSeal(
-                            Chain.decodeB64(pub), sealKey, row.id, user
-                        )
-                        envelope = java.util.Base64.getEncoder().encodeToString(sealed)
-                        label = Chain.shareLabel(row, sealKey, user)
+                    for (r in rows) {
+                        val sealKey = Chain.shareSealValue(c, rk, r)
+                        var envelope: String? = null
+                        var label: String? = null
+                        if (sealKey != null) {
+                            val sealed = FxCore.eciesSeal(
+                                Chain.decodeB64(pub), sealKey, r.id, user
+                            )
+                            envelope =
+                                java.util.Base64.getEncoder().encodeToString(sealed)
+                            label = Chain.shareLabel(r, sealKey, user)
+                        }
+                        items.add(ApiClient.ShareItem(r.id, envelope, label))
                     }
+                } else {
+                    // No keys: plaintext items go through as they are.
+                    for (r in rows) items.add(ApiClient.ShareItem(r.id, null, null))
                 }
-                val out = c.shareBatch(row.id, user, mask, envelope, label)
+                val out = c.shareBatch(items, user, mask)
                 val ok = out.optJSONArray("ok") ?: JSONArray()
                 val failed = out.optJSONArray("failed") ?: JSONArray()
                 val detail = if (failed.length() > 0) {
@@ -863,6 +922,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     ""
                 }
+                val single = rows.singleOrNull()
                 runOnUiThread {
                     busy = false
                     notice = if (ok.length() > 0) {
@@ -870,7 +930,7 @@ class MainActivity : ComponentActivity() {
                     } else {
                         "Nothing shared$detail"
                     }
-                    refreshOutgoing(c, row)
+                    if (single != null) refreshOutgoing(c, single)
                 }
             } catch (e: Throwable) {
                 runOnUiThread {
@@ -895,7 +955,9 @@ class MainActivity : ComponentActivity() {
     /** Revoke one of my shares (DELETE /api/shares/{id}). */
     private fun revokeShare(id: Long) {
         val c = api ?: return
-        val row = shareFor ?: return
+        // The list only exists for a single item (like the web's bulk
+        // selection says), so refresh against that row.
+        val row = shareFor?.singleOrNull() ?: return
         if (busy) return
         busy = true
         Thread {
@@ -940,6 +1002,205 @@ class MainActivity : ComponentActivity() {
     private fun formatFingerprint(hex: String): String {
         val s = hex.lowercase()
         return if (s.length == 32) s.chunked(8).joinToString(" ") else s
+    }
+
+    // ------------------------------------------------- row actions (S5 early)
+
+    /** The ⋮ menu of one row: share, copy, move, delete. */
+    @Composable
+    private fun RowMenuUi(row: Row) {
+        AlertDialog(
+            onDismissRequest = { rowMenu = null },
+            title = { Text(row.name, maxLines = 2) },
+            text = {
+                Column {
+                    ActionRow("Share") {
+                        rowMenu = null
+                        openShare(listOf(row))
+                    }
+                    ActionRow("Copy") {
+                        rowMenu = null
+                        startTransfer(listOf(row), copy = true)
+                    }
+                    ActionRow("Move") {
+                        rowMenu = null
+                        startTransfer(listOf(row), copy = false)
+                    }
+                    ActionRow("Delete", danger = true) {
+                        rowMenu = null
+                        deleteConfirm = listOf(row)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton({ rowMenu = null }) { Text("Close") }
+            }
+        )
+    }
+
+    @Composable
+    private fun ActionRow(label: String, danger: Boolean = false, onClick: () -> Unit) {
+        Text(
+            label,
+            color = if (danger) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurface,
+            fontSize = 16.sp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(vertical = 12.dp)
+        )
+    }
+
+    /** The selection bar: count plus the same actions in a ⋮ menu. */
+    @Composable
+    private fun SelectionActions() {
+        var menuOpen by remember { mutableStateOf(false) }
+        Text(
+            "${selection.size} selected",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+            modifier = Modifier.padding(end = 4.dp)
+        )
+        Box {
+            TextButton({ menuOpen = true }) { Text("\u22EE", fontSize = 18.sp) }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                val targets = selectedRows()
+                DropdownMenuItem(
+                    text = { Text("Share") },
+                    onClick = { menuOpen = false; openShare(targets) }
+                )
+                DropdownMenuItem(
+                    text = { Text("Copy") },
+                    onClick = { menuOpen = false; startTransfer(targets, copy = true) }
+                )
+                DropdownMenuItem(
+                    text = { Text("Move") },
+                    onClick = { menuOpen = false; startTransfer(targets, copy = false) }
+                )
+                DropdownMenuItem(
+                    text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                    onClick = { menuOpen = false; deleteConfirm = targets }
+                )
+            }
+        }
+    }
+
+    /** The confirmation before anything goes to the trash. */
+    @Composable
+    private fun DeleteUi(items: List<Row>) {
+        val n = items.size
+        AlertDialog(
+            onDismissRequest = { deleteConfirm = null },
+            title = {
+                Text(if (n == 1) "Move to trash?" else "Move $n items to the trash?")
+            },
+            text = {
+                Text(
+                    if (n == 1) {
+                        "The file lands in the trash, restorable until it is " +
+                            "purged - the web shows the trash view."
+                    } else {
+                        "The selection lands in the trash, restorable until " +
+                            "it is purged."
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    deleteConfirm = null
+                    doTrash(items)
+                }) {
+                    Text(
+                        if (n == 1) "Move to trash" else "Move $n to trash",
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton({ deleteConfirm = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    private fun doTrash(items: List<Row>) {
+        val c = api ?: return
+        if (busy) return
+        selection = emptySet()
+        busy = true
+        notice = null
+        Thread {
+            try {
+                val out = c.trash(items.map { it.id })
+                val failed = out.optJSONArray("failed")
+                val failMsg =
+                    if (failed != null && failed.length() > 0) ", ${failed.length()} failed" else ""
+                runOnUiThread {
+                    busy = false
+                    loadTree()
+                    notice = (if (items.size == 1) {
+                        "Moved to the trash"
+                    } else {
+                        "Moved ${items.size} items to the trash"
+                    }) + failMsg
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = "Delete failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    /** Copy/move: the listing becomes the destination picker (the web's
+     *  transfer dialog, as a screen); Back cancels, the source folder
+     *  is where the flow returns. */
+    private fun startTransfer(rows: List<Row>, copy: Boolean) {
+        if (busy || rows.isEmpty()) return
+        selection = emptySet()
+        rowMenu = null
+        transfer = Transfer(rows, copy, parent)
+        parent = null
+        loadTree()
+    }
+
+    private fun cancelTransfer() {
+        val from = transfer?.from
+        transfer = null
+        parent = from
+        loadTree()
+    }
+
+    private fun executeTransfer() {
+        val t = transfer ?: return
+        val c = api ?: return
+        if (busy) return
+        val dest = parent // the folder the picker stands in
+        busy = true
+        notice = null
+        Thread {
+            try {
+                val out = c.transfer(t.copy, t.rows.map { it.id }, dest)
+                val failed = out.optJSONArray("failed")
+                val failMsg =
+                    if (failed != null && failed.length() > 0) ", ${failed.length()} failed" else ""
+                val verb = if (t.copy) "Copied" else "Moved"
+                val what = if (t.rows.size == 1) "1 item" else "${t.rows.size} items"
+                runOnUiThread {
+                    busy = false
+                    transfer = null
+                    parent = t.from
+                    loadTree()
+                    notice = "$verb $what$failMsg"
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = (if (t.copy) "Copy failed: " else "Move failed: ") + e.message
+                }
+            }
+        }.start()
     }
 
     // ------------------------------------------------- device unlock (S4b)
@@ -1094,6 +1355,10 @@ class MainActivity : ComponentActivity() {
                     step == Step.PASSPHRASE -> UnlockUi()
                     else -> FilesUi()
                 }
+                // Row-action dialogs: they float above whichever screen
+                // is up (AlertDialogs live in their own window).
+                rowMenu?.let { RowMenuUi(it) }
+                deleteConfirm?.let { DeleteUi(it) }
             }
         }
     }
@@ -1224,6 +1489,9 @@ class MainActivity : ComponentActivity() {
                     .padding(horizontal = 12.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (selection.isNotEmpty()) {
+                    TextButton({ selection = emptySet() }) { Text("\u2715") }
+                }
                 // The path bar, the web's renderBreadcrumb in kind: earlier
                 // segments are links (underlined, accent-colored like the
                 // web's), the current folder semibold, "›" between - and
@@ -1268,7 +1536,16 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                TextButton({ startUpload() }, enabled = !busy) { Text("Upload") }
+                when {
+                    transfer != null -> {
+                        TextButton({ cancelTransfer() }) { Text("Cancel") }
+                        TextButton({ executeTransfer() }, enabled = !busy) {
+                            Text(if (transfer!!.copy) "Copy here" else "Move here")
+                        }
+                    }
+                    selection.isNotEmpty() -> SelectionActions()
+                    else -> TextButton({ startUpload() }, enabled = !busy) { Text("Upload") }
+                }
                 if (busy) {
                     CircularProgressIndicator(Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp)
                 }
@@ -1294,18 +1571,43 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 items(rows, key = { it.id }) { row ->
+                    val selected = row.id in selection
+                    val tint =
+                        if (selected) {
+                            Modifier.background(
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                            )
+                        } else {
+                            Modifier
+                        }
                     Row(
                         Modifier.fillMaxWidth()
+                            .then(tint)
                             .combinedClickable(
-                                onClick = { onRow(row) },
-                                onLongClick = { openShare(row) }
+                                onClick = {
+                                    if (selection.isNotEmpty()) toggleSelect(row.id)
+                                    else onRow(row)
+                                },
+                                onLongClick = {
+                                    // Long press selects: the first press
+                                    // starts the selection with this row,
+                                    // another one adds or drops it. While
+                                    // picking a destination: nothing.
+                                    if (transfer == null) toggleSelect(row.id)
+                                }
                             )
                             .padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        if (selection.isNotEmpty()) {
+                            Checkbox(
+                                checked = selected,
+                                onCheckedChange = { toggleSelect(row.id) }
+                            )
+                        }
                         Text(if (row.isDir) "\uD83D\uDCC1" else "\uD83D\uDCC4")
                         Spacer(Modifier.width(12.dp))
-                        Column {
+                        Column(Modifier.weight(1f)) {
                             Text(row.name, maxLines = 2)
                             if (!row.isDir) {
                                 Text(
@@ -1315,18 +1617,22 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                         }
+                        if (selection.isEmpty() && transfer == null) {
+                            TextButton({ rowMenu = row }) { Text("\u22EE", fontSize = 18.sp) }
+                        }
                     }
                 }
             }
         }
     }
 
-    /** S4a: share one row - grantee picker, fingerprint with TOFU,
-     *  permissions, the existing shares with revoke, and the confirm
-     *  dialogs before anything is sealed. */
+    /** S4a: share one row or a selection - grantee picker, fingerprint
+     *  with TOFU, permissions, the existing shares (one row only), and
+     *  the confirm dialogs before anything is sealed. */
     @Composable
-    private fun ShareUi(row: Row) {
+    private fun ShareUi(rows: List<Row>) {
         var menuOpen by remember { mutableStateOf(false) }
+        val single = rows.singleOrNull()
         Column(Modifier.fillMaxSize()) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
@@ -1338,7 +1644,8 @@ class MainActivity : ComponentActivity() {
                     notice = null
                 }) { Text("\u2190 Back") }
                 Text(
-                    "Share: ${row.name}",
+                    if (single != null) "Share: ${single.name}"
+                    else "Share ${rows.size} items",
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                     fontWeight = FontWeight.Medium
@@ -1429,29 +1736,31 @@ class MainActivity : ComponentActivity() {
                     Text("Share")
                 }
                 Spacer(Modifier.height(16.dp))
-                Text("Existing shares", fontWeight = FontWeight.SemiBold)
-                if (shareOutgoing.isEmpty()) {
-                    Text(
-                        "None yet",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                }
-                shareOutgoing.forEach { s ->
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(s.username, fontSize = 15.sp)
-                            Text(
-                                s.permissionNames.joinToString(", "),
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                            )
-                        }
-                        TextButton({ revokeShare(s.id) }, enabled = !busy) {
-                            Text("Revoke", color = MaterialTheme.colorScheme.error)
+                if (single != null) {
+                    Text("Existing shares", fontWeight = FontWeight.SemiBold)
+                    if (shareOutgoing.isEmpty()) {
+                        Text(
+                            "None yet",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    shareOutgoing.forEach { s ->
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(s.username, fontSize = 15.sp)
+                                Text(
+                                    s.permissionNames.joinToString(", "),
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                )
+                            }
+                            TextButton({ revokeShare(s.id) }, enabled = !busy) {
+                                Text("Revoke", color = MaterialTheme.colorScheme.error)
+                            }
                         }
                     }
                 }
@@ -1462,12 +1771,12 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(16.dp))
             }
         }
-        shareDialog?.let { ShareDialogUi(it, row) }
+        shareDialog?.let { ShareDialogUi(it, rows) }
     }
 
     /** The two TOFU states and the web's no-key warning (app.js). */
     @Composable
-    private fun ShareDialogUi(d: ShareDialog, row: Row) {
+    private fun ShareDialogUi(d: ShareDialog, rows: List<Row>) {
         when (d) {
             is ShareDialog.FirstUse -> AlertDialog(
                 onDismissRequest = { shareDialog = null },
@@ -1483,7 +1792,7 @@ class MainActivity : ComponentActivity() {
                     TextButton({
                         rememberPeer(d.user, d.fp)
                         shareDialog = null
-                        doSealShare(row, d.user, d.pub, d.mask)
+                        doSealShare(rows, d.user, d.pub, d.mask)
                     }) { Text("Matches - share") }
                 },
                 dismissButton = {
@@ -1506,7 +1815,7 @@ class MainActivity : ComponentActivity() {
                     TextButton({
                         rememberPeer(d.user, d.fp)
                         shareDialog = null
-                        doSealShare(row, d.user, d.pub, d.mask)
+                        doSealShare(rows, d.user, d.pub, d.mask)
                     }) { Text("Verified - share anyway") }
                 },
                 dismissButton = {
@@ -1527,7 +1836,7 @@ class MainActivity : ComponentActivity() {
                 confirmButton = {
                     TextButton({
                         shareDialog = null
-                        doSealShare(row, d.user, null, d.mask)
+                        doSealShare(rows, d.user, null, d.mask)
                     }) { Text("Share plaintext anyway") }
                 },
                 dismissButton = {

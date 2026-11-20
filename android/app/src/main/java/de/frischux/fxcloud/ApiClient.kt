@@ -290,28 +290,66 @@ class ApiClient(var baseUrl: String) {
         return out
     }
 
-    /**
-     * POST /api/shares/batch - the web sends a single item as a
-     * one-element array too; answers {ok: [], failed: [{id, name,
-     * error}]} (returned unparsed for the caller's notice).
-     */
+    /** One item of a share batch: sealed envelope and N4 label when
+     *  the row carries keys, omitted for plaintext. */
+    data class ShareItem(val fileId: Long, val envelope: String?, val displayName: String?)
+
+    /** POST /api/shares/batch - the web sends its whole selection in
+     *  one request (a single item is an array of one); answers
+     *  {ok: [], failed: [{id, name, error}]} (returned unparsed). */
     fun shareBatch(
-        fileId: Long,
+        items: List<ShareItem>,
         username: String,
-        permissions: Int,
-        envelope: String?,
-        displayName: String?
+        permissions: Int
     ): JSONObject {
-        val item = JSONObject().put("file_id", fileId)
-        if (envelope != null) item.put("envelope", envelope)
-        if (displayName != null) item.put("display_name", displayName)
+        val arr = JSONArray()
+        for (it in items) {
+            val item = JSONObject().put("file_id", it.fileId)
+            if (it.envelope != null) item.put("envelope", it.envelope)
+            if (it.displayName != null) item.put("display_name", it.displayName)
+            arr.put(item)
+        }
         val body = JSONObject()
-            .put("items", JSONArray().put(item))
+            .put("items", arr)
             .put("username", username)
             .put("permissions", permissions)
         val reply = post("/api/shares/batch", body)
         if (reply.code != 200) serverError(reply, "Share")
         return JSONObject(reply.body)
+    }
+
+    /**
+     * Copy or move rows to `dest` (null = my root): one item takes the
+     * single routes ({id, dest_parent}), a selection the batch ones
+     * ({ids, dest_parent}) - same semantics, the web uses both too.
+     * Answers {ok, failed} for batches, {entry} for single moves.
+     */
+    fun transfer(copy: Boolean, ids: List<Long>, dest: Long?): JSONObject {
+        require(ids.isNotEmpty()) { "nothing to transfer" }
+        val single = ids.size == 1
+        val path = when {
+            single && copy -> "/api/files/copy"
+            single -> "/api/files/move"
+            copy -> "/api/files/batch/copy"
+            else -> "/api/files/batch/move"
+        }
+        val body = JSONObject()
+        if (single) body.put("id", ids[0]) else body.put("ids", JSONArray(ids))
+        if (dest == null) body.put("dest_parent", JSONObject.NULL)
+        else body.put("dest_parent", dest)
+        val reply = post(path, body)
+        if (reply.code != 200) serverError(reply, if (copy) "Copy" else "Move")
+        return if (reply.body.isBlank()) JSONObject() else JSONObject(reply.body)
+    }
+
+    /** POST /api/files/batch/delete - the trash (S5 shows it; until
+     *  then the web's trash holds what this sends). Answers {ok,
+     *  failed} like the other batches. */
+    fun trash(ids: List<Long>): JSONObject {
+        val body = JSONObject().put("ids", JSONArray(ids))
+        val reply = post("/api/files/batch/delete", body)
+        if (reply.code != 200) serverError(reply, "Delete")
+        return if (reply.body.isBlank()) JSONObject() else JSONObject(reply.body)
     }
 
     /** DELETE /api/shares/{id} - revoke one of my shares. */
