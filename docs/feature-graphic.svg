@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="500" viewBox="0 0 1024 500">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#D5EEFB"/><stop offset="1" stop-color="#C5E5F8"/>
+  </linearGradient></defs>
+  <rect width="1024" height="500" fill="url(#bg)"/>
+  <g transform="translate(-98,-88.7) scale(6.5)">
+    <g transform="translate(-4.5,5.5)"><path fill="#00598F" d="M24.3,60.2 a12.2,12.2 0,0,1,24.4,0 a12.2,12.2 0,0,1,-24.4,0 z M36.4,49.4 a17.6,17.6 0,0,1,35.2,0 a17.6,17.6 0,0,1,-35.2,0 z M59.4,60.2 a12.2,12.2 0,0,1,24.4,0 a12.2,12.2 0,0,1,-24.4,0 z"/></g>
+    <path fill="#0082C9" d="M24.3,60.2 a12.2,12.2 0,0,1,24.4,0 a12.2,12.2 0,0,1,-24.4,0 z M36.4,49.4 a17.6,17.6 0,0,1,35.2,0 a17.6,17.6 0,0,1,-35.2,0 z M59.4,60.2 a12.2,12.2 0,0,1,24.4,0 a12.2,12.2 0,0,1,-24.4,0 z"/>
+    <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M51.3,46 C51.3,43.3 48.7,42.4 46.9,45.1 L46.9,62.9" stroke-width="3.6"/>
+      <path d="M42.4,52.2 L51.3,52.2" stroke-width="3.2"/>
+      <path d="M55.9,45.1 L65.6,62.9 M65.6,45.1 L55.9,62.9" stroke-width="3.6"/>
+    </g>
+  </g>
+  <text x="490" y="258" font-family="sans-serif" font-weight="700" font-size="104" fill="#00598F" dominant-baseline="middle">fxcloud</text>
+</svg>
