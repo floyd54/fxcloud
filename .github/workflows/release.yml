@@ -113,16 +113,20 @@ jobs:
           cargo ndk -t arm64-v8a -P 26 build -p fxjni --release \
             -o android/app/src/main/jniLibs
           cd android
-          ./gradlew --no-daemon bundleRelease
+          ./gradlew --no-daemon bundleRelease assembleDebug
 
       # One line on purpose: a folded YAML scalar turns a trailing
       # backslash into "backslash space" and cp then writes a file
       # whose name starts with a space (the v0.4.0 second attempt).
-      - name: Name the asset
-        run: cp android/app/build/outputs/bundle/release/app-release.aab "fxcloud-${GITHUB_REF_NAME}.aab"
+      - name: Name the assets
+        run: |
+          cp android/app/build/outputs/bundle/release/app-release.aab "fxcloud-${GITHUB_REF_NAME}.aab"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "fxcloud-${GITHUB_REF_NAME}-debug.apk"
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          files: "fxcloud-*.aab"
+          files: |
+            fxcloud-*.aab
+            fxcloud-*-debug.apk
           fail_on_unmatched_files: true
