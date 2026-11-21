@@ -134,7 +134,8 @@ pass pending. S4 built (share dialog + revoke, Keystore auto-unlock,
 rotate + reseal), device pass pending. S5 built (papierkorb,
 settings, versions, per-row menu + multi-select, create folder/file)
 plus the light-blue light-mode canvas and the feature-graphic login
-hero. Play: closed testing is live - screenshots, listing and Data
+hero - shipped together as v0.4.2 (versionCode 6, for the Play
+closed track). Play: closed testing is live - screenshots, listing and Data
 Safety forms are in, and the user installed the build from the Play
 Store (2026-11-21). Production is gated by Google's rule for new
 personal accounts: 12 testers continuously opted in for 14 days,
