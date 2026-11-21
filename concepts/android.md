@@ -137,7 +137,9 @@ plus the light-blue light-mode canvas and the feature-graphic login
 hero - shipped together as v0.4.2 (versionCode 6, for the Play
 closed track). Play: closed testing is live - screenshots, listing and Data
 Safety forms are in, and the user installed the build from the Play
-Store (2026-11-21). Production is gated by Google's rule for new
+Store (2026-11-21). Text and markdown edit in the app now (source,
+markdown toolbar, rendered pane, save through `PUT /files/content`
+with the web's key rules). Production is gated by Google's rule for new
 personal accounts: 12 testers continuously opted in for 14 days,
 then a review of at most 7 days. The counter tracks tester opt-in,
 not builds: uploads during the test do not reset it, but a tester
@@ -157,7 +159,7 @@ mirrors the web twin (`app.js` / `fxenc.js`).
 | Sub-slice | Contents |
 |-----------|----------|
 | S3a primitives | JNI: `encryptBytes`/`decryptBytes` (FXE1, bound to the file id - a row move fails decryption, as on the web), `unlockWithRecovery` (same packed session as S2), `shareEnvelopeAad`/`eciesOpen`/`eciesSeal`. Golden pins: `fx1-vectors.json` (read side - the write side is the JS roundtrip's), `recovery_open`, `ecies_open`, `ecies_seal` (error cases; success = seal->open roundtrip, the envelope carries an ephemeral key). |
-| S3b preview | file tap -> `GET /api/files/download?id=` -> content key (`Chain.keyFor` + `unwrapChild` on the row's `enc_key`) -> `decryptBytes` -> render. v1 renders image, text and PDF (the platform's `PdfRenderer`,15 pages max); video/audio/html say so instead of pretending. Plaintext rows preview straight with the server's mime, encrypted rows decide by extension because the server only ever answers `octet-stream`. Whole file into memory - streaming/range is deliberately later. |
+| S3b preview | file tap -> `GET /api/files/download?id=` -> content key (`Chain.keyFor` + `unwrapChild` on the row's `enc_key`) -> `decryptBytes` -> render. v1 renders image, text and PDF (the platform's `PdfRenderer`,15 pages max); video/audio/html say so instead of pretending. Plaintext rows preview straight with the server's mime, encrypted rows decide by extension because the server only ever answers `octet-stream`. Whole file into memory - streaming/range is deliberately later. Text and markdown open read-only first, **Edit** swaps the preview for an editor: monospace source, a markdown toolbar (bold/italic/headings/lists/quote/link/code inserted at the selection), a rendered pane for `.md`/`.markdown` (the web's `mdToHtml` ported line for line, its vectors generated from the JS), save through the web's own `PUT /api/files/content` (`putContent`): an encrypted row re-encrypts under the *same* file key so the history keeps opening, a plaintext row under a keyed folder is promoted with `history=drop` like the web's zone write, and every save makes the server pin the old text as a version - a read-only sharee meets the pinned403. |
 | S3c upload | `POST /api/files/file` (random temp name under a `names_enc` folder, then `rename` to the id-bound blob - N3/N5), fresh file key, wrap under the destination folder's key (`PUT /api/files/key` gives a recordless folder one first, mirror `ensureChainKey`), `encryptBytes`, `PUT /api/files/content?id=&enc=1&key=`. A plaintext account takes the same path without `enc`. v1 = one file at a time; folder trees come later. |
 | S3d recovery + share envelopes | recovery pane on the passphrase screen (32-byte key typed as hex -> `unlockWithRecovery`, packed session exactly as S2); incoming share envelopes open with the packed session's private key (`eciesOpen` + `share_envelope_aad`) so mounts show real names and their subtree keys instead of S2's `(encrypted)` placeholders; `eciesSeal` lands the primitive S4's share dialog uses. |
 

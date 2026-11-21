@@ -244,7 +244,12 @@ class ApiClient(var baseUrl: String) {
      * timeout: this is the upload itself. `dropHistory` is the
      * rotation's destructive half: old versions fall with the old key.
      */
-    fun putContent(id: Long, bytes: ByteArray, encKeyB64: String?, dropHistory: Boolean = false) {
+    fun putContent(
+        id: Long,
+        bytes: ByteArray,
+        encKeyB64: String?,
+        dropHistory: Boolean = false
+    ): JSONObject {
         val path = buildString {
             append("/api/files/content?id=").append(id)
             if (encKeyB64 != null) {
@@ -269,6 +274,13 @@ class ApiClient(var baseUrl: String) {
             throw java.io.IOException(
                 if (msg.isNotEmpty()) "Save: $msg" else "Save ($code)"
             )
+        }
+        // The save answer carries the entry (size, modified_at, and the
+        // key record of a promotion) - the editor adopts it.
+        return try {
+            JSONObject(body)
+        } catch (e: Throwable) {
+            JSONObject()
         }
     }
 

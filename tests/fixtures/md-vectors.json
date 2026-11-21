@@ -1,0 +1,82 @@
+[
+  {
+    "input": "",
+    "html": ""
+  },
+  {
+    "input": "Hello world",
+    "html": "<p>Hello world</p>"
+  },
+  {
+    "input": "line one\nline two",
+    "html": "<p>line one<br>line two</p>"
+  },
+  {
+    "input": "para1\r\n\r\npara2\r\n",
+    "html": "<p>para1</p><p>para2</p>"
+  },
+  {
+    "input": "# Title\n## Sub\n\nbody",
+    "html": "<h1>Title</h1><h2>Sub</h2><p>body</p>"
+  },
+  {
+    "input": "---\n***\n___",
+    "html": "<hr><hr><hr>"
+  },
+  {
+    "input": "some **bold** and *em* and ~~gone~~ text",
+    "html": "<p>some <strong>bold</strong> and <em>em</em> and <del>gone</del> text</p>"
+  },
+  {
+    "input": "code `**not bold**` here",
+    "html": "<p>code <code>**not bold**</code> here</p>"
+  },
+  {
+    "input": "[link](https://x.test/a) and [bad](javascript:alert(1)) and [rel](/local) and [hash](#top)",
+    "html": "<p><a href=\"https://x.test/a\" target=\"_blank\" rel=\"noopener noreferrer\">link</a> and <a href=\"#\" target=\"_blank\" rel=\"noopener noreferrer\">bad</a>) and <a href=\"/local\" target=\"_blank\" rel=\"noopener noreferrer\">rel</a> and <a href=\"#top\" target=\"_blank\" rel=\"noopener noreferrer\">hash</a></p>"
+  },
+  {
+    "input": "![img](https://x.test/i.png) ![bad](javascript:x) ![alt](data:text/html,x)",
+    "html": "<p><img src=\"https://x.test/i.png\" alt=\"img\"> bad alt</p>"
+  },
+  {
+    "input": "- one\n- two\n1. first\n2. second",
+    "html": "<ul><li>one</li><li>two</li></ul><ol><li>first</li><li>second</li></ol>"
+  },
+  {
+    "input": "> quoted\n> lines\n\nafter",
+    "html": "<blockquote>quoted<br>lines</blockquote><p>after</p>"
+  },
+  {
+    "input": "```js\n# not a heading\n**no**\n```",
+    "html": "<pre><code># not a heading\n**no**</code></pre>"
+  },
+  {
+    "input": "unclosed ```\nstill code",
+    "html": "<p>unclosed ```<br>still code</p>"
+  },
+  {
+    "input": "<script>alert(1)</script> & \"quotes\" <b>bold</b>",
+    "html": "<p>&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;quotes&quot; &lt;b&gt;bold&lt;/b&gt;</p>"
+  },
+  {
+    "input": "code with entities: `a & b < c`",
+    "html": "<p>code with entities: <code>a &amp; b &lt; c</code></p>"
+  },
+  {
+    "input": "   indented para\n\ttab para",
+    "html": "<p>   indented para<br>\ttab para</p>"
+  },
+  {
+    "input": "- [ ] task list item",
+    "html": "<ul><li>[ ] task list item</li></ul>"
+  },
+  {
+    "input": "## Heading\n- list right after heading",
+    "html": "<h2>Heading</h2><ul><li>list right after heading</li></ul>"
+  },
+  {
+    "input": "text with trailing spaces   \nnext line",
+    "html": "<p>text with trailing spaces   <br>next line</p>"
+  }
+]

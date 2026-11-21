@@ -9,6 +9,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
+import android.text.Html
+import android.text.method.LinkMovementMethod
 import android.view.View
 import android.widget.TextView
 import android.widget.Toast
@@ -37,6 +39,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -62,17 +65,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import java.io.ByteArrayInputStream
 import java.io.File
 import org.json.JSONArray
@@ -271,6 +280,20 @@ class MainActivity : ComponentActivity() {
     private var versionsFor by mutableStateOf<Row?>(null)
     private var versionItems by mutableStateOf<List<ApiClient.Version>>(emptyList())
     private var deleteVersionConfirm by mutableStateOf<ApiClient.Version?>(null)
+
+    /** Non-null: the text/markdown editor overlay of that file is up. */
+    private var editorRow by mutableStateOf<Row?>(null)
+    private var editorText by mutableStateOf(TextFieldValue(""))
+    private var editorBaseline by mutableStateOf("")
+    private var editorMd by mutableStateOf(false)
+    private var editorMdPane by mutableStateOf(false)
+    private var editorStatus by mutableStateOf<String?>(null)
+    private var editorStatusError by mutableStateOf(false)
+    /** What the next save must do: reuse the row's key, promote a
+     *  plaintext row under a keyed folder, or write plaintext. */
+    private var editorEncrypted by mutableStateOf(false)
+    private var editorEncKey by mutableStateOf<String?>(null)
+    private var editorCloseConfirm by mutableStateOf(false)
 
     /** "system", "light" or "dark" - what the server knows, applied
      *  over the system default (the web's theme section). */
@@ -563,6 +586,16 @@ class MainActivity : ComponentActivity() {
         versionsFor = null
         versionItems = emptyList()
         deleteVersionConfirm = null
+        editorRow = null
+        editorText = TextFieldValue("")
+        editorBaseline = ""
+        editorStatus = null
+        editorStatusError = false
+        editorCloseConfirm = false
+        editorMd = false
+        editorMdPane = false
+        editorEncrypted = false
+        editorEncKey = null
         notice = null
         step = Step.LOGIN
     }
@@ -640,6 +673,7 @@ class MainActivity : ComponentActivity() {
             emptyConfirm -> emptyConfirm = false
             deleteConfirm != null -> deleteConfirm = null
             deleteVersionConfirm != null -> deleteVersionConfirm = null
+            editorCloseConfirm -> editorCloseConfirm = false
             rowMenu != null -> rowMenu = null
             createDialog != null -> createDialog = null
             trashOpen -> closeTrash()
@@ -653,7 +687,9 @@ class MainActivity : ComponentActivity() {
                 preview = null
                 rotateConfirm = false
             }
-            // Below a version's preview: the list it came from.
+            // The editor guards its own text; below it, a version's
+            // preview still returns to the list it came from.
+            editorRow != null -> requestEditorClose()
             versionsOpen -> closeVersions()
             selection.isNotEmpty() -> selection = emptySet()
             transfer != null -> cancelTransfer()
@@ -705,6 +741,17 @@ class MainActivity : ComponentActivity() {
      * Kinds the app cannot render never touch the network; every
      * failure lands as a notice, never as a crash.
      */
+    /** The plaintext behind a row's bytes: the content key unwrapped
+     *  under the parent's (the S3b walk). Throws notice-friendly
+     *  errors when locked or when the row carries no key record. */
+    private fun decryptBody(c: ApiClient, row: Row, raw: ByteArray): ByteArray {
+        val rk = rootKey ?: throw RuntimeException("Locked - unlock first")
+        val encKey = row.encKey ?: throw RuntimeException("This row carries no key record")
+        val parentKey = Chain.keyFor(c, rk, row.parentId)
+        val contentKey = FxCore.unwrapChild(parentKey, row.id, encKey)
+        return FxCore.decryptBytes(row.id, contentKey, raw)
+    }
+
     private fun loadPreview(row: Row, versionId: Long? = null, versionEnc: Int = 0) {
         val c = api ?: return
         val kind = previewKind(row.name, row.mime)
@@ -730,16 +777,7 @@ class MainActivity : ComponentActivity() {
                 // encrypted (the server's rule for version downloads).
                 val encrypted =
                     if (versionId != null) versionEnc > 0 else row.encVersion > 0
-                val content = if (encrypted) {
-                    val rk = rootKey ?: throw RuntimeException("Locked - unlock first")
-                    val encKey =
-                        row.encKey ?: throw RuntimeException("This row carries no key record")
-                    val parentKey = Chain.keyFor(c, rk, row.parentId)
-                    val contentKey = FxCore.unwrapChild(parentKey, row.id, encKey)
-                    FxCore.decryptBytes(row.id, contentKey, raw)
-                } else {
-                    raw
-                }
+                val content = if (encrypted) decryptBody(c, row, raw) else raw
                 val shown = when (kind) {
                     Kind.IMAGE -> {
                         val bitmap = decodeImage(content)
@@ -1762,6 +1800,378 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // --------------------------------------------------- text editor (S3b+)
+
+    /** The web's markdown extensions, for the pane and the toolbar. */
+    private fun isMarkdownName(name: String): Boolean =
+        name.substringAfterLast('.', "").lowercase() in setOf("md", "markdown")
+
+    /** The preview's Edit: close whatever else is up and load fresh -
+     *  the editor owns its baseline, it never trusts a stale preview. */
+    private fun openEditor(row: Row) {
+        val c = api ?: return
+        if (busy) return
+        shareFor = null
+        shareDialog = null
+        preview = null
+        rotateConfirm = false
+        rowMenu = null
+        deleteConfirm = null
+        selection = emptySet()
+        transfer = null
+        trashOpen = false
+        trashItems = emptyList()
+        purgeConfirm = null
+        emptyConfirm = false
+        settingsOpen = false
+        createDialog = null
+        versionsOpen = false
+        versionsFor = null
+        versionItems = emptyList()
+        deleteVersionConfirm = null
+        editorCloseConfirm = false
+        editorRow = row
+        editorText = TextFieldValue("")
+        editorBaseline = ""
+        editorMd = isMarkdownName(row.name)
+        editorMdPane = editorMd
+        editorStatus = "Loading..."
+        editorStatusError = false
+        editorEncrypted = row.encVersion > 0
+        editorEncKey = row.encKey
+        notice = null
+        busy = true
+        Thread {
+            try {
+                val raw = c.download(row.id)
+                if (raw.size > 4_000_000) {
+                    throw RuntimeException("Too large to edit (${raw.size / 1_000} KB)")
+                }
+                val content = if (row.encVersion > 0) decryptBody(c, row, raw) else raw
+                val text = String(content, Charsets.UTF_8)
+                runOnUiThread {
+                    if (editorRow !== row) return@runOnUiThread // closed meanwhile
+                    editorBaseline = text
+                    editorText = TextFieldValue(text)
+                    editorStatus = null
+                    busy = false
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    if (editorRow === row) {
+                        editorRow = null
+                        editorStatus = null
+                        notice = "Edit: ${e.message}"
+                    }
+                }
+            }
+        }.start()
+    }
+
+    /** PUT the editor's text through the web's save path: reuse the
+     *  row's key, promote a plaintext row under a keyed folder
+     *  (history=drop, exactly the web's zone write), or write plain.
+     *  Every save makes the server pin the old text as a version.
+     *  Returns true when the bytes are on their way to the server. */
+    private fun saveEditor(closeAfter: Boolean): Boolean {
+        val c = api ?: return false
+        val row = editorRow ?: return false
+        if (busy) return false
+        val content = editorText.text
+        if (content == editorBaseline) {
+            if (closeAfter) closeEditorInternal()
+            return true
+        }
+        busy = true
+        editorStatus = "Saving..."
+        editorStatusError = false
+        Thread {
+            var promoted: String? = null
+            try {
+                val bytes = content.toByteArray(Charsets.UTF_8)
+                val rk = rootKey
+                val parentKey =
+                    if (rk != null) Chain.keyFor(c, rk, row.parentId) else null
+                when {
+                    editorEncrypted -> {
+                        val wk = editorEncKey ?: row.encKey
+                            ?: throw RuntimeException("This row carries no key record")
+                        val pk = parentKey
+                            ?: throw RuntimeException("Locked - unlock first")
+                        val contentKey = FxCore.unwrapChild(pk, row.id, wk)
+                        val container = FxCore.encryptBytes(row.id, contentKey, bytes)
+                        // wk is the row's own enc_key - already base64,
+                        // passed straight back like the web's writeText.
+                        c.putContent(row.id, container, wk)
+                    }
+                    parentKey != null -> {
+                        // The web's zone write: a plaintext row under a
+                        // keyed folder turns to ciphertext here, its
+                        // plaintext history going with the plaintext.
+                        val fileKey = Chain.randomBytes(32)
+                        val newWrapped = FxCore.wrapChild(parentKey, row.id, fileKey)
+                        val container = FxCore.encryptBytes(row.id, fileKey, bytes)
+                        val reply = c.putContent(
+                            row.id, container,
+                            java.util.Base64.getEncoder().encodeToString(newWrapped),
+                            dropHistory = true
+                        )
+                        promoted = reply.optJSONObject("entry")?.optString("enc_key")
+                            ?.takeIf { it.isNotEmpty() }
+                            ?: java.util.Base64.getEncoder().encodeToString(newWrapped)
+                    }
+                    else -> c.putContent(row.id, bytes, null)
+                }
+                runOnUiThread {
+                    busy = false
+                    if (editorRow !== row) return@runOnUiThread
+                    if (promoted != null) {
+                        editorEncrypted = true
+                        editorEncKey = promoted
+                    }
+                    editorBaseline = content
+                    editorStatus = null
+                    editorStatusError = false
+                    loadTree() // size, modified, and the new version pin
+                    if (closeAfter) closeEditorInternal()
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    if (editorRow === row) {
+                        // The text stays on screen: a failed save never
+                        // closes over unsaved work (the web's rule).
+                        editorStatus = "Save failed: ${e.message}"
+                        editorStatusError = true
+                    }
+                }
+            }
+        }.start()
+        return true
+    }
+
+    /** Back or the header close: ask first when text changed. */
+    private fun requestEditorClose() {
+        if (editorText.text != editorBaseline) {
+            editorCloseConfirm = true
+        } else {
+            closeEditorInternal()
+        }
+    }
+
+    private fun closeEditorInternal() {
+        editorRow = null
+        editorText = TextFieldValue("")
+        editorBaseline = ""
+        editorStatus = null
+        editorStatusError = false
+        editorCloseConfirm = false
+        editorMd = false
+        editorMdPane = false
+        editorEncrypted = false
+        editorEncKey = null
+        notice = null
+    }
+
+    /** Wrap the selection (or the cursor) with markdown markers. */
+    private fun wrapEditor(before: String, after: String) {
+        val v = editorText
+        val text = v.text
+        val start = v.selection.min.coerceIn(0, text.length)
+        val end = v.selection.max.coerceIn(0, text.length)
+        val newText = text.substring(0, start) + before +
+            text.substring(start, end) + after + text.substring(end)
+        val sel = if (start == end) {
+            TextRange(start + before.length, start + before.length)
+        } else {
+            TextRange(start + before.length, end + before.length)
+        }
+        editorText = TextFieldValue(newText, selection = sel)
+    }
+
+    /** Prefix every line the selection touches (or the cursor's line). */
+    private fun prefixEditorLines(prefix: String) {
+        val v = editorText
+        val text = v.text
+        val start = v.selection.min.coerceIn(0, text.length)
+        val end = v.selection.max.coerceIn(0, text.length)
+        val lineStart = if (start == 0) 0 else text.lastIndexOf('\n', start - 1) + 1
+        // A selection ending on a line start does not include that line.
+        val regionEnd =
+            if (end > start && text[end - 1] == '\n') (end - 1).coerceAtLeast(lineStart)
+            else end.coerceAtLeast(lineStart)
+        val region = text.substring(lineStart, regionEnd)
+        val prefixed = prefix + region.replace("\n", "\n$prefix")
+        val newText = text.substring(0, lineStart) + prefixed + text.substring(regionEnd)
+        val lineShift = region.count { it == '\n' } + 1
+        val newStart = (start + prefix.length).coerceAtMost(newText.length)
+        val newEnd = if (start == end) newStart
+        else (end + prefix.length * lineShift).coerceAtMost(newText.length)
+        editorText = TextFieldValue(newText, selection = TextRange(newStart, newEnd))
+    }
+
+    @Composable
+    private fun EditorTool(label: String, onClick: () -> Unit) {
+        TextButton(onClick, enabled = !busy) {
+            Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        }
+    }
+
+    @Composable
+    private fun EditorUi(row: Row) {
+        val dirty = editorText.text != editorBaseline
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton({ requestEditorClose() }) { Text("\u2190 Back") }
+                Text(
+                    row.name,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                if (editorMd) {
+                    TextButton(
+                        { editorMdPane = !editorMdPane },
+                        enabled = !busy
+                    ) { Text(if (editorMdPane) "Source" else "Preview") }
+                }
+                if (busy) {
+                    CircularProgressIndicator(
+                        Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp
+                    )
+                }
+                TextButton(
+                    { saveEditor(closeAfter = false) },
+                    enabled = !busy && dirty
+                ) { Text("Save") }
+            }
+            // Status (unsaved marker or the save error) and the web's
+            // lines/chars meta, on one line to save vertical space.
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val status = editorStatus ?: if (dirty) "* unsaved" else ""
+                Text(
+                    status,
+                    fontSize = 13.sp,
+                    color = if (editorStatusError) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                    },
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1
+                )
+                val body = editorText.text
+                val lines = if (body.isEmpty()) 1 else body.count { it == '\n' } + 1
+                Text(
+                    "$lines lines \u00b7 ${body.length} chars",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f)
+                )
+            }
+            if (editorMdPane) {
+                // The web's pane: mdToHtml into the platform's HTML
+                // renderer, links clickable (http(s) only - the port
+                // rewrites everything else to "#").
+                val src = editorText.text
+                val html = remember(src) {
+                    if (src.length > 1_000_000) null else Markdown.toHtml(src)
+                }
+                val color = MaterialTheme.colorScheme.onBackground
+                val link = MaterialTheme.colorScheme.primary
+                AndroidView(
+                    factory = { ctx ->
+                        TextView(ctx).apply {
+                            movementMethod = LinkMovementMethod.getInstance()
+                        }
+                    },
+                    update = { tv ->
+                        tv.textSize = 14f
+                        tv.setTextColor(color.toArgb())
+                        tv.setLinkTextColor(link.toArgb())
+                        tv.text =
+                            if (html == null) src
+                            else Html.fromHtml(html, Html.FROM_HTML_MODE_COMPACT)
+                    },
+                    modifier = Modifier.weight(1f).fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            } else {
+                BasicTextField(
+                    value = editorText,
+                    onValueChange = { editorText = it },
+                    modifier = Modifier.weight(1f).fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    textStyle = TextStyle(
+                        fontSize = 14.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onBackground
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
+                )
+            }
+            if (editorMd && !editorMdPane) {
+                Row(
+                    Modifier.fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    EditorTool("B") { wrapEditor("**", "**") }
+                    EditorTool("I") { wrapEditor("*", "*") }
+                    EditorTool("H1") { prefixEditorLines("# ") }
+                    EditorTool("H2") { prefixEditorLines("## ") }
+                    EditorTool("\u2022") { prefixEditorLines("- ") }
+                    EditorTool("1.") { prefixEditorLines("1. ") }
+                    EditorTool("[]") { prefixEditorLines("- [ ] ") }
+                    EditorTool(">") { prefixEditorLines("> ") }
+                    EditorTool("`") { wrapEditor("`", "`") }
+                    EditorTool("Link") { wrapEditor("[", "](https://)") }
+                }
+            }
+        }
+    }
+
+    /** The editor's leave guard: save, discard, or stay. */
+    @Composable
+    private fun EditorCloseUi() {
+        val name = editorRow?.name ?: "this file"
+        AlertDialog(
+            onDismissRequest = { editorCloseConfirm = false },
+            title = { Text("Unsaved changes") },
+            text = { Text("Save the edits to $name before closing?") },
+            confirmButton = {
+                TextButton(
+                    {
+                        editorCloseConfirm = false
+                        saveEditor(closeAfter = true)
+                    },
+                    enabled = !busy
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton({ editorCloseConfirm = false }) { Text("Cancel") }
+                    TextButton(
+                        {
+                            editorCloseConfirm = false
+                            closeEditorInternal()
+                        }
+                    ) { Text("Discard", color = MaterialTheme.colorScheme.error) }
+                }
+            }
+        )
+    }
+
     // ----------------------------------------------------------- versions (S5c)
 
     /** The row menu's Versions: close whatever else is up and load. */
@@ -2388,13 +2798,15 @@ class MainActivity : ComponentActivity() {
                 val sharing = shareFor
                 val shown = preview
                 val vrow = versionsFor
+                val erow = editorRow
                 when {
                     trashOpen -> TrashUi()
                     settingsOpen -> SettingsUi()
                     sharing != null -> ShareUi(sharing)
                     shown != null -> PreviewUi(shown)
-                    // The preview of a version sits above its list, so
-                    // Back returns to the versions instead of the tree.
+                    // The editor took the preview's place; a version's
+                    // preview (no Edit there) still sits above its list.
+                    erow != null -> EditorUi(erow)
                     versionsOpen && vrow != null -> VersionsUi(vrow)
                     step == Step.LOGIN -> LoginUi()
                     step == Step.PASSPHRASE -> UnlockUi()
@@ -2410,6 +2822,7 @@ class MainActivity : ComponentActivity() {
                 deleteVersionConfirm?.let { v ->
                     vrow?.let { r -> DeleteVersionUi(r, v) }
                 }
+                if (editorCloseConfirm) EditorCloseUi()
             }
         }
     }
@@ -2966,6 +3379,11 @@ class MainActivity : ComponentActivity() {
                     maxLines = 1,
                     fontWeight = FontWeight.Medium
                 )
+                if (p.kind == Kind.TEXT && p.allowRotate) {
+                    TextButton({ openEditor(p.row) }, enabled = !busy) {
+                        Text("Edit")
+                    }
+                }
                 if (p.allowRotate && p.row.encVersion > 0 && !p.row.isDir && p.row.ownerId == myId) {
                     TextButton({ rotateConfirm = true }, enabled = !busy) {
                         Text("Rotate")
