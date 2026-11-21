@@ -131,7 +131,19 @@ one-event unlock, tree with path bar, back gesture and header logout
 confirmed by the user. S3: primitives, preview and upload confirmed on
 the device; S3d (recovery pane, envelope-opened mounts) built, device
 pass pending. S4 built (share dialog + revoke, Keystore auto-unlock,
-rotate + reseal), device pass pending. The BOM stays at `2026.06.01`
+rotate + reseal), device pass pending. S5 built (papierkorb,
+settings, versions, per-row menu + multi-select, create folder/file)
+plus the light-blue light-mode canvas and the feature-graphic login
+hero. Play: closed testing is live - screenshots, listing and Data
+Safety forms are in, and the user installed the build from the Play
+Store (2026-11-21). Production is gated by Google's rule for new
+personal accounts: 12 testers continuously opted in for 14 days,
+then a review of at most 7 days. The counter tracks tester opt-in,
+not builds: uploads during the test do not reset it, but a tester
+who opts out restarts that tester's clock - so recruit with margin
+(14-16), not exactly 12. The $25 listing is the user's personal
+account; the upload key lives in CI secrets (keystore in
+`/root/fxcloud-signing`). The BOM stays at `2026.06.01`
 because newer ones demand an unreleased `compileSdk 37` (see
 `android/README.md`).
 
@@ -201,5 +213,3 @@ readable bytes does not exist on encrypted accounts:
   install base needs it.
 - v1 scope above: groups and passkeys are the two biggest cuts - flag
   either if the phone needs them first.
-- Play account and signing key: who owns the $25 listing and where the
-  upload key lives (password manager vs CI secret).
