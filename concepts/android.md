@@ -174,6 +174,26 @@ session).
 - Manual pass per slice on a real device: unlock, upload, share,
   Keystore unlock after reboot.
 
+## Known gaps (encrypted mode)
+
+The server is key-blind by design (A3), so every feature that needs
+readable bytes does not exist on encrypted accounts:
+
+- **Office editing** is explicitly disabled for `enc_version > 0`
+  (the web's `canOffice`): the WOPI engine would need the plaintext.
+  Permanent under this model - office work belongs on a plaintext
+  account (what the reference instance's test setup does today).
+- **PDF preview**: the web renders PDFs from readable bytes; an
+  encrypted row only hands the viewer a container. Solvable client-side
+  without new dependencies (app: decrypt -> Android's built-in
+  PdfRenderer; web: decrypt -> blob -> iframe, browsers render PDFs
+  natively), not yet built.
+- **WebDAV** on an encrypted account: creates plaintext rows only
+  ("DAV has no channel for a key record"), downloads hand out FXE1
+  containers, and overwriting an encrypted row is refused (409,
+  DECISION 9). Uploads that must be encrypted go through the app or
+  the web client; on a plaintext account none of this applies.
+
 ## Open questions
 
 - `minSdk26` vs a lower floor (24) - A2 says26, say otherwise if the
