@@ -191,6 +191,22 @@ class ApiClient(var baseUrl: String) {
         )
     }
 
+    /** POST /api/files/folder {parent_id, name} - a new empty folder
+     *  (the temp+rename dance for names-at-rest happens in the caller,
+     *  like the web's newFolder). Returns the new id. */
+    fun createFolder(parentId: Long?, name: String): Long {
+        val body = JSONObject()
+        if (parentId == null) {
+            body.put("parent_id", JSONObject.NULL)
+        } else {
+            body.put("parent_id", parentId)
+        }
+        body.put("name", name)
+        val reply = post("/api/files/folder", body)
+        if (reply.code != 200) serverError(reply, "Create folder")
+        return JSONObject(reply.body).getJSONObject("entry").getLong("id")
+    }
+
     /** POST /api/files/file - a new empty row (blob included); parent
      *  null = root. The id comes back for the two-phase write. */
     fun createFile(parentId: Long?, name: String): Long {

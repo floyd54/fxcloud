@@ -124,7 +124,7 @@ public-link management, admin dialog (web only).
 | S2 auth + listing | login against a live instance, tree listing with breadcrumb, names-at-rest decrypted through the FFI, dark/light theming |
 | S3 crypto flows | unlock (passphrase + recovery), download->decrypt->preview, upload->encrypt, envelope seal/open for shares |
 | S4 shares + device | share dialog with fingerprints, revoke, re-key/rotate entry points as they make sense on a phone, Keystore auto-unlock (+ the fxcffi device-blob pair) |
-| S5 polish + store | row actions behind a per-row ⋮ menu (share, copy, move, delete) with long-press multi-select and a selection bar, versions, trash, settings parity, signing, Play listing ($25) |
+| S5 polish + store | row actions behind a per-row ⋮ menu (share, copy, move, delete) with long-press multi-select and a selection bar, creating folders and files from the path bar, versions, trash, settings parity, signing, Play listing ($25) |
 
 Status: S1 shipped (on-device pass done). S2 on the device: sign-in,
 one-event unlock, tree with path bar, back gesture and header logout
@@ -144,7 +144,7 @@ mirrors the web twin (`app.js` / `fxenc.js`).
 | Sub-slice | Contents |
 |-----------|----------|
 | S3a primitives | JNI: `encryptBytes`/`decryptBytes` (FXE1, bound to the file id - a row move fails decryption, as on the web), `unlockWithRecovery` (same packed session as S2), `shareEnvelopeAad`/`eciesOpen`/`eciesSeal`. Golden pins: `fx1-vectors.json` (read side - the write side is the JS roundtrip's), `recovery_open`, `ecies_open`, `ecies_seal` (error cases; success = seal->open roundtrip, the envelope carries an ephemeral key). |
-| S3b preview | file tap -> `GET /api/files/download?id=` -> content key (`Chain.keyFor` + `unwrapChild` on the row's `enc_key`) -> `decryptBytes` -> render. v1 renders image and text; the web's other `PREVIEW_EXT` kinds (video/audio/pdf/html) say so instead of pretending. Plaintext rows preview straight with the server's mime, encrypted rows decide by extension because the server only ever answers `octet-stream`. Whole file into memory - streaming/range is deliberately later. |
+| S3b preview | file tap -> `GET /api/files/download?id=` -> content key (`Chain.keyFor` + `unwrapChild` on the row's `enc_key`) -> `decryptBytes` -> render. v1 renders image, text and PDF (the platform's `PdfRenderer`,15 pages max); video/audio/html say so instead of pretending. Plaintext rows preview straight with the server's mime, encrypted rows decide by extension because the server only ever answers `octet-stream`. Whole file into memory - streaming/range is deliberately later. |
 | S3c upload | `POST /api/files/file` (random temp name under a `names_enc` folder, then `rename` to the id-bound blob - N3/N5), fresh file key, wrap under the destination folder's key (`PUT /api/files/key` gives a recordless folder one first, mirror `ensureChainKey`), `encryptBytes`, `PUT /api/files/content?id=&enc=1&key=`. A plaintext account takes the same path without `enc`. v1 = one file at a time; folder trees come later. |
 | S3d recovery + share envelopes | recovery pane on the passphrase screen (32-byte key typed as hex -> `unlockWithRecovery`, packed session exactly as S2); incoming share envelopes open with the packed session's private key (`eciesOpen` + `share_envelope_aad`) so mounts show real names and their subtree keys instead of S2's `(encrypted)` placeholders; `eciesSeal` lands the primitive S4's share dialog uses. |
 
@@ -184,10 +184,11 @@ readable bytes does not exist on encrypted accounts:
   Permanent under this model - office work belongs on a plaintext
   account (what the reference instance's test setup does today).
 - **PDF preview**: the web renders PDFs from readable bytes; an
-  encrypted row only hands the viewer a container. Solvable client-side
-  without new dependencies (app: decrypt -> Android's built-in
-  PdfRenderer; web: decrypt -> blob -> iframe, browsers render PDFs
-  natively), not yet built.
+  encrypted row only hands the viewer a container. Solved for the app
+  without new dependencies (decrypt -> the platform's built-in
+  `PdfRenderer`,15 pages at800px); the web could do the same
+  (decrypt -> blob -> iframe, browsers render PDFs natively) and
+  still lacks it.
 - **WebDAV** on an encrypted account: creates plaintext rows only
   ("DAV has no channel for a key record"), downloads hand out FXE1
   containers, and overwriting an encrypted row is refused (409,

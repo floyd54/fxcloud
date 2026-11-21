@@ -3,9 +3,11 @@ package de.frischux.fxcloud
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.graphics.pdf.PdfRenderer
 import android.media.ExifInterface
 import android.net.Uri
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.view.View
 import android.widget.TextView
@@ -69,6 +71,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.ByteArrayInputStream
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -80,7 +83,10 @@ private enum class Step { LOGIN, PASSPHRASE, FILES }
 private const val DEFAULT_SERVER = "https://fxcloud.frischux.de"
 
 /** What a preview can show in v1 (S3b): image and text, nothing else. */
-private enum class Kind { IMAGE, TEXT, OTHER }
+private enum class Kind { IMAGE, TEXT, PDF, OTHER }
+
+/** What the plus-menu in the path bar creates (S5 parity). */
+private enum class CreateKind { FOLDER, FILE }
 
 /** The extension tables of the web's PREVIEW_EXT, minus what the app
  *  cannot render in-process (video/audio/pdf/html say so instead). */
@@ -97,12 +103,14 @@ private val TEXT_EXTS = setOf(
 )
 
 /** A rendered preview (S3b): the row it belongs to (S4c rotates from
- *  the bar), decoded bitmap or text, held in memory. */
+ *  the bar), decoded bitmap, text or PDF pages, held in memory. */
 private class Preview(
     val row: Row,
     val kind: Kind,
     val bitmap: Bitmap? = null,
-    val text: String? = null
+    val text: String? = null,
+    val pages: List<Bitmap>? = null,
+    val pdfTotal: Int = 0
 )
 
 /** The confirmations the share flow needs before anything is sealed
@@ -260,6 +268,10 @@ class MainActivity : ComponentActivity() {
     /** The account's display name and the field buffer for the form. */
     private var myDisplayName by mutableStateOf("")
     private var settingsName by mutableStateOf("")
+
+    /** Non-null: the create-name dialog (folder or file). */
+    private var createDialog by mutableStateOf<CreateKind?>(null)
+    private var createName by mutableStateOf("")
 
     /** Folder ids visited since the root - what the system back button
      *  walks out of (UI thread only). */
@@ -529,6 +541,7 @@ class MainActivity : ComponentActivity() {
         rowMenu = null
         selection = emptySet()
         deleteConfirm = null
+        createDialog = null
         transfer = null
         trashOpen = false
         trashItems = emptyList()
@@ -612,6 +625,7 @@ class MainActivity : ComponentActivity() {
             emptyConfirm -> emptyConfirm = false
             deleteConfirm != null -> deleteConfirm = null
             rowMenu != null -> rowMenu = null
+            createDialog != null -> createDialog = null
             trashOpen -> closeTrash()
             settingsOpen -> closeSettings()
             shareFor != null -> {
@@ -661,6 +675,7 @@ class MainActivity : ComponentActivity() {
     private fun previewKind(name: String, mime: String?): Kind {
         val ext = name.substringAfterLast('.', "").lowercase()
         if (ext in IMAGE_EXTS) return Kind.IMAGE
+        if (ext == "pdf") return Kind.PDF
         if (ext in TEXT_EXTS) return Kind.TEXT
         if (mime?.startsWith("text/") == true) return Kind.TEXT
         if (mime?.startsWith("image/") == true) return Kind.IMAGE
@@ -703,6 +718,13 @@ class MainActivity : ComponentActivity() {
                         val bitmap = decodeImage(content)
                             ?: throw RuntimeException("This image cannot be displayed")
                         Preview(row, kind, bitmap = bitmap)
+                    }
+                    Kind.PDF -> {
+                        val (pages, total) = renderPdf(content)
+                        if (pages.isEmpty()) {
+                            throw RuntimeException("This PDF cannot be displayed")
+                        }
+                        Preview(row, kind, pages = pages, pdfTotal = total)
                     }
                     else -> {
                         if (content.size > 4_000_000) {
@@ -760,6 +782,46 @@ class MainActivity : ComponentActivity() {
         return Bitmap.createBitmap(
             bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
         ) ?: bitmap
+    }
+
+    /**
+     * Render a PDF to page bitmaps with the platform's PdfRenderer -
+     * no dependency to add (S5: the encrypted-account PDF gap). Bounded
+     * on purpose:15 pages at800px width, a longer document says so
+     * instead of eating memory. Explicit closes everywhere: PdfRenderer
+     * only implements AutoCloseable from API29 and this app supports26.
+     */
+    private fun renderPdf(bytes: ByteArray): Pair<List<Bitmap>, Int> {
+        val file = File(cacheDir, "preview.pdf")
+        try {
+            file.writeBytes(bytes)
+            val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            val renderer = PdfRenderer(pfd)
+            try {
+                val total = renderer.pageCount
+                val take = minOf(total,15)
+                val out = ArrayList<Bitmap>(take)
+                for (i in 0 until take) {
+                    val page = renderer.openPage(i)
+                    try {
+                        val width =800
+                        val height = ((page.height.toFloat() / page.width) * width)
+                            .toInt().coerceAtLeast(1)
+                        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                        page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        out.add(bmp)
+                    } finally {
+                        page.close()
+                    }
+                }
+                return out to total
+            } finally {
+                renderer.close()
+                pfd.close()
+            }
+        } finally {
+            file.delete()
+        }
     }
 
     // ------------------------------------------------------------- upload (S3c)
@@ -1286,6 +1348,138 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }.start()
+    }
+
+    /** Create an empty folder or file (the web's newFolder/newFile):
+     *  names-at-rest get the temp+rename dance, an encrypted file gets
+     *  an empty FXE1 container right away - encrypted from its first
+     *  second, exactly like the web's writeText with "". */
+    private fun createRow(kind: CreateKind, name: String) {
+        val c = api ?: return
+        if (busy) return
+        val target = parent
+        val namesEnc = rootKey != null && crumbs.lastOrNull()?.namesEnc == 1
+        val needsKey = namesEnc || kind == CreateKind.FILE
+        busy = true
+        notice = null
+        Thread {
+            var createdId: Long? = null
+            try {
+                val rk = rootKey
+                val parentKey =
+                    if (needsKey && rk != null) Chain.ensureKey(c, rk, target) else null
+                val temp = if (namesEnc) {
+                    "n" + java.util.Base64.getUrlEncoder()
+                        .encodeToString(Chain.randomBytes(16))
+                } else {
+                    null
+                }
+                val id = if (kind == CreateKind.FOLDER) {
+                    c.createFolder(target, temp ?: name)
+                } else {
+                    c.createFile(target, temp ?: name)
+                }
+                createdId = id
+                if (temp != null && parentKey != null) {
+                    val wrapped = FxCore.wrapChild(
+                        parentKey, id, name.toByteArray(Charsets.UTF_8)
+                    )
+                    c.rename(
+                        id,
+                        java.util.Base64.getUrlEncoder().encodeToString(wrapped)
+                    )
+                }
+                if (kind == CreateKind.FILE) {
+                    if (parentKey != null) {
+                        val fileKey = Chain.randomBytes(32)
+                        val wrappedKey = FxCore.wrapChild(parentKey, id, fileKey)
+                        val container = FxCore.encryptBytes(id, fileKey, ByteArray(0))
+                        c.putContent(
+                            id, container,
+                            java.util.Base64.getEncoder().encodeToString(wrappedKey)
+                        )
+                    } else {
+                        c.putContent(id, ByteArray(0), null)
+                    }
+                }
+                runOnUiThread {
+                    busy = false
+                    loadTree()
+                    notice = "Created $name"
+                }
+            } catch (e: Throwable) {
+                createdId?.let { c.discard(it) }
+                runOnUiThread {
+                    busy = false
+                    notice = "Create failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    /** The "＋" in the path bar: the web's toolbar trio as one menu. */
+    @Composable
+    private fun CreateMenu() {
+        var open by remember { mutableStateOf(false) }
+        Box {
+            TextButton({ open = true }, enabled = !busy) { Text("+") }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                DropdownMenuItem(
+                    text = { Text("New folder") },
+                    onClick = {
+                        open = false
+                        createName = ""
+                        createDialog = CreateKind.FOLDER
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("New file") },
+                    onClick = {
+                        open = false
+                        createName = ""
+                        createDialog = CreateKind.FILE
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Upload") },
+                    onClick = {
+                        open = false
+                        startUpload()
+                    }
+                )
+            }
+        }
+    }
+
+    /** The name prompt for the create menu. */
+    @Composable
+    private fun CreateUi(kind: CreateKind) {
+        AlertDialog(
+            onDismissRequest = { createDialog = null },
+            title = { Text(if (kind == CreateKind.FOLDER) "New folder" else "New file") },
+            text = {
+                OutlinedTextField(
+                    createName, { createName = it },
+                    label = {
+                        Text(if (kind == CreateKind.FOLDER) "Folder name" else "File name")
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    val name = createName.trim()
+                    if (name.isNotBlank()) {
+                        createDialog = null
+                        createRow(kind, name)
+                    }
+                }) { Text("Create") }
+            },
+            dismissButton = {
+                TextButton({ createDialog = null }) { Text("Cancel") }
+            }
+        )
     }
 
     // --------------------------------------------------------- settings (S5b)
@@ -1953,6 +2147,7 @@ class MainActivity : ComponentActivity() {
                 }
                 // Row-action dialogs: they float above whichever screen
                 // is up (AlertDialogs live in their own window).
+                createDialog?.let { CreateUi(it) }
                 rowMenu?.let { RowMenuUi(it) }
                 deleteConfirm?.let { DeleteUi(it) }
                 purgeConfirm?.let { PurgeUi(it) }
@@ -2182,7 +2377,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     selection.isNotEmpty() -> SelectionActions()
-                    else -> TextButton({ startUpload() }, enabled = !busy) { Text("Upload") }
+                    else -> CreateMenu()
                 }
                 if (busy) {
                     CircularProgressIndicator(Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp)
@@ -2526,6 +2721,50 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Fit
                     )
+                }
+                Kind.PDF -> {
+                    val pages = p.pages ?: emptyList()
+                    var page by remember(p) { mutableStateOf(0) }
+                    Column(Modifier.fillMaxSize()) {
+                        Box(
+                            Modifier.weight(1f).padding(8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (pages.isNotEmpty()) {
+                                Image(
+                                    bitmap = pages[page.coerceIn(0, pages.lastIndex)]
+                                        .asImageBitmap(),
+                                    contentDescription =
+                                        "${p.row.name}, page ${page + 1} von ${pages.size}",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Fit
+                                )
+                            }
+                        }
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(
+                                { page = (page - 1).coerceAtLeast(0) },
+                                enabled = page > 0
+                            ) { Text("\u2190") }
+                            val label =
+                                if (p.pdfTotal > pages.size) "${page + 1} / ${p.pdfTotal}+ (first ${pages.size})"
+                                else "${page + 1} / ${pages.size}"
+                            Text(
+                                label,
+                                fontSize = 14.sp,
+                                modifier = Modifier.padding(horizontal = 12.dp)
+                            )
+                            TextButton(
+                                { page = (page + 1).coerceAtMost(pages.lastIndex) },
+                                enabled = page < pages.lastIndex
+                            ) { Text("\u2192") }
+                        }
+                    }
                 }
                 else -> SelectionContainer {
                     Text(
