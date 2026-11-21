@@ -110,7 +110,9 @@ private class Preview(
     val bitmap: Bitmap? = null,
     val text: String? = null,
     val pages: List<Bitmap>? = null,
-    val pdfTotal: Int = 0
+    val pdfTotal: Int =0,
+    /** False for a version stand: rotation acts on the current file. */
+    val allowRotate: Boolean = true
 )
 
 /** The confirmations the share flow needs before anything is sealed
@@ -260,6 +262,12 @@ class MainActivity : ComponentActivity() {
 
     /** Non-null: the settings overlay is up. */
     private var settingsOpen by mutableStateOf(false)
+
+    /** Non-null: the versions overlay of that file is up. */
+    private var versionsOpen by mutableStateOf(false)
+    private var versionsFor by mutableStateOf<Row?>(null)
+    private var versionItems by mutableStateOf<List<ApiClient.Version>>(emptyList())
+    private var deleteVersionConfirm by mutableStateOf<ApiClient.Version?>(null)
 
     /** "system", "light" or "dark" - what the server knows, applied
      *  over the system default (the web's theme section). */
@@ -548,6 +556,10 @@ class MainActivity : ComponentActivity() {
         purgeConfirm = null
         emptyConfirm = false
         settingsOpen = false
+        versionsOpen = false
+        versionsFor = null
+        versionItems = emptyList()
+        deleteVersionConfirm = null
         notice = null
         step = Step.LOGIN
     }
@@ -624,6 +636,7 @@ class MainActivity : ComponentActivity() {
             purgeConfirm != null -> purgeConfirm = null
             emptyConfirm -> emptyConfirm = false
             deleteConfirm != null -> deleteConfirm = null
+            deleteVersionConfirm != null -> deleteVersionConfirm = null
             rowMenu != null -> rowMenu = null
             createDialog != null -> createDialog = null
             trashOpen -> closeTrash()
@@ -637,6 +650,8 @@ class MainActivity : ComponentActivity() {
                 preview = null
                 rotateConfirm = false
             }
+            // Below a version's preview: the list it came from.
+            versionsOpen -> closeVersions()
             selection.isNotEmpty() -> selection = emptySet()
             transfer != null -> cancelTransfer()
             step == Step.FILES && history.isNotEmpty() -> {
@@ -687,23 +702,32 @@ class MainActivity : ComponentActivity() {
      * Kinds the app cannot render never touch the network; every
      * failure lands as a notice, never as a crash.
      */
-    private fun loadPreview(row: Row) {
+    private fun loadPreview(row: Row, versionId: Long? = null, versionEnc: Int = 0) {
         val c = api ?: return
         val kind = previewKind(row.name, row.mime)
         if (kind == Kind.OTHER) {
             val ext = row.name.substringAfterLast('.', "").uppercase()
-            notice = "$ext preview comes later - image and text open today"
+            notice = "$ext preview comes later - image, text and PDF open today"
             return
         }
         busy = true
         notice = null
         Thread {
             try {
-                val raw = c.download(row.id)
+                val raw = if (versionId != null) {
+                    c.downloadVersion(row.id, versionId)
+                } else {
+                    c.download(row.id)
+                }
                 if (raw.size > 50_000_000) {
                     throw RuntimeException("Too large to preview (${raw.size / 1_000_000} MB)")
                 }
-                val content = if (row.encVersion > 0) {
+                // A version carries its own enc_version: a save from the
+                // plaintext era stays plaintext even if today's row is
+                // encrypted (the server's rule for version downloads).
+                val encrypted =
+                    if (versionId != null) versionEnc > 0 else row.encVersion > 0
+                val content = if (encrypted) {
                     val rk = rootKey ?: throw RuntimeException("Locked - unlock first")
                     val encKey =
                         row.encKey ?: throw RuntimeException("This row carries no key record")
@@ -717,14 +741,17 @@ class MainActivity : ComponentActivity() {
                     Kind.IMAGE -> {
                         val bitmap = decodeImage(content)
                             ?: throw RuntimeException("This image cannot be displayed")
-                        Preview(row, kind, bitmap = bitmap)
+                        Preview(row, kind, bitmap = bitmap, allowRotate = versionId == null)
                     }
                     Kind.PDF -> {
                         val (pages, total) = renderPdf(content)
                         if (pages.isEmpty()) {
                             throw RuntimeException("This PDF cannot be displayed")
                         }
-                        Preview(row, kind, pages = pages, pdfTotal = total)
+                        Preview(
+                            row, kind, pages = pages, pdfTotal = total,
+                            allowRotate = versionId == null
+                        )
                     }
                     else -> {
                         if (content.size > 4_000_000) {
@@ -732,7 +759,10 @@ class MainActivity : ComponentActivity() {
                                 "Text too large to display (${content.size / 1_000} KB)"
                             )
                         }
-                        Preview(row, kind, text = String(content, Charsets.UTF_8))
+                        Preview(
+                            row, kind, text = String(content, Charsets.UTF_8),
+                            allowRotate = versionId == null
+                        )
                     }
                 }
                 runOnUiThread {
@@ -1164,6 +1194,12 @@ class MainActivity : ComponentActivity() {
                     ActionRow("Share") {
                         rowMenu = null
                         openShare(listOf(row))
+                    }
+                    if (!row.isDir) {
+                        ActionRow("Versions") {
+                            rowMenu = null
+                            openVersions(row)
+                        }
                     }
                     ActionRow("Copy") {
                         rowMenu = null
@@ -1723,6 +1759,210 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ----------------------------------------------------------- versions (S5c)
+
+    /** The row menu's Versions: close whatever else is up and load. */
+    private fun openVersions(row: Row) {
+        val c = api ?: return
+        if (busy) return
+        shareFor = null
+        shareDialog = null
+        preview = null
+        rotateConfirm = false
+        rowMenu = null
+        deleteConfirm = null
+        selection = emptySet()
+        transfer = null
+        trashOpen = false
+        trashItems = emptyList()
+        purgeConfirm = null
+        emptyConfirm = false
+        settingsOpen = false
+        createDialog = null
+        deleteVersionConfirm = null
+        versionsFor = row
+        notice = null
+        versionsOpen = true
+        loadVersions(c, row)
+    }
+
+    private fun loadVersions(c: ApiClient, row: Row) {
+        busy = true
+        Thread {
+            try {
+                val items = c.versions(row.id)
+                runOnUiThread {
+                    versionItems = items
+                    busy = false
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    // A failed reload after an action keeps the view.
+                    if (versionItems.isEmpty()) versionsOpen = false
+                    notice = "Versions: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    private fun closeVersions() {
+        versionsOpen = false
+        versionsFor = null
+        versionItems = emptyList()
+        deleteVersionConfirm = null
+        notice = null
+        loadTree() // a restore or delete changed the file behind it
+    }
+
+    /** View one kept version through the normal preview machinery; the
+     *  versions screen stays underneath (the AppUi order shows the
+     *  preview first, Back returns to this list). */
+    private fun previewVersion(row: Row, v: ApiClient.Version) =
+        loadPreview(row, v.id, v.encVersion)
+
+    private fun doRestoreVersion(row: Row, v: ApiClient.Version) {
+        val c = api ?: return
+        if (busy) return
+        busy = true
+        notice = null
+        Thread {
+            try {
+                c.restoreVersion(row.id, v.id)
+                runOnUiThread {
+                    busy = false
+                    loadVersions(c, row)
+                    loadTree()
+                    notice = "Version restored"
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = "Restore failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    private fun doDeleteVersion(row: Row, v: ApiClient.Version) {
+        val c = api ?: return
+        if (busy) return
+        busy = true
+        notice = null
+        Thread {
+            try {
+                c.deleteVersion(row.id, v.id)
+                runOnUiThread {
+                    busy = false
+                    loadVersions(c, row)
+                    notice = "Version deleted"
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    busy = false
+                    notice = "Delete version failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    @Composable
+    private fun VersionsUi(row: Row) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton({ closeVersions() }) { Text("\u2190 Back") }
+                Text(
+                    "Versions: ${row.name}",
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                if (busy) {
+                    CircularProgressIndicator(
+                        Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp
+                    )
+                }
+            }
+            notice?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+            if (!busy && versionItems.isEmpty()) {
+                Text(
+                    "No versions yet - they appear with every save of this file.",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp)
+                )
+            }
+            LazyColumn(Modifier.weight(1f)) {
+                items(versionItems, key = { it.id }) { v ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "${formatDate(v.createdAt)} \u00b7 ${formatSize(v.size)}",
+                                fontSize = 14.sp
+                            )
+                            if (v.encVersion > 0) {
+                                Text(
+                                    "encrypted",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                                )
+                            }
+                        }
+                        TextButton(
+                            { previewVersion(row, v) },
+                            enabled = !busy
+                        ) { Text("View") }
+                        TextButton(
+                            { doRestoreVersion(row, v) },
+                            enabled = !busy
+                        ) { Text("Restore") }
+                        TextButton(
+                            { deleteVersionConfirm = v },
+                            enabled = !busy
+                        ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                    }
+                }
+            }
+        }
+    }
+
+    /** One kept version gone for good - the current file stays. */
+    @Composable
+    private fun DeleteVersionUi(row: Row, v: ApiClient.Version) {
+        AlertDialog(
+            onDismissRequest = { deleteVersionConfirm = null },
+            title = { Text("Delete this version?") },
+            text = {
+                Text(
+                    "The version from ${formatDate(v.createdAt)} disappears for " +
+                        "good. The current file and its other versions stay."
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    deleteVersionConfirm = null
+                    doDeleteVersion(row, v)
+                }) { Text("Delete version", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton({ deleteVersionConfirm = null }) { Text("Cancel") }
+            }
+        )
+    }
+
     // -------------------------------------------------------------- trash (S5a)
 
     /** The header's Trash: close whatever else is up and load. */
@@ -2136,11 +2376,15 @@ class MainActivity : ComponentActivity() {
             Surface(Modifier.fillMaxSize()) {
                 val sharing = shareFor
                 val shown = preview
+                val vrow = versionsFor
                 when {
                     trashOpen -> TrashUi()
                     settingsOpen -> SettingsUi()
                     sharing != null -> ShareUi(sharing)
                     shown != null -> PreviewUi(shown)
+                    // The preview of a version sits above its list, so
+                    // Back returns to the versions instead of the tree.
+                    versionsOpen && vrow != null -> VersionsUi(vrow)
                     step == Step.LOGIN -> LoginUi()
                     step == Step.PASSPHRASE -> UnlockUi()
                     else -> FilesUi()
@@ -2152,6 +2396,9 @@ class MainActivity : ComponentActivity() {
                 deleteConfirm?.let { DeleteUi(it) }
                 purgeConfirm?.let { PurgeUi(it) }
                 if (emptyConfirm) EmptyTrashUi()
+                deleteVersionConfirm?.let { v ->
+                    vrow?.let { r -> DeleteVersionUi(r, v) }
+                }
             }
         }
     }
@@ -2699,7 +2946,7 @@ class MainActivity : ComponentActivity() {
                     maxLines = 1,
                     fontWeight = FontWeight.Medium
                 )
-                if (p.row.encVersion > 0 && !p.row.isDir && p.row.ownerId == myId) {
+                if (p.allowRotate && p.row.encVersion > 0 && !p.row.isDir && p.row.ownerId == myId) {
                     TextButton({ rotateConfirm = true }, enabled = !busy) {
                         Text("Rotate")
                     }

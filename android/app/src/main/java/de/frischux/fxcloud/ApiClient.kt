@@ -332,6 +332,80 @@ class ApiClient(var baseUrl: String) {
         if (reply.code != 200) serverError(reply, "Empty trash")
     }
 
+    // ----------------------------------------------------------- versions (S5c)
+
+    /** A kept version of a file: when it was made, how big, and whether
+     *  its bytes are a container of its time (enc_version of THAT save). */
+    data class Version(
+        val id: Long,
+        val size: Long,
+        val encVersion: Int,
+        val createdAt: String
+    )
+
+    /** GET /api/files/versions?id= - the web's version list. */
+    fun versions(fileId: Long): List<Version> {
+        val reply = get("/api/files/versions?id=$fileId")
+        if (reply.code != 200) serverError(reply, "Versions")
+        val arr = JSONObject(reply.body).getJSONArray("versions")
+        val out = ArrayList<Version>(arr.length())
+        for (i in 0 until arr.length()) {
+            val v = arr.getJSONObject(i)
+            out.add(
+                Version(
+                    v.getLong("id"),
+                    v.optLong("size", 0),
+                    v.optInt("enc_version", 0),
+                    if (v.isNull("created_at")) "" else v.getString("created_at")
+                )
+            )
+        }
+        return out
+    }
+
+    /** GET /api/files/version/download?id=&vid= - one kept version's
+     *  bytes (the container of its time for encrypted rows). */
+    fun downloadVersion(fileId: Long, versionId: Long): ByteArray {
+        val conn = open("/api/files/version/download?id=$fileId&vid=$versionId", "GET", null)
+        val code = conn.responseCode
+        if (code !in 200..299) {
+            conn.disconnect()
+            throw java.io.IOException("Version download failed ($code)")
+        }
+        val bytes = conn.inputStream.use { it.readBytes() }
+        conn.disconnect()
+        return bytes
+    }
+
+    /** POST /api/files/version/restore?id=&vid= - the version becomes
+     *  the current file (history renumbers, the row is new). */
+    fun restoreVersion(fileId: Long, versionId: Long) {
+        val conn = open("/api/files/version/restore?id=$fileId&vid=$versionId", "POST", "{}")
+        val reply = read(conn)
+        if (reply.code != 200) serverError(reply, "Restore version")
+    }
+
+    /** DELETE /api/files/version?id=&vid= - drop one kept version. */
+    fun deleteVersion(fileId: Long, versionId: Long) {
+        val conn = openRaw("/api/files/version?id=$fileId&vid=$versionId", "DELETE", 15_000)
+        val code = conn.responseCode
+        if (code !in 200..299) {
+            val stream = conn.errorStream
+            val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            conn.disconnect()
+            val msg = try {
+                JSONObject(body).optString("error")
+            } catch (e: Throwable) {
+                ""
+            }
+            throw java.io.IOException(
+                if (msg.isNotEmpty()) "Delete version: $msg" else "Delete version ($code)"
+            )
+        }
+        conn.inputStream.use { it.readBytes() }
+        conn.disconnect()
+    }
+
     // ------------------------------------------------------------ sharing (S4a)
 
     /** One account as the share dialog lists it (GET /api/users). */
