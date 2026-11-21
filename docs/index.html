@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Datenschutzerklärung - fxcloud</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         line-height: 1.6; color: #1b1f24; background: #f5f7fa; margin: 0; }
+  main { max-width: 46rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; background: #fff;
+         border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  h1 { font-size: 1.6rem; margin-top: 0; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #e4e8ee;
+       padding-bottom: .3rem; }
+  .meta { color: #5b6470; font-size: .9rem; }
+  .todo { background: #fff3cd; border: 1px solid #ffe08a; border-radius: 6px;
+          padding: .6rem .8rem; font-size: .95rem; }
+  li { margin: .3rem 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Datenschutzerklärung für fxcloud</h1>
+  <p class="meta">Stand: 21. November 2026 · Gilt für die Instanz
+     <strong>fxcloud.frischux.de</strong> (Web, Android-App und API dieser Instanz).</p>
+
+  <p class="todo"><strong>Bitte vor Veröffentlichung ergänzen:</strong>
+     Name und Anschrift des Verantwortlichen (unten Platzhalter) – nur Sie
+     kennen Ihre rechliche Anschrift; der Rest der Erklärung ist bereits
+     konkret und entspricht dem, was diese Instanz tatsächlich tut.</p>
+
+  <h2>1. Verantwortlicher</h2>
+  <p>Verantwortlich für die Verarbeitung der Daten auf dieser Instanz ist:</p>
+  <p><strong>[Vor- und Nachname des Betreibers]</strong><br>
+     [Straße und Hausnummer]<br>
+     [PLZ und Ort]<br>
+     E-Mail: <a href="mailto:fxcloud@frischux.de">fxcloud@frischux.de</a></p>
+
+  <h2>2. Welche Daten wir verarbeiten</h2>
+  <ul>
+    <li><strong>Kontodaten:</strong> Benutzername, angezeigtes Name, salted
+        Passwort-Hash, Passkey-Geräte (FIDO2/WebAuthn), Kryptomaterial
+        (verschlüsselt gespeichert), Admin- und Aktivierungsstatus.</li>
+    <li><strong>Ihre Dateien und Ordner:</strong> Namen, Struktur,
+        Metadaten (Größe, Zeitstempel) und – bei verschlüsselten Konten –
+        der verschlüsselte Inhalt selbst.</li>
+    <li><strong>Freigaben:</strong> welche Dateien mit welchen Konten geteilt
+        sind; für verschlüsselte Freigaben zusätzlich ein Umschlag
+        (Envelope), den nur der Empfänger öffnen kann.</li>
+    <li><strong>Protokolle:</strong> Server-Logs (u. a. fehlgeschlagene
+        Anmeldeversuche mit Zeitpunkt und Quell-IP zur Sicherung des
+        Zugangs), gelöschte Dateien im Papierkorb bis zur automatischen
+        Leerung.</li>
+    <li><strong>Technisch notwendige Cookies:</strong> ein Sitzungs-Cookie
+        (<code>fxcloud_session</code>, HttpOnly, gleitend7 Tage) zum
+        Angemeldetbleiben und ein Sprach-Cookie. Weitere Cookies werden
+        nicht gesetzt; es gibt keine Analyse-, Marketing- oder
+        Werbe-Cookies.</li>
+  </ul>
+
+  <h2>3. Verschlüsselung</h2>
+  <p>Bei verschlüsselten Konten wird der Inhalt <strong>auf Ihrem Gerät
+     verschlüsselt</strong>, bevor er übertragen wird. Der Server speichert
+     nur Chiffretext und kann ihn nicht lesen; die Passphrase verlässt Ihr
+     Gerät nie. Die Schlüssel für Freigaben werden per Public-Key-Kryptografie
+     (ECIES) an den Empfänger versiegelt. Auf unverschlüsselten Konten liegt
+     der Inhalt im Klartext auf dem Server – ausdrücklich Ihre Entscheidung
+     beim Anlegen oder Umstellen des Kontos.</p>
+
+  <h2>4. Zweck und Rechtsgrundlage</h2>
+  <p>Verarbeitung zur Erfüllung des Nutzungsvertrags (Art.6 Abs.1 lit.b
+     DSGVO): Bereitstellung des Dateispeichers, der Freigaben und der
+     Kontenfunktionen. Keine Werbung, kein Profiling, keine Weitergabe an
+     Dritte zu Analysezwecken.</p>
+
+  <h2>5. Keine Drittanbieter, kein Tracking</h2>
+  <ul>
+    <li>Die Seite lädt <strong>keine externen Skripte, Schriften oder
+        Tracker</strong> – die Oberfläche besteht vollständig aus eigenen,
+        mitgelieferten Dateien.</li>
+    <li>Es gibt keine Statistik-, Werbe- oder Analyse-Dienste.</li>
+    <li>Optionale Integrationen (z. B. die Office-Engine) laufen auf vom
+        Betreiber betriebenen Diensten und sind abschaltbar; ohne
+        aktivierte Integration findet keine Verbindung statt.</li>
+    <li>Die Android-App kommuniziert ausschließlich mit der von Ihnen
+        eingegebenen Server-Adresse und nutzt den Android-Keystore, ohne
+        Daten an Google oder Dritte zu übertragen.</li>
+  </ul>
+
+  <h2>6. Speicherorte und Speicherdauer</h2>
+  <ul>
+    <li>Alle Daten liegen auf dem Server dieses Angebots (SQLite-Datenbank
+        und Dateispeicher des Betreibers); es gibt keine Cloud-Dritter
+        Anbieter im Hintergrund.</li>
+    <li>Konten und Dateien bis zur Löschung durch Sie (oder auf Ihre
+        Anfrage); Papierkorb-Einträge nach30 Tagen automatisch gelöscht;
+        ältere Dateiversionen standardmäßig nach20 Ständen bzw.180 Tagen;
+        Sitzungen nach7 Tagen (gleitend).</li>
+    <li>Logeinträge bis zur manuellen Bereinigung durch den Betreiber,
+        längstens aber, bis sie für Zwecke der Zugangssicherung nicht mehr
+        benötigt werden.</li>
+  </ul>
+
+  <h2>7. Ihre Rechte</h2>
+  <p>Sie haben das Recht auf Auskunft, Berichtigung, Löschung,
+     Einschränkung der Verarbeitung, Datenübertragbarkeit und Widerspruch
+     (Art.15–21 DSGVO) sowie ein Beschwerderecht bei einer Aufsichtsbehörde.
+     Zur Ausübung genügt eine Nachricht an
+     <a href="mailto:fxcloud@frischux.de">fxcloud@frischux.de</a>;
+     Konten können Sie in den Einstellungen selbst löschen, Dateien jederzeit
+     entfernen.</p>
+
+  <h2>8. Änderungen dieser Erklärung</h2>
+  <p>Der Stand oben gilt; wesentliche Änderungen werden mit neuem Stand
+     veröffentlicht. Es gilt die Fassung, die zum Zeitpunkt Ihrer Nutzung
+     abrufbar war.</p>
+</main>
+</body>
+</html>
