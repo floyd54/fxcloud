@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -60,9 +61,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -2368,7 +2371,15 @@ class MainActivity : ComponentActivity() {
             else -> isSystemInDarkTheme()
         }
         MaterialTheme(
-            colorScheme = if (dark) darkColorScheme() else lightColorScheme()
+            // The feature graphic's field becomes the light theme's
+            // canvas (device pass: "use this subtle light blue as the
+            // background everywhere"); primary darkens to the shadow
+            // blue so links and buttons stay readable on it. The dark
+            // scheme stays untouched - the blue on dark would not.
+            colorScheme = if (dark) darkColorScheme() else lightColorScheme().copy(
+                background = Color(0xFFD5EEFB),
+                primary = Color(0xFF00598F)
+            )
         ) {
             // MaterialTheme only provides colors; Surface paints them.
             // Without this the screens are transparent and the dark XML
@@ -2415,8 +2426,17 @@ class MainActivity : ComponentActivity() {
         var registerMode by remember { mutableStateOf(false) }
         Column(
             Modifier.fillMaxSize().padding(horizontal = 24.dp),
-            verticalArrangement = Arrangement.Center
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // The feature graphic's mark as the hero of the form: the
+            // same cloud the store banner shows, on the light blue field.
+            Image(
+                painter = painterResource(R.drawable.ic_launcher_foreground),
+                contentDescription = "fxcloud",
+                modifier = Modifier.size(140.dp)
+            )
+            Spacer(Modifier.height(20.dp))
             OutlinedTextField(
                 server, { server = it },
                 label = { Text("Server (https://...)") },
