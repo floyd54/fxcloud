@@ -75,6 +75,10 @@ dependencies {
     // ceremony; the play-services artifact is the provider below API34.
     implementation("androidx.credentials:credentials:1.6.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
+    // play-services-auth drags old androidx.fragment edges into the
+    // graph; registerForActivityResult needs a modern one (lint's
+    // InvalidFragmentVersionForActivityResult wants >= 1.3.0).
+    implementation("androidx.fragment:fragment:1.9.1")
 
     // Host-side golden-vector tests only (concepts/android.md A4).
     testImplementation("junit:junit:4.13.2")
