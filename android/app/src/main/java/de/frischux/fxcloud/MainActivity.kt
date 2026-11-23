@@ -8,6 +8,7 @@ import android.media.ExifInterface
 import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.text.Html
 import android.text.method.LinkMovementMethod
@@ -242,6 +243,13 @@ class MainActivity : ComponentActivity() {
             if (uri != null) doUpload(uri)
         }
 
+    /** The folder picker behind "Upload folder": the granted tree is
+     *  walked right away, no persisted permission needed for that. */
+    private val pickFolder =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri != null) doUploadTree(uri)
+        }
+
     // ------------------------------------------------------------ sharing (S4a)
 
     /** Non-null replaces the list area with the share screen (one row
@@ -316,6 +324,10 @@ class MainActivity : ComponentActivity() {
      *  over the system default (the web's theme section). */
     private var themeMode by mutableStateOf("system")
 
+    /** Dot-entries hidden by default - the web's rule (its
+     *  `fxcloud.showHidden`), a display preference in prefs. */
+    private var showHidden by mutableStateOf(false)
+
     /** The account's display name and the field buffer for the form. */
     private var myDisplayName by mutableStateOf("")
     private var settingsName by mutableStateOf("")
@@ -335,6 +347,7 @@ class MainActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = goBack()
         })
+        showHidden = prefs.getBoolean("showhidden", false)
         try {
             setContentView(R.layout.activity_main)
             // The way out, in the header that has always rendered: it
@@ -852,7 +865,8 @@ class MainActivity : ComponentActivity() {
         val current = preview ?: return
         if (!current.allowRotate) return
         val gallery = rows.filter {
-            !it.isDir && previewKind(it.name, it.mime) != Kind.OTHER
+            !it.isDir && previewKind(it.name, it.mime) != Kind.OTHER &&
+                (showHidden || !it.name.startsWith("."))
         }
         val index = gallery.indexOfFirst { it.id == current.row.id }
         if (index < 0) return
@@ -943,14 +957,62 @@ class MainActivity : ComponentActivity() {
         pickFile.launch("*/*")
     }
 
+    private fun startFolderUpload() {
+        if (busy) return
+        pickFolder.launch(null)
+    }
+
     /**
      * The S3c flow, mirrored from app.js/fxenc.js: create the row (a
      * random server-meaningless name under a names_enc folder, then
      * rename to the id-bound blob - N3/N5), give a recordless folder
      * its record (ensureChainKey), fresh file key, encrypt, PUT the
      * container. A failure after the row exists discards it, so no
-     * half-written or plaintext leftover stays behind.
+     * half-written or plaintext leftover stays behind. Both upload
+     * paths - one file and a whole tree - end here.
      */
+    private fun uploadOne(
+        c: ApiClient,
+        target: Long?,
+        name: String,
+        bytes: ByteArray,
+        namesEnc: Boolean
+    ) {
+        val rk = rootKey
+        val parentKey = if (rk == null) null else Chain.ensureKey(c, rk, target)
+        val temp = if (namesEnc) {
+            "n" + java.util.Base64.getUrlEncoder()
+                .encodeToString(Chain.randomBytes(16))
+        } else {
+            null
+        }
+        val id = c.createFile(target, temp ?: name)
+        try {
+            if (temp != null && parentKey != null) {
+                val wrapped = FxCore.wrapChild(
+                    parentKey, id, name.toByteArray(Charsets.UTF_8)
+                )
+                c.rename(
+                    id,
+                    java.util.Base64.getUrlEncoder().encodeToString(wrapped)
+                )
+            }
+            if (parentKey != null) {
+                val fileKey = Chain.randomBytes(32)
+                val wrappedKey = FxCore.wrapChild(parentKey, id, fileKey)
+                val container = FxCore.encryptBytes(id, fileKey, bytes)
+                c.putContent(
+                    id, container, java.util.Base64.getEncoder().encodeToString(wrappedKey)
+                )
+            } else {
+                c.putContent(id, bytes, null)
+            }
+        } catch (e: Throwable) {
+            c.discard(id)
+            throw e
+        }
+    }
+
     private fun doUpload(uri: Uri) {
         val c = api ?: return
         if (busy) return
@@ -959,7 +1021,6 @@ class MainActivity : ComponentActivity() {
         busy = true
         notice = null
         Thread {
-            var createdId: Long? = null
             try {
                 val name = queryName(uri) ?: "upload.bin"
                 val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
@@ -969,45 +1030,93 @@ class MainActivity : ComponentActivity() {
                         "Uploads up to50 MB for now (${bytes.size / 1_000_000} MB)"
                     )
                 }
-                val rk = rootKey
-                val parentKey = if (rk == null) null else Chain.ensureKey(c, rk, target)
-                val temp = if (namesEnc) {
-                    "n" + java.util.Base64.getUrlEncoder()
-                        .encodeToString(Chain.randomBytes(16))
-                } else {
-                    null
-                }
-                val id = c.createFile(target, temp ?: name)
-                createdId = id
-                if (temp != null && parentKey != null) {
-                    val wrapped = FxCore.wrapChild(
-                        parentKey, id, name.toByteArray(Charsets.UTF_8)
-                    )
-                    c.rename(
-                        id,
-                        java.util.Base64.getUrlEncoder().encodeToString(wrapped)
-                    )
-                }
-                if (parentKey != null) {
-                    val fileKey = Chain.randomBytes(32)
-                    val wrappedKey = FxCore.wrapChild(parentKey, id, fileKey)
-                    val container = FxCore.encryptBytes(id, fileKey, bytes)
-                    c.putContent(
-                        id, container, java.util.Base64.getEncoder().encodeToString(wrappedKey)
-                    )
-                } else {
-                    c.putContent(id, bytes, null)
-                }
+                uploadOne(c, target, name, bytes, namesEnc)
                 runOnUiThread {
                     busy = false
                     loadTree() // clears the notice; set it after
                     notice = "Uploaded $name"
                 }
             } catch (e: Throwable) {
-                createdId?.let { c.discard(it) }
                 runOnUiThread {
                     busy = false
                     notice = "Upload failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    /**
+     * The folder upload: SAF hands over the picked tree,
+     * DocumentsContract walks it (no dependency beyond the platform),
+     * folders are created on the way - they inherit names_enc from
+     * their parent, so one value covers the whole walk - and every
+     * file ends in uploadOne. One unreadable entry stops the walk
+     * honestly: what was uploaded stays, the message says how far it
+     * got.
+     */
+    private fun doUploadTree(treeUri: Uri) {
+        val c = api ?: return
+        if (busy) return
+        val target = parent
+        val namesEnc = rootKey != null && crumbs.lastOrNull()?.namesEnc == 1
+        busy = true
+        notice = null
+        Thread {
+            var done = 0
+            try {
+                val resolver = contentResolver
+                fun walk(docId: String, dest: Long?) {
+                    val children =
+                        DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+                    resolver.query(
+                        children,
+                        arrayOf(
+                            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                            DocumentsContract.Document.COLUMN_MIME_TYPE
+                        ),
+                        null, null, null
+                    )?.use { cursor ->
+                        while (cursor.moveToNext()) {
+                            val childId = cursor.getString(0)
+                            val name = cursor.getString(1)
+                            val mime = cursor.getString(2)
+                            if (name == null) continue
+                            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                                walk(childId, c.createFolder(dest, name))
+                            } else {
+                                val childUri = DocumentsContract
+                                    .buildDocumentUriUsingTree(treeUri, childId)
+                                val bytes = resolver.openInputStream(childUri)
+                                    ?.use { it.readBytes() }
+                                    ?: throw RuntimeException("Cannot read $name")
+                                if (bytes.size > 50_000_000) {
+                                    throw RuntimeException(
+                                        "$name is too large (${bytes.size / 1_000_000} MB)"
+                                    )
+                                }
+                                uploadOne(c, dest, name, bytes, namesEnc)
+                                done++
+                                runOnUiThread { notice = "Uploading $done files..." }
+                            }
+                        }
+                    }
+                }
+                walk(DocumentsContract.getTreeDocumentId(treeUri), target)
+                runOnUiThread {
+                    busy = false
+                    loadTree() // clears the notice; set it after
+                    notice = "Uploaded $done files"
+                }
+            } catch (e: Throwable) {
+                val soFar = done
+                runOnUiThread {
+                    busy = false
+                    notice = if (soFar > 0) {
+                        "Upload stopped after $soFar files: ${e.message}"
+                    } else {
+                        "Upload failed: ${e.message}"
+                    }
                 }
             }
         }.start()
@@ -1565,6 +1674,13 @@ class MainActivity : ComponentActivity() {
                         startUpload()
                     }
                 )
+                DropdownMenuItem(
+                    text = { Text("Upload folder") },
+                    onClick = {
+                        open = false
+                        startFolderUpload()
+                    }
+                )
             }
         }
     }
@@ -1670,6 +1786,15 @@ class MainActivity : ComponentActivity() {
         prefs.edit().putString("thememode", theme).apply()
         themeMode = theme
         notice = "Theme saved"
+    }
+
+    /** The hidden-files preference: the path-bar toggle and the
+     *  settings switch write the same state; a flip clears the
+     *  selection, rows it held may have just left the view. */
+    private fun saveShowHidden(on: Boolean) {
+        prefs.edit().putBoolean("showhidden", on).apply()
+        showHidden = on
+        selection = emptySet()
     }
 
     /** The web's setAutoUnlock: off deletes the stored blob, on keeps
@@ -1791,6 +1916,24 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Hidden files", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Show dot-entries like .env or .gitignore.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = showHidden,
+                        onCheckedChange = { saveShowHidden(it) },
+                        enabled = !busy
+                    )
                 }
 
                 Spacer(Modifier.height(12.dp))
@@ -2582,15 +2725,24 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                 )
             }
-            if (!busy && trashItems.isEmpty()) {
+            // The trash goes through the same dot-filter as the tree
+            // (the web shares one renderRows for both views).
+            val visibleTrash =
+                if (showHidden) trashItems
+                else trashItems.filter { !it.row.name.startsWith(".") }
+            if (!busy && visibleTrash.isEmpty()) {
                 Text(
-                    "The trash is empty",
+                    if (trashItems.isNotEmpty()) {
+                        "Everything here is hidden - tap Hidden to see it"
+                    } else {
+                        "The trash is empty"
+                    },
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp)
                 )
             }
             LazyColumn(Modifier.weight(1f)) {
-                items(trashItems, key = { it.row.id }) { t ->
+                items(visibleTrash, key = { it.row.id }) { t ->
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -3092,6 +3244,19 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                // The web's hidden-toggle in the toolbar: dot-entries
+                // are off by default, this flips them for the listing
+                // (and the gallery swipe) without a refetch.
+                TextButton({ saveShowHidden(!showHidden) }, enabled = !busy) {
+                    Text(
+                        "Hidden",
+                        fontSize = 13.sp,
+                        color = if (showHidden) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                        fontWeight = if (showHidden) FontWeight.SemiBold
+                        else FontWeight.Normal
+                    )
+                }
                 when {
                     transfer != null -> {
                         TextButton({ cancelTransfer() }) { Text("Cancel") }
@@ -3117,16 +3282,26 @@ class MainActivity : ComponentActivity() {
                 )
             }
             LazyColumn(Modifier.weight(1f)) {
-                if (rows.isEmpty() && !busy) {
+                // The web's renderRows rule: dot-entries only with the
+                // toggle on - and a folder whose entries are all hidden
+                // says so instead of claiming it is empty.
+                val visible =
+                    if (showHidden) rows
+                    else rows.filter { !it.name.startsWith(".") }
+                if (visible.isEmpty() && !busy) {
                     item {
                         Text(
-                            "This folder is empty",
+                            if (rows.isNotEmpty()) {
+                                "Everything here is hidden - tap Hidden in the path bar"
+                            } else {
+                                "This folder is empty"
+                            },
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp)
                         )
                     }
                 }
-                items(rows, key = { it.id }) { row ->
+                items(visible, key = { it.id }) { row ->
                     val selected = row.id in selection
                     val tint =
                         if (selected) {
