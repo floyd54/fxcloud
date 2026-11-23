@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -93,6 +94,7 @@ import androidx.credentials.PublicKeyCredential
 import java.io.ByteArrayInputStream
 import java.io.File
 import kotlin.math.abs
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -3092,11 +3094,41 @@ class MainActivity : ComponentActivity() {
         var password by remember { mutableStateOf("") }
         var displayName by remember { mutableStateOf("") }
         var registerMode by remember { mutableStateOf(false) }
+        var serverBanner by remember { mutableStateOf("") }
+        // The deployment's notice, re-read when the server field
+        // settles: a banner belongs to the server it names.
+        LaunchedEffect(server) {
+            delay(600)
+            val target = server
+            Thread {
+                val text = try {
+                    ApiClient(target).loginBanner()
+                } catch (e: Throwable) {
+                    ""
+                }
+                runOnUiThread { if (server == target) serverBanner = text }
+            }.start()
+        }
         Column(
             Modifier.fillMaxSize().padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            if (serverBanner.isNotEmpty()) {
+                val warn =
+                    if (isSystemInDarkTheme()) Color(0xFFFFC164) else Color(0xFF7A4A00)
+                Text(
+                    serverBanner,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
+                    color = warn,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0x24F59E0B), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                )
+                Spacer(Modifier.height(12.dp))
+            }
             // The feature graphic's mark as the hero of the form: the
             // same cloud the store banner shows, on the light blue field.
             Image(

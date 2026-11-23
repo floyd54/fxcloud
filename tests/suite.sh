@@ -192,6 +192,7 @@ blobpath() { # blobpath <file-id> -> on-disk blob path (owner/year from the DB r
 start_server() {
   FXCLOUD_DATA="$DATA" FXCLOUD_PORT=$PORT FXCLOUD_TRASH_DAYS=30 FXCLOUD_TRASH_SWEEP_SECS=2 \
     FXCLOUD_WEBAUTHN_ANDROID_ORIGIN=android:apk-key-hash:SUITETEST \
+    FXCLOUD_LOGIN_BANNER="Demonstration server - files here are deleted regularly without warning" \
     "$BIN" >>"$ROOT/server.log" 2>&1 &
   echo $! > "$ROOT/server.pid"
   local code=000
@@ -726,6 +727,40 @@ RC=$(reqcode PUT "/api/admin/users/$ALICE" "$JA" '{"is_active":false}')
 [ "$RC" = "400" ] && ok "an admin cannot deactivate themselves (400)" || bad "expected 400 for self-deactivate, got $RC"
 RC=$(reqcode PUT "/api/admin/users/$ALICE" "$JA" '{"is_admin":false}')
 [ "$RC" = "400" ] && ok "the last admin cannot be demoted (400)" || bad "expected 400 for last-admin demote, got $RC"
+
+note "user administration: the GDPR erasure takes the account and its data"
+req POST /api/register "$ROOT/gdpr.jar" \
+  '{"username":"gdpr","password":"correct-horse"}' >/dev/null
+LIST=$(req GET /api/admin/users "$JA")
+GDPR=$(afield "$LIST" gdpr id)
+sqlite3 "$DATA/fxcloud.db" "UPDATE users SET is_active=1 WHERE username='gdpr';" >/dev/null
+reqcode POST /api/login "$ROOT/gdpr.jar" '{"username":"gdpr","password":"correct-horse"}' >/dev/null
+GFILE=$(jget "$(req POST /api/files/file "$ROOT/gdpr.jar" \
+  '{"parent_id":null,"name":"mine.txt"}')" entry.id)
+[ -n "$GFILE" ] && ok "the account owns a file before the erasure" \
+  || bad "could not create the file"
+
+RC=$(reqcode DELETE "/api/admin/users/$ALICE" "$JA")
+[ "$RC" = "400" ] && ok "an administrator cannot delete themselves (400)" \
+  || bad "self-delete: $RC"
+RC=$(reqcode DELETE "/api/admin/users/$GDPR" "$JA")
+[ "$RC" = "200" ] && ok "the administrator erases the account (200)" \
+  || bad "erasure: $RC"
+
+RC=$(reqcode GET /api/me "$ROOT/gdpr.jar")
+[ "$RC" = "401" ] && ok "the erased account's session is dead (401)" \
+  || bad "session after erase: $RC"
+LIST=$(req GET /api/admin/users "$JA")
+[ "$(afield "$LIST" gdpr id)" = "" ] && ok "the account left the admin list" \
+  || bad "still listed after erasure"
+LEFT=$(sqlite3 "$DATA/fxcloud.db" \
+  "SELECT (SELECT COUNT(*) FROM users WHERE username='gdpr') || '/' || (SELECT COUNT(*) FROM files WHERE id=$GFILE);")
+[ "$LEFT" = "0/0" ] && ok "the user row and their file row are gone" \
+  || bad "rows left after erasure: $LEFT"
+RC=$(reqcode POST /api/register "$ROOT/gdpr.jar" \
+  '{"username":"gdpr","password":"another-horse"}')
+[ "$RC" = "202" ] && ok "the username is free again (202 pending)" \
+  || bad "re-register after erasure: $RC"
 
 note "user administration: manage the admin role"
 RC=$(reqcode PUT "/api/admin/users/$DAVE" "$JA" '{"is_admin":true}')
@@ -1912,6 +1947,7 @@ kill "$(cat "$ROOT/server.pid")" 2>/dev/null
 wait 2>/dev/null
 FXCLOUD_DATA="$DATA" FXCLOUD_PORT=$PORT FXCLOUD_TRASH_DAYS=30 FXCLOUD_TRASH_SWEEP_SECS=3600 \
   FXCLOUD_WEBAUTHN_ANDROID_ORIGIN=android:apk-key-hash:SUITETEST \
+  FXCLOUD_LOGIN_BANNER="Demonstration server - files here are deleted regularly without warning" \
   "$BIN" >>"$ROOT/server.log" 2>&1 &
 echo $! > "$ROOT/server.pid"
 for _ in $(seq 1 100); do
@@ -3576,6 +3612,16 @@ rm -f "$DATA/assetlinks.json"
 RC=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/.well-known/assetlinks.json")
 [ "$RC" = "404" ] && ok "without the file the well-known route answers 404" \
   || bad "missing assetlinks: $RC"
+
+# The login banner (concepts/android.md): the operator's notice on the
+# page and through the API the app reads.
+curl -s "$BASE/login" | grep -q 'class="server-banner"' \
+  && curl -s "$BASE/login" | grep -q 'Demonstration server' \
+  && ok "the login page carries the server's banner" \
+  || bad "login banner missing from the page"
+curl -s "$BASE/api/login-banner" | grep -q '"banner":"Demonstration server' \
+  && ok "the banner rides the API for the app" \
+  || bad "login-banner API: $(curl -s "$BASE/api/login-banner")"
 
 # The ceremony kind is re-checked at redemption, in both directions: a
 # registration challenge cannot open a session and a login challenge cannot

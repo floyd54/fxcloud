@@ -696,6 +696,7 @@ mod tests {
             trash_sweep_secs: 3600,
             webauthn_origin: None,
             webauthn_android_origins: Vec::new(),
+            login_banner: String::new(),
             office_url: None,
             office_origin: None,
             office_secret: None,

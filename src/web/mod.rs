@@ -167,6 +167,10 @@ pub fn build_router(state: SharedState) -> Router {
         // Auth
         .route("/register", post(routes::auth::register))
         .route("/login", post(routes::auth::login))
+        // The deployment's login notice (concepts/android.md, login
+        // banner): open on purpose - both login forms ask for it
+        // before a session exists.
+        .route("/login-banner", get(routes::auth::login_banner))
         .route("/logout", post(routes::auth::logout))
         .route("/me", get(routes::auth::me))
         .route("/me", put(routes::auth::update_me))
@@ -278,6 +282,8 @@ pub fn build_router(state: SharedState) -> Router {
     let api = api
         .route("/admin/users", get(routes::admin::list_users))
         .route("/admin/users/{id}", put(routes::admin::update_user))
+        // The GDPR erasure (concepts/android.md, account erasure).
+        .route("/admin/users/{id}", delete(routes::admin::delete_user))
         .route(
             "/admin/users/{id}/password",
             post(routes::admin::reset_password),

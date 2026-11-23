@@ -103,6 +103,10 @@ pub async fn register(
         .into_response())
 }
 
+pub async fn login_banner(State(state): State<SharedState>) -> Json<Value> {
+    Json(json!({ "banner": state.config.login_banner }))
+}
+
 /// POST /api/login – verify credentials and open a session.
 ///
 /// Correct credentials on a deactivated account are rejected with

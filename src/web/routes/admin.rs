@@ -176,6 +176,39 @@ fn generate_temporary_password() -> String {
 
 /// GET /api/admin/groups -- every group: identity, quota against
 /// consumption, creator, and the member list with roles.
+/// DELETE /api/admin/users/{id} - the GDPR erasure: the account and
+/// everything that belongs to it (concepts/android.md, account
+/// erasure). The db refuses while group content is still theirs to
+/// destroy; guards mirror the demote path - no self-deletion, never
+/// the last active administrator.
+pub async fn delete_user(
+    State(state): State<SharedState>,
+    admin: AdminUser,
+    Path(user_id): Path<i64>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if user_id == admin.id() {
+        return Err(AppError::BadRequest(
+            "you cannot delete your own account".into(),
+        ));
+    }
+    let target = state
+        .db
+        .find_user_by_id(user_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if target.is_active && target.is_admin {
+        let remaining = state.db.count_active_admins().await?;
+        if remaining <= 1 {
+            return Err(AppError::BadRequest(
+                "cannot delete the last active administrator".into(),
+            ));
+        }
+    }
+    let blobs = state.db.delete_user(user_id).await?;
+    state.files.delete_blobs(&blobs).await;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 pub async fn list_groups(
     State(state): State<SharedState>,
     _admin: AdminUser,

@@ -597,6 +597,62 @@ impl Db {
         .await
     }
 
+    /// The GDPR erasure (concepts/android.md, account erasure): the
+    /// account and every personal row that belongs to it, in one
+    /// transaction - group content is the group's and refuses the
+    /// deletion while any remains. Rows cascade off `users(id)`
+    /// (sessions, keys, passkeys, shares, links, memberships, the
+    /// files and their versions); the bytes on disk do not, so their
+    /// blob refs come back for the caller to unlink - the same split
+    /// as [`hard_delete`].
+    pub async fn delete_user(&self, user_id: i64) -> Result<Vec<BlobRef>, AppError> {
+        self.run(move |conn| {
+            let group_files: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM files
+                  WHERE owner_id = ?1 AND owner_group_id IS NOT NULL",
+                params![user_id],
+                |r| r.get(0),
+            )?;
+            if group_files > 0 {
+                return Err(AppError::Conflict(
+                    "the account still owns group content - move or delete it first".into(),
+                ));
+            }
+            // The blobs the cascade is about to orphan: personal files
+            // (content) and their versions.
+            let mut stmt = conn.prepare(
+                "SELECT id, owner_id, owner_group_id, created_at FROM files
+                  WHERE owner_id = ?1 AND is_dir = 0",
+            )?;
+            let mut blobs = stmt
+                .query_map(params![user_id], |r| {
+                    blob_ref(r.get(0)?, r.get(1)?, r.get(2)?, &r.get::<_, String>(3)?)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut vstmt = conn.prepare(
+                "SELECT fv.file_id, fv.blob_created_at FROM file_versions fv
+                   JOIN files f ON f.id = fv.file_id
+                  WHERE f.owner_id = ?1",
+            )?;
+            let vblobs = vstmt
+                .query_map(params![user_id], |r| {
+                    Ok(version_blob_ref(r.get(0)?, &r.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            blobs.extend(vblobs);
+            // The creator reference is the only one without a cascade
+            // (migration 017): the group stays with its members,
+            // unpointed.
+            conn.execute(
+                "UPDATE groups SET created_by = NULL WHERE created_by = ?1",
+                params![user_id],
+            )?;
+            conn.execute("DELETE FROM users WHERE id = ?1", params![user_id])?;
+            Ok(blobs)
+        })
+        .await
+    }
+
     /// The caller's trash: trashed roots, newest first. One row per restore
     /// unit - children of a trashed folder come back with their parent.
     /// Group rows are in every member's view, badged with their group

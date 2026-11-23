@@ -36,6 +36,29 @@ async fn is_logged_in(state: &SharedState, headers: &header::HeaderMap) -> bool 
     )
 }
 
+/// The login page's banner element, built server-side: empty text
+/// renders nothing at all (no stray box), and the operator's text is
+/// HTML-escaped - it is configuration, not markup.
+fn banner_html(banner: &str) -> String {
+    if banner.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(banner.len() + 40);
+    out.push_str("<div class=\"server-banner\">");
+    for c in banner.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out.push_str("</div>");
+    out
+}
+
 /// GET / – the file explorer app. Redirects to /login when unauthenticated.
 pub async fn index(
     State(state): State<SharedState>,
@@ -47,6 +70,7 @@ pub async fn index(
     serve_asset(
         "index.html",
         state.config.office_url.as_deref().unwrap_or(""),
+        "",
     )
 }
 
@@ -58,7 +82,7 @@ pub async fn login_page(
     if is_logged_in(&state, &headers).await {
         return Ok(Redirect::to("/").into_response());
     }
-    serve_asset("login.html", "")
+    serve_asset("login.html", "", &state.config.login_banner)
 }
 
 /// Query of the help page: an optional language override.
@@ -100,7 +124,7 @@ pub async fn help_page(
         .clone()
         .or_else(|| lang_cookie(&headers))
         .unwrap_or_else(|| "en".to_string());
-    let mut response = serve_asset(&format!("assets/help-{lang}.html"), "")?;
+    let mut response = serve_asset(&format!("assets/help-{lang}.html"), "", "")?;
     if let Some(wanted) = chosen {
         // Remember the choice the way the UI remembers its switcher.
         let cookie = format!("fxcloud_lang={wanted}; Path=/; Max-Age=31536000; SameSite=Lax");
@@ -113,21 +137,21 @@ pub async fn help_page(
 
 /// GET /assets/{*path} – serve a static asset with sensible caching.
 pub async fn asset(AxumPath(path): AxumPath<String>) -> Result<Response, AppError> {
-    serve_asset(&format!("assets/{path}"), "")
+    serve_asset(&format!("assets/{path}"), "", "")
 }
 
 /// GET /sw.js – the service worker (PWA install). Must live at the root so
 /// its default scope is the whole origin, and mime_guess answers
 /// `text/javascript`, which browsers require to accept a worker at all.
 pub async fn service_worker() -> Result<Response, AppError> {
-    serve_asset("sw.js", "")
+    serve_asset("sw.js", "", "")
 }
 
 /// GET /manifest.webmanifest – the PWA manifest (installability: name,
 /// icons, start_url, display). mime_guess maps `.webmanifest` to
 /// `application/manifest+json`, the type install prompts expect.
 pub async fn manifest() -> Result<Response, AppError> {
-    serve_asset("manifest.webmanifest", "")
+    serve_asset("manifest.webmanifest", "", "")
 }
 
 /// GET /.well-known/assetlinks.json - the Digital Asset Links file
@@ -152,7 +176,7 @@ pub async fn assetlinks(State(state): State<SharedState>) -> Result<Response, Ap
 /// without an extra round trip (concepts/office.md section 5 - with the
 /// feature off the attribute stays empty and nothing in the frontend
 /// changes, decision 3).
-fn serve_asset(path: &str, office: &str) -> Result<Response, AppError> {
+fn serve_asset(path: &str, office: &str, banner: &str) -> Result<Response, AppError> {
     let Some(file) = Assets::get(path) else {
         return Err(AppError::NotFound);
     };
@@ -174,7 +198,8 @@ fn serve_asset(path: &str, office: &str) -> Result<Response, AppError> {
         // filled in from Cargo.toml, so display and release tag stay in step.
         let html = String::from_utf8_lossy(&data)
             .replace("{{version}}", VERSION)
-            .replace("{{office}}", office);
+            .replace("{{office}}", office)
+            .replace("{{banner}}", &banner_html(banner));
         data = html.into_bytes();
     }
 
@@ -186,4 +211,29 @@ fn serve_asset(path: &str, office: &str) -> Result<Response, AppError> {
         data,
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod banner_tests {
+    use super::banner_html;
+
+    #[test]
+    fn empty_banner_renders_nothing() {
+        assert_eq!(banner_html(""), "");
+    }
+
+    #[test]
+    fn the_text_is_html_escaped() {
+        assert_eq!(
+            banner_html("A <b> & \"c\""),
+            "<div class=\"server-banner\">A &lt;b&gt; &amp; &quot;c&quot;</div>"
+        );
+    }
+
+    #[test]
+    fn plain_text_keeps_its_words() {
+        let html = banner_html("Demonstrations-Server: Daten werden gelöscht.");
+        assert!(html.starts_with("<div class=\"server-banner\">Demonstrations"));
+        assert!(html.ends_with("</div>"));
+    }
 }

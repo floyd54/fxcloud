@@ -57,6 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/floyd54/fxcloud/main/install.sh | s
 | `FXCLOUD_USER` / `FXCLOUD_HOME` / `FXCLOUD_DATA` | service user, its home, the data dir (`fxcloud`, `/home/fxcloud`, `.../data`) |
 | `FXCLOUD_BIND` / `FXCLOUD_PORT` | listen address and port (`0.0.0.0`, `8080`)         |
 | `FXCLOUD_ORIGIN`       | public URL for passkeys (unset)                            |
+| `FXCLOUD_LOGIN_BANNER` | notice on the login page, e.g. a test-server warning (unset) |
 | `FXCLOUD_SECURE_COOKIE`| `1` for Secure cookies, behind HTTPS (unset)               |
 | `FXCLOUD_MAX_UPLOAD_MB` / `FXCLOUD_TRASH_DAYS` / `FXCLOUD_SESSION_TTL` | upload limit, trash lifetime, session TTL (`1024`, `30`, `604800`) |
 | `RUST_LOG`             | log filter (`fxcloud=info`)                                |
@@ -112,6 +113,7 @@ Everything is configured via environment variables:
 | `FXCLOUD_TRASH_DAYS`    | `30`            | Days a trashed entry is kept before the purge removes it |
 | `FXCLOUD_TRASH_SWEEP_SECS` | `3600`       | Interval of the trash purge sweep, in seconds |
 | `FXCLOUD_ORIGIN`          | (derived)    | Public origin for WebAuthn passkeys (e.g. `https://cloud.example.com`); defaults to the request's scheme and `Host` |
+| `FXCLOUD_LOGIN_BANNER`    | (empty)      | Notice rendered on the login page and served via `/api/login-banner` for the app (e.g. `test server - data deleted regularly`) |
 | `RUST_LOG`              | `fxcloud=info`  | Log filter (tracing)                 |
 
 ```bash

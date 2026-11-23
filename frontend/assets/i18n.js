@@ -334,6 +334,9 @@
     "admin.revoke": "Admin entziehen",
     "admin.make": "Zum Admin machen",
     "admin.resetPw": "Passwort zur\u00fccksetzen",
+    "admin.deleteUser": "Konto endg\u00fctig l\u00f6schen",
+    "admin.deleteUserConfirm":
+      "Dieses Konto und alle seine Daten (Dateien, Schl\u00fcssel, Sitzungen, Freigaben) werden unwiederbringlich gel\u00f6scht. Fortfahren?",
     "admin.quotaBad": "Das Kontingent muss eine nicht negative Zahl in MiB sein.",
 
     // group folders: the admin dialog's section, the member's bootstrap,
@@ -937,6 +940,9 @@
     "admin.revoke": "Revoke admin",
     "admin.make": "Make admin",
     "admin.resetPw": "Reset password",
+    "admin.deleteUser": "Delete account permanently",
+    "admin.deleteUserConfirm":
+      "This account and all of its data (files, keys, sessions, shares) will be irrecoverably deleted. Continue?",
     "admin.quotaBad":
       "Quota must be a non-negative number of MiB.",
 
@@ -1522,6 +1528,8 @@
     "admin.revoke": "QapwI' yIqaw",
     "admin.make": "QapwI' yIchoH",
     "admin.resetPw": "mu'mu' yIchoH",
+    "admin.deleteUser": "puvwI' yIqaw",
+    "admin.deleteUserConfirm": "puvwI' yIqaw? mIw je nom chaw'be'.",
     "admin.quotaBad":
       "nI' MiB ram - yIqawbe'.",
 

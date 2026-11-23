@@ -97,6 +97,18 @@ class ApiClient(var baseUrl: String) {
         return reply
     }
 
+    /** GET /api/login-banner - the deployment's notice for this
+     *  login screen; empty when the server has none. */
+    fun loginBanner(): String {
+        val reply = get("/api/login-banner")
+        if (reply.code != 200) return ""
+        return try {
+            JSONObject(reply.body).optString("banner", "")
+        } catch (e: Throwable) {
+            ""
+        }
+    }
+
     /** POST /api/register - the web's register tab: an active account
      *  comes back with its session cookie (200), a pending one with202
      *  and no cookie; both answers are the caller's to interpret. */

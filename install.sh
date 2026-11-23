@@ -29,6 +29,7 @@
 #   FXCLOUD_BIND           listen address (default: 0.0.0.0)
 #   FXCLOUD_PORT           listen port (default: 8080)
 #   FXCLOUD_ORIGIN         public origin for passkeys, e.g. https://cloud.example.com
+#   FXCLOUD_LOGIN_BANNER   notice on the login page, e.g. "test server - data deleted regularly" (unset)
 #   FXCLOUD_SECURE_COOKIE  1 to mark cookies Secure (use behind HTTPS)
 #   FXCLOUD_MAX_UPLOAD_MB  largest upload in MiB (default: 1024)
 #   FXCLOUD_TRASH_DAYS     days a trashed entry is kept (default: 30)

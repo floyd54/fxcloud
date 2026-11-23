@@ -3972,6 +3972,18 @@
       resetBtn.textContent = t("admin.resetPw");
       actions.appendChild(resetBtn);
 
+      // The GDPR erasure (concepts/android.md, account erasure): the
+      // server has the real rules (no self-delete, no last admin, no
+      // group content left) - this button only asks first.
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "btn secondary";
+      delBtn.dataset.id = String(u.id);
+      delBtn.dataset.action = "delete-user";
+      delBtn.textContent = t("admin.deleteUser");
+      if (u.id === myId) delBtn.style.display = "none";
+      actions.appendChild(delBtn);
+
       tdActions.appendChild(actions);
 
       tr.appendChild(tdUser);
@@ -4010,6 +4022,10 @@
         const res = await api(`/api/admin/users/${id}/password`, { method: "POST" });
         const data = await res.json();
         showResetModal(data.username, data.temporary_password);
+      } else if (action === "delete-user") {
+        if (!confirm(t("admin.deleteUserConfirm"))) return;
+        await api(`/api/admin/users/${id}`, { method: "DELETE" });
+        await loadAdminUsers();
       }
     } catch (err) {
       setAdminStatus(err.message, true);

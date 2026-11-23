@@ -44,6 +44,11 @@ pub struct Config {
     /// FXCLOUD_WEBAUTHN_ANDROID_ORIGIN). Empty (the default) keeps
     /// the web's rule: only the derived origin verifies.
     pub webauthn_android_origins: Vec<String>,
+    /// The login page's deployment notice (concepts/android.md, login
+    /// banner): rendered server-side into login.html and served via
+    /// /api/login-banner for the app. Empty (the default) renders
+    /// nothing at all.
+    pub login_banner: String,
     /// Office integration (concepts/office.md): the engine's base URL as the
     /// *browser* sees it, `http(s)://host[:port][/prefix]`. Unset (the
     /// default) means the feature is off - no office routes, no CSP change,
@@ -172,6 +177,13 @@ impl Config {
                     .collect()
             })
             .unwrap_or_default();
+        // The login page's deployment notice: configuration, not
+        // markup - the renderer escapes it either way.
+        let login_banner = std::env::var("FXCLOUD_LOGIN_BANNER")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_default();
 
         // Office integration (concepts/office.md): the knobs belong together -
         // a stray secret or base without FXCLOUD_OFFICE_URL is a config
@@ -244,6 +256,7 @@ impl Config {
             trash_sweep_secs,
             webauthn_origin,
             webauthn_android_origins,
+            login_banner,
             office_url,
             office_origin,
             office_secret,

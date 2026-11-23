@@ -363,6 +363,24 @@ tbody tr.selected:hover { background: rgba(0, 130, 201, 0.10); }
   margin-bottom: 26px;
   font-size: 14px;
 }
+/* The deployment's login notice (concepts/android.md, login banner):
+   server-rendered, therefore the first thing on the card. Amber in
+   both themes on purpose - a warning should not blend in. */
+.server-banner {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: #7a4a00;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.55);
+}
+[data-theme="dark"] .server-banner {
+  color: #ffc164;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.45);
+}
 .auth-tabs {
   display: flex;
   margin-bottom: 22px;

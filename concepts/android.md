@@ -230,6 +230,45 @@ present -> application/json, absent -> 404) and the origin gate (a
 configured app-origin assertion opens a session, an unconfigured one
 is refused); `native_app_origin` carries unit tests of its own.
 
+## Login banner
+
+A deployment can put its own notice where every visitor reads it
+before signing up:
+
+- `FXCLOUD_LOGIN_BANNER` (server side - editable in the unit, no
+  rebuild): rendered into `login.html` as `.server-banner`,
+  HTML-escaped (it is configuration, not markup); an empty knob
+  renders no element at all. The same text rides
+  `GET /api/login-banner` (`{"banner": ...}`, unauthenticated), so
+  the app's login form shows it too - fetched debounced after the
+  server field settles, because a banner belongs to the server it
+  names.
+- Suite: the page carries the class and the text, the API serves it;
+  `banner_html`'s unit tests pin the escape and the empty case.
+
+## Account erasure (GDPR)
+
+`DELETE /api/admin/users/{id}` (admin only) removes an account and
+everything that belongs to it:
+
+- The db refuses while the account still owns group content - a
+  group's files are the group's, not one member's to destroy; move or
+  delete them first (the same explicit-first spirit as
+  `delete_group`).
+- Otherwise one transaction: the creator reference out of the groups
+  it survives (`created_by = NULL`), then the users row - and
+  SQLite's `ON DELETE CASCADE` takes the rest: personal files and
+  their versions, sessions, keys, passkeys, shares (both
+  directions), public links, memberships, group keys. Rows cascade,
+  bytes do not: the blob refs come back and the handler unlinks them
+  (`state.files.delete_blobs`), so storage is reclaimed too.
+- Guards mirror the demote path: no self-deletion, never the last
+  active administrator.
+- The web's user-administration dialog gains a "Delete account"
+  button behind a confirm; the suite pins the erasure end to end
+  (200, dead session, name free again, user and file rows gone,
+  self-delete refused).
+
 ## Tests
 
 - Host JUnit: the golden fixtures through JNI (the app's `ffi_vectors`
