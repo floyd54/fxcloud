@@ -139,7 +139,8 @@ closed track). Play: closed testing is live - screenshots, listing and Data
 Safety forms are in, and the user installed the build from the Play
 Store (2026-11-21). Text and markdown edit in the app now (source,
 markdown toolbar, rendered pane, save through `PUT /files/content`
-with the web's key rules). Production is gated by Google's rule for new
+with the web's key rules - shipped as v0.4.3, versionCode 7).
+Production is gated by Google's rule for new
 personal accounts: 12 testers continuously opted in for 14 days,
 then a review of at most 7 days. The counter tracks tester opt-in,
 not builds: uploads during the test do not reset it, but a tester
