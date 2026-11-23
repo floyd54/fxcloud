@@ -22,6 +22,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -68,6 +69,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.res.painterResource
@@ -84,6 +86,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.ByteArrayInputStream
 import java.io.File
+import kotlin.math.abs
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -213,7 +216,21 @@ class MainActivity : ComponentActivity() {
     private var parent by mutableStateOf<Long?>(null)
 
     /** Non-null replaces the whole list area with the S3b preview. */
-    private var preview by mutableStateOf<Preview?>(null)
+    /** The open preview - and its load generation. Every write of
+     *  null is a close (←, system back, or another overlay taking
+     *  over), which invalidates in-flight loads: they must never
+     *  resurrect a preview the user has already left, and a newer
+     *  load must never be overwritten by an older one that lands
+     *  late. */
+    private val previewState = mutableStateOf<Preview?>(null)
+    private var previewLoadSeq = 0
+    private var previewLoads = 0
+    private var preview: Preview?
+        get() = previewState.value
+        set(value) {
+            if (value == null) previewLoadSeq++
+            previewState.value = value
+        }
 
     /** The S4c confirmation before a key rotation drops history. */
     private var rotateConfirm by mutableStateOf(false)
@@ -762,6 +779,8 @@ class MainActivity : ComponentActivity() {
         }
         busy = true
         notice = null
+        previewLoads++
+        val seq = ++previewLoadSeq
         Thread {
             try {
                 val raw = if (versionId != null) {
@@ -807,16 +826,38 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 runOnUiThread {
-                    preview = shown
-                    busy = false
+                    previewLoads--
+                    if (seq == previewLoadSeq) preview = shown
+                    // Only the last load in flight owns the busy flag;
+                    // a newer one keeps it until it lands.
+                    if (previewLoads <= 0) busy = false
                 }
             } catch (e: Throwable) {
                 runOnUiThread {
-                    busy = false
-                    notice = "Preview failed: ${e.message}"
+                    previewLoads--
+                    if (seq == previewLoadSeq) {
+                        notice = "Preview failed: ${e.message}"
+                    }
+                    if (previewLoads <= 0) busy = false
                 }
             }
         }.start()
+    }
+
+    /** One step through the folder's gallery - the web's arrow
+     *  buttons as a gesture: every previewable entry in tree order,
+     *  no wrap at the ends. A version stand is history, not part of
+     *  a gallery, so it never steps. */
+    private fun swipePreview(step: Int) {
+        val current = preview ?: return
+        if (!current.allowRotate) return
+        val gallery = rows.filter {
+            !it.isDir && previewKind(it.name, it.mime) != Kind.OTHER
+        }
+        val index = gallery.indexOfFirst { it.id == current.row.id }
+        if (index < 0) return
+        val target = gallery.getOrNull(index + step) ?: return
+        loadPreview(target)
     }
 
     /**
@@ -1834,7 +1875,9 @@ class MainActivity : ComponentActivity() {
         editorText = TextFieldValue("")
         editorBaseline = ""
         editorMd = isMarkdownName(row.name)
-        editorMdPane = editorMd
+        // Editing first: every open starts in the source, the preview
+        // pane is one tap away - never in the way of the first keystroke.
+        editorMdPane = false
         editorStatus = "Loading..."
         editorStatusError = false
         editorEncrypted = row.encVersion > 0
@@ -3397,7 +3440,47 @@ class MainActivity : ComponentActivity() {
             }
             when (p.kind) {
                 Kind.IMAGE -> Box(
-                    Modifier.fillMaxSize().padding(8.dp),
+                    Modifier.fillMaxSize().padding(8.dp)
+                        // The gallery gesture: sideways steps through the
+                        // folder's previewables (the web's arrows as a
+                        // gesture), down closes - next to the ← button
+                        // and the system back, the exit a swiped view
+                        // needs. Axis is locked after the touch slop so
+                        // a diagonal flick picks one direction only.
+                        .pointerInput(p.row.id) {
+                            val minSwipe = 48.dp.toPx()
+                            var accX = 0f
+                            var accY = 0f
+                            var axis = 0 // 0 undecided, 1 across, 2 down
+                            detectDragGestures(
+                                onDragStart = {
+                                    accX = 0f
+                                    accY = 0f
+                                    axis = 0
+                                },
+                                onDrag = { change, drag ->
+                                    change.consume()
+                                    accX += drag.x
+                                    accY += drag.y
+                                    if (axis == 0 &&
+                                        (abs(accX) > viewConfiguration.touchSlop ||
+                                            abs(accY) > viewConfiguration.touchSlop)
+                                    ) {
+                                        axis = if (abs(accX) > abs(accY)) 1 else 2
+                                    }
+                                },
+                                onDragEnd = {
+                                    when {
+                                        axis == 1 && accX <= -minSwipe -> swipePreview(1)
+                                        axis == 1 && accX >= minSwipe -> swipePreview(-1)
+                                        axis == 2 && accY >= minSwipe -> {
+                                            preview = null
+                                            rotateConfirm = false
+                                        }
+                                    }
+                                }
+                            )
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
