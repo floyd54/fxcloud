@@ -643,6 +643,23 @@ pub struct Assertion {
 /// `authenticatorData || SHA256(clientDataJSON)`, and finally the signature
 /// counter (clone detection). `stored_*` come from the credential row.
 #[allow(clippy::too_many_arguments)]
+/// The origin a native Credential Manager assertion carries: Android
+/// has no URL origin, so the platform signs `android:apk-key-hash:`
+/// plus the APK signing certificate's SHA-256. assetlinks.json
+/// authorizes the app for the rpId but never rewrites this string, so
+/// a deployment opts in by listing the exact values it accepts -
+/// anything else keeps the web's rule and must present the derived
+/// origin (concepts/android.md, passkey login).
+pub fn native_app_origin<'a>(client_origin: &'a str, configured: &[String]) -> Option<&'a str> {
+    if client_origin.starts_with("android:apk-key-hash:")
+        && configured.iter().any(|o| o == client_origin)
+    {
+        Some(client_origin)
+    } else {
+        None
+    }
+}
+
 pub fn verify_assertion(
     rp_id: &str,
     origin: &str,
@@ -702,4 +719,44 @@ pub fn verify_assertion(
     Ok(Assertion {
         sign_count: new_count,
     })
+}
+
+#[cfg(test)]
+mod app_origin_tests {
+    use super::native_app_origin;
+
+    const MINE: &str = "android:apk-key-hash:AAAA";
+
+    #[test]
+    fn a_configured_app_origin_is_accepted() {
+        assert_eq!(native_app_origin(MINE, &[MINE.to_string()]), Some(MINE));
+    }
+
+    #[test]
+    fn an_unconfigured_app_origin_falls_back_to_the_web_rule() {
+        assert_eq!(native_app_origin(MINE, &[]), None);
+        assert_eq!(
+            native_app_origin("android:apk-key-hash:EVIL", &[MINE.to_string()]),
+            None
+        );
+    }
+
+    #[test]
+    fn https_origins_never_take_the_app_path() {
+        assert_eq!(
+            native_app_origin("https://fxcloud.example", &[MINE.to_string()]),
+            None
+        );
+    }
+
+    #[test]
+    fn only_the_exact_configured_value_counts() {
+        assert_eq!(
+            native_app_origin(
+                "android:apk-key-hash:AA",
+                &["android:apk-key-hash:BB".to_string()]
+            ),
+            None
+        );
+    }
 }

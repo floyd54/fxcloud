@@ -39,6 +39,11 @@ pub struct Config {
     /// see. Unset (the default), both are derived per request from
     /// `X-Forwarded-Proto` / `FXCLOUD_SECURE_COOKIE` and `Host`.
     pub webauthn_origin: Option<String>,
+    /// Origins a native Credential Manager assertion may claim
+    /// (`android:apk-key-hash:...`, comma-separated in
+    /// FXCLOUD_WEBAUTHN_ANDROID_ORIGIN). Empty (the default) keeps
+    /// the web's rule: only the derived origin verifies.
+    pub webauthn_android_origins: Vec<String>,
     /// Office integration (concepts/office.md): the engine's base URL as the
     /// *browser* sees it, `http(s)://host[:port][/prefix]`. Unset (the
     /// default) means the feature is off - no office routes, no CSP change,
@@ -156,6 +161,17 @@ impl Config {
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
+        // Native passkey sign-in (concepts/android.md): the exact
+        // apk-key-hash origins the app's assertions may carry.
+        let webauthn_android_origins = std::env::var("FXCLOUD_WEBAUTHN_ANDROID_ORIGIN")
+            .ok()
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Office integration (concepts/office.md): the knobs belong together -
         // a stray secret or base without FXCLOUD_OFFICE_URL is a config
@@ -227,6 +243,7 @@ impl Config {
             trash_days,
             trash_sweep_secs,
             webauthn_origin,
+            webauthn_android_origins,
             office_url,
             office_origin,
             office_secret,

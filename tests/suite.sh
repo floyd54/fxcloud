@@ -191,6 +191,7 @@ blobpath() { # blobpath <file-id> -> on-disk blob path (owner/year from the DB r
 
 start_server() {
   FXCLOUD_DATA="$DATA" FXCLOUD_PORT=$PORT FXCLOUD_TRASH_DAYS=30 FXCLOUD_TRASH_SWEEP_SECS=2 \
+    FXCLOUD_WEBAUTHN_ANDROID_ORIGIN=android:apk-key-hash:SUITETEST \
     "$BIN" >>"$ROOT/server.log" 2>&1 &
   echo $! > "$ROOT/server.pid"
   local code=000
@@ -1910,6 +1911,7 @@ note "public links: expiry answers 410, the sweep turns it into 404"
 kill "$(cat "$ROOT/server.pid")" 2>/dev/null
 wait 2>/dev/null
 FXCLOUD_DATA="$DATA" FXCLOUD_PORT=$PORT FXCLOUD_TRASH_DAYS=30 FXCLOUD_TRASH_SWEEP_SECS=3600 \
+  FXCLOUD_WEBAUTHN_ANDROID_ORIGIN=android:apk-key-hash:SUITETEST \
   "$BIN" >>"$ROOT/server.log" 2>&1 &
 echo $! > "$ROOT/server.pid"
 for _ in $(seq 1 100); do
@@ -3536,6 +3538,44 @@ RC=$(pk_bad --counter=1)
 RC=$(pk_bad)
 [ "$RC" = "200" ] && ok "the next honest assertion still signs in" \
   || bad "honest retry: $RC"
+
+# A native Credential Manager assertion carries an apk-key-hash origin
+# instead of the URL (assetlinks authorizes the app, the origin stays
+# the app's): the configured value opens a session, any other falls to
+# the web's rule and is refused.
+reqsave POST /api/passkeys/login/start "$PLOGIN" "$ROOT/pk-lapp.json" \
+  '{"username":"alice"}' >/dev/null
+"$NODE" "$WA" assert "$ROOT/pk-lapp.json" "$ROOT/pk-state.json" \
+  "$ROOT/pk-lappcred.json" --origin=android:apk-key-hash:SUITETEST >/dev/null
+BODY=$(printf '{"credential":%s}' "$(cat "$ROOT/pk-lappcred.json")")
+RC=$(reqsave POST /api/passkeys/login/finish "$PLOGIN" "$ROOT/pk-lappfin.json" "$BODY")
+[ "$RC" = "200" ] && grep -q 'fxcloud_session' "$PLOGIN" \
+  && ok "a configured native apk-key-hash origin signs in" \
+  || bad "app origin: $RC $(head -c200 "$ROOT/pk-lappfin.json")"
+
+reqsave POST /api/passkeys/login/start "$PLOGIN" "$ROOT/pk-levo.json" \
+  '{"username":"alice"}' >/dev/null
+"$NODE" "$WA" assert "$ROOT/pk-levo.json" "$ROOT/pk-state.json" \
+  "$ROOT/pk-levocred.json" --origin=android:apk-key-hash:OTHER >/dev/null
+BODY=$(printf '{"credential":%s}' "$(cat "$ROOT/pk-levocred.json")")
+RC=$(reqsave POST /api/passkeys/login/finish "$PLOGIN" "$ROOT/pk-levofin.json" "$BODY")
+[ "$RC" = "400" ] && ok "an unconfigured app origin is refused" \
+  || bad "unconfigured app origin: $RC"
+
+# The passkey app's trust file lives in the data dir (deployment
+# specific, never embedded): present it is served as JSON, absent the
+# well-known route answers like any unknown path.
+printf '%s' '[{"relation":["delegate_permission/common.get_login_creds"],"target":{"namespace":"android_app","package_name":"de.frischux.fxcloud","sha256_cert_fingerprints":["AA:BB"]}}]' \
+  >"$DATA/assetlinks.json"
+ACT=$(curl -s -o "$ROOT/al.json" -w '%{content_type}' "$BASE/.well-known/assetlinks.json")
+grep -q '"package_name":"de.frischux.fxcloud"' "$ROOT/al.json" \
+  && [ "$ACT" = "application/json" ] \
+  && ok "assetlinks.json is served from the data dir as application/json" \
+  || bad "assetlinks: type=$ACT body=$(head -c120 "$ROOT/al.json")"
+rm -f "$DATA/assetlinks.json"
+RC=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/.well-known/assetlinks.json")
+[ "$RC" = "404" ] && ok "without the file the well-known route answers 404" \
+  || bad "missing assetlinks: $RC"
 
 # The ceremony kind is re-checked at redemption, in both directions: a
 # registration challenge cannot open a session and a login challenge cannot

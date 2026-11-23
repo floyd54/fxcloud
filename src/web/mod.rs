@@ -366,6 +366,10 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/help", get(ui::help_page))
         .route("/sw.js", get(ui::service_worker))
         .route("/manifest.webmanifest", get(ui::manifest))
+        // The passkey app's trust file (concepts/android.md): read
+        // from the data dir, never embedded - only a deployment
+        // knows its own package and certificates.
+        .route("/.well-known/assetlinks.json", get(ui::assetlinks))
         .route("/assets/{*path}", get(ui::asset))
         // Public-link visitor page: the embedded shell (public.rs) that the
         // /api/public/* routes then fill in. No session, no redirect.

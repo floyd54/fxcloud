@@ -130,6 +130,20 @@ pub async fn manifest() -> Result<Response, AppError> {
     serve_asset("manifest.webmanifest", "")
 }
 
+/// GET /.well-known/assetlinks.json - the Digital Asset Links file
+/// Google Password Manager reads before it offers this app a passkey
+/// prompt (concepts/android.md, passkey login). It is
+/// deployment-specific (package + signing certificates), so it is
+/// never embedded: drop the file next to the database and this serves
+/// it; without one the route answers like any unknown path.
+pub async fn assetlinks(State(state): State<SharedState>) -> Result<Response, AppError> {
+    let path = state.config.data_dir.join("assetlinks.json");
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| AppError::NotFound)?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], bytes).into_response())
+}
+
 /// Serve an embedded asset, filling the server-side template slots.
 ///
 /// `office` is the engine base URL when office editing is configured and

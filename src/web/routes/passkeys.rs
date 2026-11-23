@@ -236,9 +236,19 @@ pub async fn login_finish(
         return Err(AppError::Unauthorized);
     }
 
+    // A native Credential Manager assertion presents an apk-key-hash
+    // origin instead of the deployment's URL (assetlinks authorizes
+    // the app, it does not rewrite the origin): the configured list is
+    // the only door it may use, everything else must match the web's
+    // derived origin as always.
+    let expected_origin =
+        webauthn::native_app_origin(&client.origin, &state.config.webauthn_android_origins)
+            .map(str::to_string)
+            .unwrap_or_else(|| origin.clone());
+
     let assertion = webauthn::verify_assertion(
         &rp_id,
-        &origin,
+        &expected_origin,
         &ceremony.challenge,
         user_id,
         &req.credential,

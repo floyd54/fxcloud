@@ -93,7 +93,9 @@ decryption, upload/download/preview, rename/move/create, versions,
 trash, quotas readout, settings basics (display name, theme, password),
 shares with envelopes and fingerprints, recovery-key show/rotate.
 
-Out for v1: passkeys (Android Credential Manager - v2), groups and key
+Out for v1: passkey registration (sign-in via Android Credential
+Manager landed - the passkey section below; creating devices stays
+web), groups and key
 distribution (v1: group folders are web-administered), office, WebDAV,
 public-link management, admin dialog (web only).
 
@@ -192,6 +194,42 @@ session).
 | S4b device auto-unlock | The packed session grows an ark tail: `root(32) \|\| u32 pkcs8Len \|\| pkcs8 \|\| u32 arkLen \|\| ark` (root/pkcs8 positions unchanged, every reader updated). After an unlock with the server's `auto_unlock` switch on, store `{v:1, deviceKeyEnc, wrappedArk}` per account: a random device key wrapped by the Android Keystore (hardware-backed - the web's localStorage upgraded), the ARK under it with `fx1:device-ark:v1`. On start the blob opens the session without a prompt (Keystore decrypt -> `unwrap` -> `sessionFromArk`); anything absent, stale or tampered falls back to the passphrase pane, and the switch off deletes the blob (the server flag is the truth). |
 | S4c rotate | The web's rotate on a phone: for an encrypted file the owner rotates - download, decrypt under the current key, fresh key, encrypt, `PUT /files/content?enc=1&key=&history=drop` (old history drops with the old key), then `resealOutgoing`: every outgoing share gets the new key sealed to its grantee (`GET /keys/{u}` per grantee -> `eciesSeal` -> `PUT /shares/{id}`), so nobody's envelope goes stale. Entry point where it makes sense on a phone: the preview bar. |
 
+## Passkey login (app)
+
+The app signs in with the phone's passkeys through the platform's
+Credential Manager (`androidx.credentials` 1.6.0, API 28+ - the
+button stays hidden below that), speaking the *web's own ceremony*:
+
+1. `POST /api/passkeys/login/start {username}` - the answer is
+   already the `publicKey` JSON the prompt takes verbatim (challenge,
+   rpId, allowCredentials, userVerification).
+2. `CredentialManager.getCredential(PublicKeyCredentialOption)` ->
+   `authenticationResponseJSON`, posted back as `{credential}` - the
+   standard WebAuthn shape `LoginCredentialJson` already deserializes
+   (unknown fields ignored, exactly like the browser's `toJSON()`).
+3. The finish endpoint mints the session cookie like the password
+   door; `finishLogin` continues unchanged (an empty password falls
+   into the passphrase step, which is where a passkey user belongs).
+
+Two server pieces make the native half possible:
+
+- **Origin.** A native assertion carries
+  `clientData.origin = android:apk-key-hash:<sha256>` - assetlinks
+  authorizes the app for the rpId but never rewrites the origin.
+  `FXCLOUD_WEBAUTHN_ANDROID_ORIGIN` (comma-separated) lists the
+  exact values `login/finish` accepts beside the derived https
+  origin; unset (the default) changes nothing for the web.
+- **Asset links.** `GET /.well-known/assetlinks.json` serves
+  `$FXCLOUD_DATA/assetlinks.json` when the operator drops one in
+  (package + signing certificates: the debug keystore for sideloads,
+  Play's app-signing key for the store build). Google Password
+  Manager refuses the prompt without it.
+
+Registration stays in the web. The suite pins the route (file
+present -> application/json, absent -> 404) and the origin gate (a
+configured app-origin assertion opens a session, an unconfigured one
+is refused); `native_app_origin` carries unit tests of its own.
+
 ## Tests
 
 - Host JUnit: the golden fixtures through JNI (the app's `ffi_vectors`
@@ -227,5 +265,5 @@ readable bytes does not exist on encrypted accounts:
 
 - `minSdk26` vs a lower floor (24) - A2 says26, say otherwise if the
   install base needs it.
-- v1 scope above: groups and passkeys are the two biggest cuts - flag
-  either if the phone needs them first.
+- v1 scope above: groups remain the cut - passkey sign-in landed (the
+  passkey section below); flag groups if the phone needs it first.

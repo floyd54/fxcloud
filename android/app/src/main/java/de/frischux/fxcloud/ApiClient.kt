@@ -75,6 +75,28 @@ class ApiClient(var baseUrl: String) {
         return reply
     }
 
+    /** POST /api/passkeys/login/start - the web's ceremony begin; the
+     *  answer is already the publicKey JSON the platform's prompt
+     *  takes verbatim (challenge, rpId, allowCredentials,
+     *  userVerification). */
+    fun passkeyLoginStart(username: String): JSONObject {
+        val reply = post("/api/passkeys/login/start", JSONObject().put("username", username))
+        if (reply.code != 200) serverError(reply, "Passkey start")
+        return JSONObject(reply.body)
+    }
+
+    /** POST /api/passkeys/login/finish {credential} - the assertion
+     *  the platform produced; the session cookie lands exactly like
+     *  the password door's. */
+    fun passkeyLoginFinish(credential: JSONObject): Reply {
+        val reply = post(
+            "/api/passkeys/login/finish",
+            JSONObject().put("credential", credential)
+        )
+        if (reply.code == 200) rememberSession(reply)
+        return reply
+    }
+
     /** POST /api/register - the web's register tab: an active account
      *  comes back with its session cookie (200), a pending one with202
      *  and no cookie; both answers are the caller's to interpret. */

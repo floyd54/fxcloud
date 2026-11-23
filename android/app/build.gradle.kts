@@ -70,8 +70,13 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.compose.material3:material3")
 
-    // Host-side golden-vector tests only (concepts/android.md A4); the
-    // device build has no dependencies beyond these.
+    // Passkey sign-in (concepts/android.md, passkey login): the
+    // platform's Credential Manager runs the web's own WebAuthn
+    // ceremony; the play-services artifact is the provider below API34.
+    implementation("androidx.credentials:credentials:1.6.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
+
+    // Host-side golden-vector tests only (concepts/android.md A4).
     testImplementation("junit:junit:4.13.2")
     // Reading the committed fixtures on the JVM (android's org.json is
     // not on the host classpath).
