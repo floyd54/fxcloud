@@ -41,6 +41,14 @@ crates/fxcrypto          the core: containers, keys, envelopes, names
   the invariants spelled out where they matter (re-key: wrap before the
   flag goes up; names: URL-safe base64, two-phase create; envelopes:
   `shareEnvelopeAad` byte for byte).
+- **The server never renders documents.** It stores and ships bytes;
+  PDFs render in the browser, images in the platform engines, and no
+  server process ever feeds an uploaded file to a rendering library.
+  Document-processing CVEs therefore have no path in: Ghostscript,
+  ImageMagick and poppler appear neither in the binary's dependency
+  tree nor on the host nor in the office image (checked for
+  CVE-2026-125396, the November 2026 `-dSAFER` escape, on 2026-11-23;
+  if rendering is ever added, Ghostscript starts at 10.08.0).
 
 ## Pinning the app to the same bytes
 
