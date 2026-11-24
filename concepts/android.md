@@ -221,9 +221,10 @@ Two server pieces make the native half possible:
   origin; unset (the default) changes nothing for the web.
 - **Asset links.** `GET /.well-known/assetlinks.json` serves
   `$FXCLOUD_DATA/assetlinks.json` when the operator drops one in
-  (package + signing certificates: the debug keystore for sideloads,
-  Play's app-signing key for the store build). Google Password
-  Manager refuses the prompt without it.
+  (package + signing certificates: the debug keystore is committed -
+  `android/debug.keystore` - so sideloads and CI's release APK share
+  one certificate; Play's app-signing key covers the store build).
+  Google Password Manager refuses the prompt without it.
 
 Registration stays in the web. The suite pins the route (file
 present -> application/json, absent -> 404) and the origin gate (a

@@ -28,6 +28,18 @@ android {
     }
 
     signingConfigs {
+        // A committed debug keystore (the standard android debug
+        // credentials): every debug build - this machine and CI's
+        // release APK alike - signs with the same certificate, so
+        // assetlinks.json can pin one fingerprint for passkeys
+        // (concepts/android.md, passkey login). A debug key in the
+        // repository is normal practice; it opens nothing.
+        getByName("debug") {
+            storeFile = file("../debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("play") {
             // CI hands in the upload key from the repository secrets
             // (PLAY_KEYSTORE_*); without them - local builds, the debug
