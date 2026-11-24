@@ -19,9 +19,10 @@ import android.widget.ImageView
 import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -90,10 +91,12 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.GetPublicKeyCredentialOption
 import androidx.credentials.PublicKeyCredential
+import androidx.fragment.app.FragmentActivity
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Locale
@@ -197,7 +200,10 @@ private class Transfer(val rows: List<Row>, val copy: Boolean, val from: Long?)
  * (concepts/android.md A4-A6). The XML frame is the S1 shape that proved
  * itself on the device; the screens below the header are Compose (A2).
  */
-class MainActivity : ComponentActivity() {
+// FragmentActivity, not ComponentActivity: androidx.biometric's
+// prompt takes a FragmentActivity - which is one, so Compose, the
+// activity-result APIs and the back dispatcher are unaffected.
+class MainActivity : FragmentActivity() {
 
     private val prefs by lazy { getSharedPreferences("fxcloud", MODE_PRIVATE) }
 
@@ -211,6 +217,11 @@ class MainActivity : ComponentActivity() {
 
     /** The account's auto-unlock switch (server-side, /api/me). */
     @Volatile private var autoUnlock: Boolean = false
+
+    /** Fingerprint unlock (concepts/android.md): a biometric blob
+     *  exists for this account - Compose reads it on the settings
+     *  switch and the passphrase pane; written on the UI thread. */
+    private var bioUnlock by mutableStateOf(false)
 
     /**
      * Unlock output and the root key live in memory only - never in
@@ -416,6 +427,7 @@ class MainActivity : ComponentActivity() {
                     myId = me.id
                     myUsername = me.username
                     autoUnlock = me.autoUnlock
+                    bioUnlock = prefs.getString("biodevice.${me.id}", null) != null
                     themeMode = prefs.getString("thememode", null) ?: me.theme.ifEmpty { "system" }
                     myDisplayName = me.displayName
                     settingsName = me.displayName
@@ -572,6 +584,7 @@ class MainActivity : ComponentActivity() {
             myId = me.id
             myUsername = me.username
             autoUnlock = me.autoUnlock
+            bioUnlock = prefs.getString("biodevice.${me.id}", null) != null
             themeMode = prefs.getString("thememode", null) ?: me.theme.ifEmpty { "system" }
             myDisplayName = me.displayName
             settingsName = me.displayName
@@ -657,6 +670,7 @@ class MainActivity : ComponentActivity() {
         prefs.edit().remove("session").apply()
         Chain.clear()
         packedSession = null
+        bioUnlock = false
         rootKey = null
         api = null
         keysJson = null
@@ -2029,6 +2043,27 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Fingerprint unlock", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Open this account with the sensor - the passphrase " +
+                                "pane stays the fallback.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = bioUnlock,
+                        onCheckedChange = {
+                            if (it) startBioEnroll() else disableBioUnlock()
+                        },
+                        enabled = !busy
+                    )
+                }
+
                 Spacer(Modifier.height(20.dp))
                 Text("Change password", fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
@@ -3057,6 +3092,161 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ------------------------------------------- fingerprint unlock
+
+    /** One biometric question; `onDone` runs on success only. */
+    private fun askBiometric(title: String, onDone: () -> Unit) {
+        val manager = BiometricManager.from(this)
+        if (manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) !=
+            BiometricManager.BIOMETRIC_SUCCESS
+        ) {
+            notice = "No fingerprint enrolled on this device"
+            return
+        }
+        val prompt = BiometricPrompt(
+            this,
+            ContextCompat.getMainExecutor(this),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(
+                    result: BiometricPrompt.AuthenticationResult
+                ) {
+                    onDone()
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    // A cancel is the user changing their mind, not an
+                    // error worth a red line.
+                    if (errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
+                        errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON
+                    ) return
+                    runOnUiThread { notice = errString.toString() }
+                }
+            }
+        )
+        prompt.authenticate(
+            BiometricPrompt.PromptInfo.Builder()
+                .setTitle(title)
+                .setNegativeButtonText("Cancel")
+                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                .build()
+        )
+    }
+
+    /** The fingerprint twin of storeDeviceBlob: the same {v:1,
+     *  deviceKeyEnc, wrappedArk} shape under `biodevice.<id>`, the
+     *  device key sealed by the biometric-bound Keystore key. */
+    private fun storeBioBlob(ark: ByteArray): Boolean {
+        return try {
+            val id = myId
+            if (id == -1L) return false
+            val deviceKey = Chain.randomBytes(32)
+            val sealed = BioUnlock.seal(id, deviceKey) ?: return false
+            val wrapped = java.util.Base64.getEncoder().encodeToString(
+                FxCore.wrap(deviceKey, ark, DEVICE_AAD)
+            )
+            val blob = JSONObject()
+                .put("v", 1)
+                .put("deviceKeyEnc", sealed)
+                .put("wrappedArk", wrapped)
+            prefs.edit().putString("biodevice.$id", blob.toString()).apply()
+            true
+        } catch (e: Throwable) {
+            false
+        }
+    }
+
+    /** The fingerprint gate's adoption: the blob the settings switch
+     *  stored, opened after a successful prompt - same shape and
+     *  downstream as tryAdoptDevice (openShares included). */
+    private fun tryAdoptBio(c: ApiClient, keys: String, userId: Long): ByteArray? {
+        return try {
+            val raw = prefs.getString("biodevice.$userId", null) ?: return null
+            val blob = JSONObject(raw)
+            if (blob.optInt("v", 0) != 1) return null
+            val deviceKey =
+                BioUnlock.open(userId, blob.getString("deviceKeyEnc")) ?: return null
+            val ark = FxCore.unwrap(deviceKey, blob.getString("wrappedArk"), DEVICE_AAD)
+            val packed = FxCore.sessionFromArk(keys, ark)
+            if (myUsername.isNotEmpty()) {
+                Chain.openShares(c, myUsername, unpackSession(packed).pkcs8)
+            }
+            packed
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
+    /** One fingerprint question -> the session, exactly like the
+     *  silent device blob adopts it. A blob the sensor can no longer
+     *  open (new fingerprints enrolled since) is dropped: the
+     *  passphrase pane is the answer, not a retry loop. */
+    private fun bioUnlockSession() {
+        val c = api ?: return
+        val material = keysJson ?: return
+        if (busy) return
+        busy = true
+        notice = null
+        Thread {
+            val packed = tryAdoptBio(c, material, myId)
+            runOnUiThread {
+                if (packed == null) {
+                    prefs.edit().remove("biodevice.$myId").apply()
+                    bioUnlock = false
+                    busy = false
+                    notice = "Fingerprint unlock unavailable - unlock with your " +
+                        "passphrase once and set it up again"
+                } else {
+                    packedSession = packed
+                    rootKey = unpackSession(packed).root
+                    busy = false
+                    step = Step.FILES
+                    loadTree()
+                }
+            }
+        }.start()
+    }
+
+    /** Settings -> fingerprint on: one prompt, then the ARK sealed
+     *  under the biometric key (auto-unlock's shape, the sensor as
+     *  the gate). */
+    private fun startBioEnroll() {
+        val packed = packedSession
+        if (packed == null || packed.size <= 40) {
+            notice = "Unlock once with your passphrase first"
+            return
+        }
+        askBiometric("Enable fingerprint unlock") {
+            Thread {
+                val ark = unpackSession(packed).ark
+                val ok = ark.isNotEmpty() && storeBioBlob(ark)
+                runOnUiThread {
+                    if (ok) {
+                        bioUnlock = true
+                        notice = "Fingerprint unlock on"
+                    } else {
+                        notice = "Could not store the fingerprint secret"
+                    }
+                }
+            }.start()
+        }
+    }
+
+    private fun disableBioUnlock() {
+        prefs.edit().remove("biodevice.$myId").apply()
+        bioUnlock = false
+        notice = "Fingerprint unlock off"
+    }
+
+    /** The pane's gate: a stored blob and a sensor that
+     *  authenticates right now. */
+    private fun bioAvailable(): Boolean {
+        if (myId == -1L) return false
+        if (prefs.getString("biodevice.$myId", null) == null) return false
+        return BiometricManager.from(this)
+            .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) ==
+            BiometricManager.BIOMETRIC_SUCCESS
+    }
+
     // ---------------------------------------------------- rotate (S4c)
 
     /**
@@ -3347,6 +3537,13 @@ class MainActivity : ComponentActivity() {
     private fun UnlockUi() {
         var secret by remember { mutableStateOf("") }
         var recovery by remember { mutableStateOf(false) }
+        // The fingerprint gate asks on its own when the pane appears;
+        // the button below repeats the question after a cancel.
+        LaunchedEffect(Unit) {
+            if (bioAvailable()) {
+                askBiometric("Unlock fxcloud") { bioUnlockSession() }
+            }
+        }
         Column(
             Modifier.fillMaxSize().padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.Center
@@ -3392,6 +3589,13 @@ class MainActivity : ComponentActivity() {
                 } else {
                     Text(if (recovery) "Unlock with recovery key" else "Unlock")
                 }
+            }
+            if (bioAvailable()) {
+                TextButton(
+                    { askBiometric("Unlock fxcloud") { bioUnlockSession() } },
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Unlock with fingerprint") }
             }
             TextButton({
                 recovery = !recovery

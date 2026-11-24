@@ -270,6 +270,30 @@ everything that belongs to it:
   (200, dead session, name free again, user and file rows gone,
   self-delete refused).
 
+## Fingerprint unlock
+
+The passphrase pane gains a second way in - the sensor:
+
+- **Enrollment** (settings switch, beside auto-unlock): one
+  BiometricPrompt, then the ARK is sealed under an auth-bound
+  Android Keystore key (strong biometric for every use on API 30+,
+  a 30-second authentication window below) and stored as
+  `biodevice.<id>` beside the silent auto-unlock's blob - same
+  `{v:1, deviceKeyEnc, wrappedArk}` shape, same downstream adoption
+  (openShares included), so nothing past the prompt knows how the
+  session arrived.
+- **Unlock**: the pane shows "Unlock with fingerprint" whenever a
+  blob exists and the sensor authenticates, and asks on its own the
+  first time it appears. Success jumps straight to the tree; the
+  passphrase field stays visible and always works - the sensor is a
+  convenience, never the only door.
+- **Invalidation**: enrolling new fingerprints invalidates the
+  auth-bound key; the failed attempt drops the blob with a notice to
+  unlock by passphrase and set it up again.
+- Device-side only, like auto-unlock: the Keystore does not exist
+  on the build host, so there is no suite pin and no JVM test -
+  the pane's fallback is the guarantee.
+
 ## Tests
 
 - Host JUnit: the golden fixtures through JNI (the app's `ffi_vectors`
