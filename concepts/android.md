@@ -134,7 +134,7 @@ public-link management, admin dialog (web only).
 | S2 auth + listing | login against a live instance, tree listing with breadcrumb, names-at-rest decrypted through the FFI, dark/light theming |
 | S3 crypto flows | unlock (passphrase + recovery), download->decrypt->preview, upload->encrypt, envelope seal/open for shares |
 | S4 shares + device | share dialog with fingerprints, revoke, re-key/rotate entry points as they make sense on a phone, Keystore auto-unlock (+ the fxcffi device-blob pair) |
-| S5 polish + store | row actions behind a per-row ⋮ menu (share, copy, move, delete) with long-press multi-select and a selection bar, creating folders and files from the path bar, versions, trash, settings parity (incl. hidden dot-entries behind a path-bar toggle and a settings switch), signing, Play listing ($25) |
+| S5 polish + store | row actions behind a per-row ⋮ menu (share, copy, move, delete) with long-press multi-select and a selection bar, creating folders and files from the path bar, versions, trash, settings parity (incl. hidden dot-entries behind a path-bar toggle and a settings switch), the header collapsed to the web's shape (trash as an icon, the rest - settings, help, sign out - behind the name in a user menu; help renders the server's guide in a script-less WebView), signing, Play listing ($25) |
 
 Status: S1 shipped (on-device pass done). S2 on the device: sign-in,
 one-event unlock, tree with path bar, back gesture and header logout

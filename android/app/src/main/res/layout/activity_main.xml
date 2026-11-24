@@ -11,8 +11,10 @@
     android:background="#14161B">
 
     <!-- The header is the one piece every build has rendered on the
-         device, so the way out lives here: an explicit-contrast Logout
-         beside the title, shown whenever there is a session to end. -->
+         device (concepts/android.md A2). Its shape mirrors the web's
+         topbar: the trash as a one-tap icon, the rest - settings,
+         help, sign out - behind the account name in a user menu. -->
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -36,50 +38,31 @@
             android:layout_height="1dp"
             android:layout_weight="1" />
 
-        <TextView
-            android:id="@+id/headerSettings"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:visibility="gone"
-            android:clickable="true"
-            android:focusable="true"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp"
-            android:textSize="14sp"
-            android:textColor="#8AB4F8"
-            android:text="Settings" />
-
-        <TextView
+        <ImageView
             android:id="@+id/headerTrash"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:padding="6dp"
             android:visibility="gone"
             android:clickable="true"
             android:focusable="true"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp"
-            android:textSize="14sp"
-            android:textColor="#8AB4F8"
-            android:text="Trash" />
+            android:contentDescription="Trash"
+            android:src="@drawable/ic_trash" />
 
         <TextView
-            android:id="@+id/headerLogout"
+            android:id="@+id/headerUser"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:visibility="gone"
             android:clickable="true"
             android:focusable="true"
             android:paddingStart="10dp"
-            android:paddingEnd="10dp"
+            android:paddingEnd="6dp"
             android:paddingTop="6dp"
             android:paddingBottom="6dp"
             android:textSize="14sp"
-            android:textColor="#8AB4F8"
-            android:text="Logout" />
+            android:textColor="#E6E9EE"
+            android:text="" />
     </LinearLayout>
 
     <androidx.compose.ui.platform.ComposeView

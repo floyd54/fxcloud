@@ -14,6 +14,9 @@ import android.provider.OpenableColumns
 import android.text.Html
 import android.text.method.LinkMovementMethod
 import android.view.View
+import android.webkit.WebView
+import android.widget.ImageView
+import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -93,6 +96,7 @@ import androidx.credentials.GetPublicKeyCredentialOption
 import androidx.credentials.PublicKeyCredential
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.util.Locale
 import kotlin.math.abs
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -303,6 +307,13 @@ class MainActivity : ComponentActivity() {
     private var purgeConfirm by mutableStateOf<ApiClient.Trashed?>(null)
     private var emptyConfirm by mutableStateOf(false)
 
+    /** The help overlay: the server's guide in a script-less WebView
+     *  (the page ships without scripts, ui.rs), with its own back
+     *  stack under the shared one. */
+    private var helpOpen by mutableStateOf(false)
+    private var helpUrl by mutableStateOf("")
+    private var helpWeb by mutableStateOf<WebView?>(null)
+
     // --------------------------------------------------------- settings (S5b)
 
     /** Non-null: the settings overlay is up. */
@@ -358,13 +369,10 @@ class MainActivity : ComponentActivity() {
         showHidden = prefs.getBoolean("showhidden", false)
         try {
             setContentView(R.layout.activity_main)
-            // The way out, in the header that has always rendered: it
-            // clears the stored session, so the next launch starts fresh.
-            findViewById<TextView>(R.id.headerLogout).setOnClickListener { logout() }
-            // Top-level navigation beside it: the trash view (S5a).
-            findViewById<TextView>(R.id.headerTrash).setOnClickListener { openTrash() }
-            // ... and the settings (S5b).
-            findViewById<TextView>(R.id.headerSettings).setOnClickListener { openSettings() }
+            // The header mirrors the web's topbar: the trash as a
+            // one-tap icon, the rest behind the account name.
+            findViewById<ImageView>(R.id.headerTrash).setOnClickListener { openTrash() }
+            findViewById<TextView>(R.id.headerUser).setOnClickListener { showUserMenu(it) }
             findViewById<ComposeView>(R.id.compose).setContent { AppUi() }
             restoreSession()
         } catch (t: Throwable) {
@@ -674,6 +682,9 @@ class MainActivity : ComponentActivity() {
         purgeConfirm = null
         emptyConfirm = false
         settingsOpen = false
+        helpOpen = false
+        helpUrl = ""
+        helpWeb = null
         versionsOpen = false
         versionsFor = null
         versionItems = emptyList()
@@ -769,6 +780,7 @@ class MainActivity : ComponentActivity() {
             rowMenu != null -> rowMenu = null
             createDialog != null -> createDialog = null
             trashOpen -> closeTrash()
+            helpOpen -> leaveHelp()
             settingsOpen -> closeSettings()
             shareFor != null -> {
                 shareFor = null
@@ -2687,6 +2699,115 @@ class MainActivity : ComponentActivity() {
         loadTree() // restores and purges changed what is behind
     }
 
+    // ----------------------------------------------------------- help (web parity)
+
+    /** The web's user dropdown, on the header's name: settings, help,
+     *  sign out - the app has no admin dialog, that stays web. */
+    private fun showUserMenu(anchor: View) {
+        val popup = PopupMenu(this, anchor)
+        popup.menu.add("Settings").setOnMenuItemClickListener {
+            openSettings()
+            true
+        }
+        popup.menu.add("Help").setOnMenuItemClickListener {
+            openHelp()
+            true
+        }
+        popup.menu.add("Sign out").setOnMenuItemClickListener {
+            logout()
+            true
+        }
+        popup.show()
+    }
+
+    /** Help -> the server's guide in-app: the same /help page the web
+     *  opens, in the reader's language (the route takes ?lang=). */
+    private fun openHelp() {
+        if (busy) return
+        shareFor = null
+        shareDialog = null
+        preview = null
+        rotateConfirm = false
+        rowMenu = null
+        deleteConfirm = null
+        selection = emptySet()
+        transfer = null
+        trashOpen = false
+        trashItems = emptyList()
+        purgeConfirm = null
+        emptyConfirm = false
+        settingsOpen = false
+        closeEditorInternal()
+        versionsOpen = false
+        versionsFor = null
+        versionItems = emptyList()
+        deleteVersionConfirm = null
+        val stored = prefs.getString("base", "") ?: ""
+        val base = if (stored.isEmpty()) DEFAULT_SERVER
+        else ApiClient.normalizeBaseUrl(stored)
+        val lang = if (Locale.getDefault().language == "de") "de" else "en"
+        helpUrl = "$base/help?lang=$lang"
+        notice = null
+        helpOpen = true
+    }
+
+    private fun closeHelp() {
+        helpOpen = false
+        helpUrl = ""
+        helpWeb = null
+        notice = null
+    }
+
+    /** The guide's own back stack first, then the overlay. */
+    private fun leaveHelp() {
+        val web = helpWeb
+        if (web != null && web.canGoBack()) {
+            web.goBack()
+        } else {
+            closeHelp()
+        }
+    }
+
+    @Composable
+    private fun HelpUi() {
+        val url = helpUrl
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton({ leaveHelp() }) { Text("\u2190 Back") }
+                Text(
+                    "Help",
+                    modifier = Modifier.weight(1f),
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            AndroidView(
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        // The guide ships without scripts (ui.rs), so the
+                        // view does not need them either - and with them
+                        // off it cannot run anything the page contains.
+                        settings.javaScriptEnabled = false
+                        settings.domStorageEnabled = false
+                        settings.allowFileAccess = false
+                        settings.allowContentAccess = false
+                        helpWeb = this
+                        loadUrl(url)
+                    }
+                },
+                update = { },
+                onRelease = { w ->
+                    if (helpWeb === w) helpWeb = null
+                    w.destroy()
+                },
+                modifier = Modifier.weight(1f).fillMaxWidth()
+            )
+        }
+    }
+
     private fun restoreTrashed(item: ApiClient.Trashed) {
         val c = api ?: return
         if (busy) return
@@ -3019,15 +3140,17 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun AppUi() {
-        // The header's Logout follows the step: hidden on the sign-in
-        // form, present wherever a session exists to end. Trash is a
-        // destination of the file screens only.
+        // The header's shape follows the step (see the wiring above).
         LaunchedEffect(step) {
-            findViewById<TextView>(R.id.headerLogout).visibility =
+            // The user menu carries the way out (and help, and the
+            // settings) wherever a session exists to act on - the
+            // web's dropdown, in the header that has always rendered.
+            findViewById<TextView>(R.id.headerUser).visibility =
                 if (step == Step.LOGIN) View.GONE else View.VISIBLE
-            findViewById<TextView>(R.id.headerTrash).visibility =
-                if (step == Step.FILES) View.VISIBLE else View.GONE
-            findViewById<TextView>(R.id.headerSettings).visibility =
+            findViewById<TextView>(R.id.headerUser).text =
+                (if (myUsername.isEmpty()) "Account" else myUsername) + " \u25BE"
+            // Trash is a destination of the file screens only.
+            findViewById<ImageView>(R.id.headerTrash).visibility =
                 if (step == Step.FILES) View.VISIBLE else View.GONE
         }
         // The server's theme over the system default (the web's
@@ -3058,6 +3181,7 @@ class MainActivity : ComponentActivity() {
                 val erow = editorRow
                 when {
                     trashOpen -> TrashUi()
+                    helpOpen -> HelpUi()
                     settingsOpen -> SettingsUi()
                     sharing != null -> ShareUi(sharing)
                     shown != null -> PreviewUi(shown)
@@ -3369,7 +3493,7 @@ class MainActivity : ComponentActivity() {
                 if (busy) {
                     CircularProgressIndicator(Modifier.width(16.dp).height(16.dp), strokeWidth = 2.dp)
                 }
-                // The way out sits in the XML header (headerLogout) - the
+                // The way out sits in the XML header's user menu - the
                 // one element this device has always rendered.
             }
             notice?.let {
