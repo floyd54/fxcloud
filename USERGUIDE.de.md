@@ -480,6 +480,76 @@ Voraussetzungen:
   diese URL fxcloud mit `FXCLOUD_ORIGIN` mitgeteilt werden - der nächste
   Abschnitt zeigt, wie, und wie der Fehler aussieht, wenn er fehlt.
 
+### In einer nativen Android-App: die Mauer „Diese App unterstützt keine Passkeys"
+
+Anmelden **im Web** funktioniert mit jedem Browser und jedem
+Passwort-Manager - reines WebAuthn, davon gilt nichts unten. Anmelden
+**aus der App heraus** läuft stattdessen über den Credential Manager des
+Systems, und dieser Weg hat eine Fallgrube, über die die ganze Branche
+seit November 2025 stolpert:
+
+1. Die App fragt den Credential-Provider des Geräts (Bitwarden gegen
+   dein eigenes Vaultwarden, Google Password Manager, ...) nach einem
+   Passkey.
+2. Bevor er ihn herausgibt, muss der Provider beweisen, dass *diese
+   App* die Passkeys dieser Domain nutzen darf. Die Bitwarden-Android-
+   App macht das über **Googles Digital-Asset-Links-API** - genau die
+   Prüfung, die Googles eigene Credential-Provider-Dokumentation
+   empfiehlt. Es ist eine Abfrage über eine *öffentliche* Datei: kein
+   Schlüssel, kein Passwort, kein Passkey-Material verlässt dein
+   Passwort-Manager, selbst gehostet oder nicht.
+3. Diese API lädt `https://<host>/.well-known/assetlinks.json`
+   **ohne Weiterleitungen zu folgen** und in der Praxis in der
+   DNS-Wurzel-Form des Hosts (`https://<host>.`).
+4. Beide Anfragen mit einer Weiterleitung oder einem 404 beantworten -
+   ein Vhost, der den Namen mit Punkt schlicht nicht kennt, reicht -
+   und der Provider verweigert mit einer generischen Meldung:
+
+   > „Diese App unterstützt keine Passkeys"
+
+Alles andere kann perfekt sein - Datei da, JSON valide, Zertifikats-
+Fingerabdrücke korrekt - die Prüfung fällt trotzdem durch.
+
+**Das ist weder dein Fehler noch der von fxcloud.** Revolut hatte
+monatelang genau diesen Fehler (bitwarden/android#6164, November 2025
+bis Juli 2026), Googles eigenes Tracker-Issue trägt den Fehler immer
+noch (460172858), und Bitwarden hat einen Workaround ausgeliefert und
+wieder zurückgenommen, weil striktes Matching eben die Spezifikation
+ist. Niemand sollte seinen Nutzern einen Google-API-Fehler erklären
+müssen - dieser Abschnitt existiert, damit du ihn weiterleitest, statt
+ihn selbst zu schreiben.
+
+**Für Betreiber - die Checkliste, die jeden Provider zufriedenstellt:**
+
+- `/.well-known/assetlinks.json` antwortet **direkt** mit `200` und
+  `Content-Type: application/json` - keine Weiterleitung irgendwo auf
+  der **https**-URL (der DAL-API folgt keiner).
+- Dieselbe URL antwortet mit **Punkt am Host**:
+  `https://deine.domain./.well-known/assetlinks.json`. Bei nginx eine
+  Zeile im selben Server-Block:
+  `server_name deine.domain deine.domain.;` - in einem Proxy-Setup fast
+  immer der Proxy vor fxcloud, nicht fxcloud selbst.
+- Die Datei listet **jedes Zertifikat, das ein installiertes Build
+  signieren kann**: lokaler Debug-Schlüssel, Release-APK-Schlüssel und
+  unter Play App-Signierung Googles klassischen und den
+  quantenresistenten. Ein Statement pro Fingerabdruck: manche Prüfer
+  lesen nur den ersten Eintrag.
+
+**Nutzer, die hierher aus der Meldung gekommen sind:** Auf deinem
+Telefon ist nichts zu tun - dein Instanz-Betreiber erledigt die
+Checkliste. Bis dahin meldet dich die Weboberfläche mit demselben
+Passkey an. Nach dem Fix eine Weile warten (zehn Minuten bis einen Tag),
+bevor du es in der App nochmal versuchst.
+
+**Ohne Google zu arbeiten:** Der Bitwarden-/Vaultwarden-Weg schickt
+Google nur die oben beschriebene Abfrage über die öffentliche Datei -
+deine Schlüssel bleiben auf deinem eigenen Server. Provider, die die
+Datei selbst laden (Google Password Manager tut das), funktionieren
+auch ohne den Punkt-Host - dann liegen die Passkeys aber in dessen
+Speicher. Wenn dein Grundsatz „meine Daten bleiben bei mir" lautet -
+und wenn du fxcloud liest, lautet er das - reparier stattdessen die
+Proxy-Zeile: eine Zeile, und alles andere bleibt deins.
+
 ## 13. HTTPS hinter einem Reverse Proxy (durchgerechnetes Beispiel)
 
 fxcloud spricht reines HTTP, also beendet ein Reverse Proxy TLS davor.
@@ -584,6 +654,14 @@ einem Desktop-Client geschrieben werden (siehe
 hinein und heraus für diese.
 
 ## 15. Fehlerbehebung
+
+**„Diese App unterstützt keine Passkeys"** beim Anmelden aus der
+Android-App: Der Credential-Provider des Geräts konnte die App nicht
+gegen die assetlinks-Datei deiner Domain verifizieren (Googles
+DAL-API, Weiterleitungen und Punkt-Hosts -
+[Abschnitt 12](#12-passkeys) hat die Geschichte und die Checkliste für
+Betreiber). Bis es behoben ist, meldet dich die Weboberfläche mit
+demselben Passkey an.
 
 **"Origin does not match this server's address - set FXCLOUD_ORIGIN ..."**
 beim Hinzufügen oder Verwenden eines Passkeys: die URL, unter der Nutzer

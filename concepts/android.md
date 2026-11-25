@@ -224,7 +224,27 @@ Two server pieces make the native half possible:
   (package + signing certificates: the debug keystore is committed -
   `android/debug.keystore` - so sideloads and CI's release APK share
   one certificate; Play's app-signing key covers the store build).
-  Google Password Manager refuses the prompt without it.
+  Google Password Manager refuses the prompt without it. The layout
+  is deliberate: **one statement per fingerprint, Play's classic key
+  first** - some verifiers (Bitwarden goes through Google's DAL API)
+  read only the first entry, so ordering is part of the contract.
+- **The provider maze (documented, not just endured).** Bitwarden's
+  Android app verifies the calling app through **Google's DAL API** -
+  the check Google's own credential-provider docs recommend - even
+  against a self-hosted Vaultwarden: it is a lookup about the public
+  file, no key material involved. That API fetches without redirects
+  and, observed in the wild, with the DNS-root form of the host
+  (`https://host.`); a vhost that does not answer the dotted name
+  turns a perfect file into "Diese App unterstützt keine Passkeys"
+  (Revolut's months-long case: bitwarden/android#6164; Google tracker
+  460172858 still open). This deployment: apex serves directly, the
+  **dotted host is pending at the outer TLS terminator** (the
+  Netbird-fronted VPS in front of this box: `server_name host
+  host.;`). The GPM alternative (provider fetches the file itself)
+  exists but is rejected here on principle - keys stay in the
+  self-hosted Vaultwarden, the proxy line is the path. The
+  user-facing story ships in the help guide (USERGUIDE section12,
+  en/de), written to be forwarded.
 
 Registration stays in the web. The suite pins the route (file
 present -> application/json, absent -> 404) and the origin gate (a

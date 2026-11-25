@@ -188,6 +188,28 @@ sqlite3 &quot;$DB&quot; &quot;UPDATE users SET quota_bytes = 2147483648 WHERE us
 <p><code>localhost</code>. Over plain HTTP on a LAN address the UI tells you the browser blocks them.</p>
 <ul><li>The passkey is bound to the origin and hostname it was created under.</li></ul>
 <p>If your instance is served under a URL, that URL must be announced to fxcloud with <code>FXCLOUD_ORIGIN</code> - the next section shows how, and what the error looks like when it is missing.</p>
+<h3 id="inside-a-native-android-app-the-this-app-doesnt-support-passkeys-wall">Inside a native Android app: the &quot;this app doesn't support passkeys&quot; wall</h3>
+<p>Signing in <strong>on the web</strong> works with every browser and password manager - plain WebAuthn, nothing below applies. Signing in <strong>from the Android app</strong> goes through the platform's Credential Manager instead, and that path has a trapdoor the whole industry has been tripping over since November 2025:</p>
+<ol><li>The app asks the device's credential provider (Bitwarden against your</li></ol>
+<p>own Vaultwarden, Google Password Manager, ...) for a passkey.</p>
+<ol><li>Before releasing it, the provider must prove the *app* is allowed to</li></ol>
+<p>use this domain's passkeys. Bitwarden's Android app does that through <strong>Google's Digital Asset Links API</strong> - the check Google's own credential-provider documentation recommends. It is a lookup about a *public* file: no key, no password, no passkey material ever leaves your password manager, self-hosted or not.</p>
+<ol><li>That API fetches <code>https://&lt;host&gt;/.well-known/assetlinks.json</code></li></ol>
+<p><strong>without following redirects</strong> and in practice with the DNS-root form of the host (<code>https://&lt;host&gt;.</code>).</p>
+<ol><li>Answer either request with a redirect or a 404 - a vhost that simply</li></ol>
+<p>does not know the dotted name is enough - and the provider refuses with a generic message:</p>
+<p>&gt; &quot;Diese App unterstützt keine Passkeys&quot; / &quot;Passkeys are not &gt; supported for this app&quot;</p>
+<p>Everything else can be perfect - file present, JSON valid, certificate fingerprints correct - the check still fails.</p>
+<p><strong>This is not your mistake and not fxcloud's.</strong> Revolut lived with exactly this error for months (bitwarden/android#6164, November 2025 to July 2026), Google's own tracker still carries the bug (issue 460172858), and Bitwarden shipped a workaround and reverted it again because strict matching is what the spec says. Nobody should have to explain a Google API quirk to their users - this section exists so you can forward it instead of writing it yourself.</p>
+<p><strong>Operators - the checklist that keeps every provider happy:</strong></p>
+<ul><li><code>/.well-known/assetlinks.json</code> answers <strong>directly</strong> with <code>200</code> and</li></ul>
+<p><code>Content-Type: application/json</code> - no redirect anywhere on the <strong>https</strong> URL (the DAL API refuses to follow one).</p>
+<ul><li>The same URL answers with the <strong>trailing dot</strong> in the host:</li></ul>
+<p><code>https://your.domain./.well-known/assetlinks.json</code>. With nginx one line in the same server block: <code>server_name your.domain your.domain.;</code> - in a proxied setup that is almost always the proxy in front of fxcloud, not fxcloud itself.</p>
+<ul><li>The file lists <strong>every certificate that can sign an installed build</strong>:</li></ul>
+<p>local debug key, release APK key, and under Play App Signing both Google's classic and the post-quantum key. One statement per fingerprint: some verifiers only read the first entry.</p>
+<p><strong>Users who landed here from the error:</strong> nothing on your phone can fix this - your instance's operator runs the checklist above. The web interface signs you in with the same passkey in the meantime. After the operator's fix, give Google's cached verdict a moment (ten minutes to a day) before retrying in the app.</p>
+<p><strong>On running without Google:</strong> the Bitwarden/Vaultwarden path sends Google only the public-file lookup described above - your keys stay on your own server. Providers that fetch the file themselves (Google Password Manager does) work even without the dotted host, but then the passkeys live in that provider's store. If your stance is &quot;my data stays with me&quot; - and if you are reading fxcloud, it is - fix the proxy line instead: one line, and everything else stays yours.</p>
 <h2 id="13-https-behind-a-reverse-proxy-worked-example">13. HTTPS behind a reverse proxy (worked example)</h2>
 <p>fxcloud speaks plain HTTP, so a reverse proxy terminates TLS in front of it. Passkeys are the reason this needs one extra setting: WebAuthn binds every passkey to the exact <code>scheme://host[:port]</code> it was created under, and the browser sends its <code>Origin</code> on every passkey request. fxcloud compares that header with the origin it derives from the forwarded scheme and <code>Host</code> - and, behind a proxy that rewrites <code>Host</code> or does not forward the scheme, the two disagree.</p>
 <p>The symptom is this error, when adding or using a passkey:</p>
@@ -244,6 +266,7 @@ rclone lsd remote:
 </code></pre>
 <p>Deactivated accounts get 403, quota violations 507. Encrypted files show up as ciphertext and cannot be written from a desktop client (see <a href="#11-encryption">Encryption</a>); the web UI is the way in and out for those.</p>
 <h2 id="15-troubleshooting">15. Troubleshooting</h2>
+<p><strong>&quot;Diese App unterstützt keine Passkeys&quot; / &quot;Passkeys are not supported for this app&quot;</strong> when signing in from the Android app: the device's credential provider could not verify the app against your domain's assetlinks file (Google's DAL API, redirects and trailing dots - <a href="#12-passkeys">section 12</a> has the full story and the operator checklist). Until it is fixed, the web interface signs you in with the same passkey.</p>
 <p><strong>&quot;Origin does not match this server's address - set FXCLOUD_ORIGIN ...&quot;</strong> when adding or using a passkey: the URL users open fxcloud under differs from what fxcloud derives from the proxy headers. Set <code>FXCLOUD_ORIGIN</code> as in <a href="#13-https-behind-a-reverse-proxy-worked-example">section 13</a> and restart.</p>
 <p><strong>The passkey UI says the browser blocks passkeys</strong>: you are on plain HTTP (or an IP address) rather than HTTPS or localhost - browsers only expose passkeys in a secure context. Serve fxcloud over HTTPS.</p>
 <p><strong>&quot;Account created. It has to be activated before you can sign in&quot;</strong>: expected for every account after the first - an administrator activates it in <strong>User administration</strong>.</p>

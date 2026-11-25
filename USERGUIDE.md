@@ -446,6 +446,72 @@ Requirements:
   fxcloud with `FXCLOUD_ORIGIN` - the next section shows how, and what
   the error looks like when it is missing.
 
+### Inside a native Android app: the "this app doesn't support passkeys" wall
+
+Signing in **on the web** works with every browser and password manager -
+plain WebAuthn, nothing below applies. Signing in **from the Android
+app** goes through the platform's Credential Manager instead, and that
+path has a trapdoor the whole industry has been tripping over since
+November 2025:
+
+1. The app asks the device's credential provider (Bitwarden against your
+   own Vaultwarden, Google Password Manager, ...) for a passkey.
+2. Before releasing it, the provider must prove the *app* is allowed to
+   use this domain's passkeys. Bitwarden's Android app does that through
+   **Google's Digital Asset Links API** - the check Google's own
+   credential-provider documentation recommends. It is a lookup about a
+   *public* file: no key, no password, no passkey material ever leaves
+   your password manager, self-hosted or not.
+3. That API fetches `https://<host>/.well-known/assetlinks.json`
+   **without following redirects** and in practice with the DNS-root
+   form of the host (`https://<host>.`).
+4. Answer either request with a redirect or a 404 - a vhost that simply
+   does not know the dotted name is enough - and the provider refuses
+   with a generic message:
+
+   > "Diese App unterstützt keine Passkeys" / "Passkeys are not
+   > supported for this app"
+
+Everything else can be perfect - file present, JSON valid, certificate
+fingerprints correct - the check still fails.
+
+**This is not your mistake and not fxcloud's.** Revolut lived with
+exactly this error for months (bitwarden/android#6164, November 2025 to
+July 2026), Google's own tracker still carries the bug (issue
+460172858), and Bitwarden shipped a workaround and reverted it again
+because strict matching is what the spec says. Nobody should have to
+explain a Google API quirk to their users - this section exists so you
+can forward it instead of writing it yourself.
+
+**Operators - the checklist that keeps every provider happy:**
+
+- `/.well-known/assetlinks.json` answers **directly** with `200` and
+  `Content-Type: application/json` - no redirect anywhere on the
+  **https** URL (the DAL API refuses to follow one).
+- The same URL answers with the **trailing dot** in the host:
+  `https://your.domain./.well-known/assetlinks.json`. With nginx one
+  line in the same server block:
+  `server_name your.domain your.domain.;` - in a proxied setup that is
+  almost always the proxy in front of fxcloud, not fxcloud itself.
+- The file lists **every certificate that can sign an installed build**:
+  local debug key, release APK key, and under Play App Signing both
+  Google's classic and the post-quantum key. One statement per
+  fingerprint: some verifiers only read the first entry.
+
+**Users who landed here from the error:** nothing on your phone can fix
+this - your instance's operator runs the checklist above. The web
+interface signs you in with the same passkey in the meantime. After the
+operator's fix, give Google's cached verdict a moment (ten minutes to a
+day) before retrying in the app.
+
+**On running without Google:** the Bitwarden/Vaultwarden path sends
+Google only the public-file lookup described above - your keys stay on
+your own server. Providers that fetch the file themselves (Google
+Password Manager does) work even without the dotted host, but then the
+passkeys live in that provider's store. If your stance is "my data stays
+with me" - and if you are reading fxcloud, it is - fix the proxy line
+instead: one line, and everything else stays yours.
+
 ## 13. HTTPS behind a reverse proxy (worked example)
 
 fxcloud speaks plain HTTP, so a reverse proxy terminates TLS in front of
@@ -545,6 +611,14 @@ up as ciphertext and cannot be written from a desktop client (see
 [Encryption](#11-encryption)); the web UI is the way in and out for those.
 
 ## 15. Troubleshooting
+
+**"Diese App unterstützt keine Passkeys" / "Passkeys are not supported
+for this app"** when signing in from the Android app: the device's
+credential provider could not verify the app against your domain's
+assetlinks file (Google's DAL API, redirects and trailing dots -
+[section 12](#12-passkeys) has the full story and the operator
+checklist). Until it is fixed, the web interface signs you in with the
+same passkey.
 
 **"Origin does not match this server's address - set FXCLOUD_ORIGIN ..."**
 when adding or using a passkey: the URL users open fxcloud under differs
