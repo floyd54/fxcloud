@@ -1,6 +1,5 @@
 package de.frischux.fxcloud
 
-import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.security.KeyStore
@@ -95,16 +94,16 @@ object BioUnlock {
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setUserAuthenticationRequired(true)
-        if (Build.VERSION.SDK_INT >= 30) {
-            // Every use, strong biometric only: the platform marks the
-            // user authenticated by the prompt that precedes each call.
-            spec.setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
-        } else {
-            // Per-use keys need API 30; a short window is the old
-            // way to say the same thing - the prompt runs right
-            // before the crypto either way.
-            spec.setUserAuthenticationValidityDurationSeconds(AUTH_SECONDS)
-        }
+            // A short window on every API level, not per-use: the plain
+            // prompt that precedes each seal/open marks the keystore
+            // authenticated for these seconds, which is exactly this
+            // flow's prompt-then-crypto order. Per-use keys (API 30+
+            // setUserAuthenticationParameters(0, ...)) accept only a
+            // CryptoObject-bound token - the simple order would fail
+            // with UserNotAuthenticatedException after a successful
+            // prompt, which is what "Could not store the fingerprint
+            // secret" meant.
+            .setUserAuthenticationValidityDurationSeconds(AUTH_SECONDS)
         gen.init(spec.build())
         return gen.generateKey()
     }
