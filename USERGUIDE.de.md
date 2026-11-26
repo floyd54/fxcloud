@@ -484,7 +484,9 @@ Voraussetzungen:
 
 Anmelden **im Web** funktioniert mit jedem Browser und jedem
 Passwort-Manager - reines WebAuthn, davon gilt nichts unten. Anmelden
-**aus der App heraus** läuft stattdessen über den Credential Manager des
+**aus der App heraus** - die fxcloud-App bietet keine Passkey-Anmeldung
+mehr an (gebaut und wieder entfernt - der Grund ist genau die Fallgrube
+unten); jede andere native App läuft über den Credential Manager des
 Systems, und dieser Weg hat eine Fallgrube, über die die ganze Branche
 seit November 2025 stolpert:
 
@@ -540,6 +542,16 @@ Telefon ist nichts zu tun - dein Instanz-Betreiber erledigt die
 Checkliste. Bis dahin meldet dich die Weboberfläche mit demselben
 Passkey an. Nach dem Fix eine Weile warten (zehn Minuten bis einen Tag),
 bevor du es in der App nochmal versuchst.
+
+**Gerätegebundene Passkeys („Dieses Gerät")** werden vom Browser
+angelegt und dort auch genutzt, aber vom Provider nicht immer an
+native Apps weitergegeben - beobachtet mit Google Password Manager:
+solche Schlüssel tauchen in der Passkey-Liste nie auf, und die App
+meldet „keine verfügbare Anmeldung". Bietet das Erzeugungs-Sheet
+ohnehin keine Konten-Ablage (nur „dieses Gerät", „anderes Gerät",
+NFC/USB), sind native-App-Passkeys auf diesem Gerät schlicht nicht
+verfügbar: nutze die Weboberfläche, die jeden Passkey bedient, den
+das Gerät halten kann.
 
 **Ohne Google zu arbeiten:** Der Bitwarden-/Vaultwarden-Weg schickt
 Google nur die oben beschriebene Abfrage über die öffentliche Datei -

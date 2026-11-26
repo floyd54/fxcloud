@@ -449,10 +449,11 @@ Requirements:
 ### Inside a native Android app: the "this app doesn't support passkeys" wall
 
 Signing in **on the web** works with every browser and password manager -
-plain WebAuthn, nothing below applies. Signing in **from the Android
-app** goes through the platform's Credential Manager instead, and that
-path has a trapdoor the whole industry has been tripping over since
-November 2025:
+plain WebAuthn, nothing below applies. The fxcloud app does **not**
+offer passkey sign-in (it was built and removed again - the reason is
+exactly the trapdoor below); any native app that tries it goes through
+the platform's Credential Manager, and that path has a trapdoor the
+whole industry has been tripping over since November 2025:
 
 1. The app asks the device's credential provider (Bitwarden against your
    own Vaultwarden, Google Password Manager, ...) for a passkey.
@@ -503,6 +504,15 @@ this - your instance's operator runs the checklist above. The web
 interface signs you in with the same passkey in the meantime. After the
 operator's fix, give Google's cached verdict a moment (ten minutes to a
 day) before retrying in the app.
+
+**Device-bound passkeys ("This device")** are created and used by the
+browser but are not always offered to native apps by the provider -
+observed with Google Password Manager, where such keys never appear in
+the passkey list and the app is told "no sign-in available". If the
+creation sheet offers no account storage either (only "this device",
+"another device", NFC/USB), native-app passkeys are simply unavailable
+on that device: use the web interface, which handles every passkey the
+device can hold.
 
 **On running without Google:** the Bitwarden/Vaultwarden path sends
 Google only the public-file lookup described above - your keys stay on

@@ -196,9 +196,19 @@ session).
 
 ## Passkey login (app)
 
-The app signs in with the phone's passkeys through the platform's
-Credential Manager (`androidx.credentials` 1.6.0, API 28+ - the
-button stays hidden below that), speaking the *web's own ceremony*:
+**Status: built in v0.4.4, removed again.** The provider side could
+not be cracked from here: Bitwarden refuses despite fresh, valid
+Google DAL fetches (its issue #6164 class), and Google's own path
+had no app-visible storage on the test device ("this device" keys
+stay browser-visible only, and the creation sheet offered no account
+target). The web keeps passkeys fully; the app signs in with
+password - plus fingerprint and auto-unlock for encrypted accounts.
+The record below stays for operators and a future re-attempt: the
+app did exactly this:
+
+The app signed in with the phone's passkeys through the platform's
+Credential Manager (`androidx.credentials` 1.6.0), speaking the
+*web's own ceremony*:
 
 1. `POST /api/passkeys/login/start {username}` - the answer is
    already the `publicKey` JSON the prompt takes verbatim (challenge,

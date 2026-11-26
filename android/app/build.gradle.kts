@@ -85,15 +85,9 @@ dependencies {
     // Fingerprint unlock (concepts/android.md): the biometric prompt
     // over the auth-bound Keystore key.
     implementation("androidx.biometric:biometric:1.1.0")
-
-    // Passkey sign-in (concepts/android.md, passkey login): the
-    // platform's Credential Manager runs the web's own WebAuthn
-    // ceremony; the play-services artifact is the provider below API34.
-    implementation("androidx.credentials:credentials:1.6.0")
-    implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
-    // play-services-auth drags old androidx.fragment edges into the
-    // graph; registerForActivityResult needs a modern one (lint's
-    // InvalidFragmentVersionForActivityResult wants >= 1.3.0).
+    // ... and the modern fragment it and the activity-result APIs need:
+    // old transitive edges below1.3.0 would win the resolution and
+    // lint's InvalidFragmentVersionForActivityResult fails the bundle.
     implementation("androidx.fragment:fragment:1.9.1")
 
     // Host-side golden-vector tests only (concepts/android.md A4).

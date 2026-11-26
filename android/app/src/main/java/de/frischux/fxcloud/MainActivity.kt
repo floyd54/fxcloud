@@ -6,7 +6,6 @@ import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
 import android.media.ExifInterface
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
@@ -92,17 +91,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import androidx.credentials.CredentialManager
-import androidx.credentials.GetCredentialRequest
-import androidx.credentials.GetPublicKeyCredentialOption
-import androidx.credentials.PublicKeyCredential
 import androidx.fragment.app.FragmentActivity
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Locale
 import kotlin.math.abs
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -475,60 +469,6 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }.start()
-    }
-
-    /** Sign in with a passkey (concepts/android.md, passkey login):
-     *  the platform's Credential Manager runs the web's own ceremony -
-     *  same start/finish endpoints, the same session cookie on the
-     *  other side. The prompt itself is the platform's UI; everything
-     *  around it runs on this worker. */
-    private fun doPasskeyLogin(server: String, user: String) {
-        busy = true
-        notice = null
-        Thread {
-            try {
-                val c = ApiClient(server)
-                val start = c.passkeyLoginStart(user)
-                val cm = CredentialManager.create(this@MainActivity)
-                val request = GetCredentialRequest(
-                    listOf(GetPublicKeyCredentialOption(start.toString()))
-                )
-                val result = runBlocking { cm.getCredential(this@MainActivity, request) }
-                val credential = result.credential
-                if (credential !is PublicKeyCredential) {
-                    throw RuntimeException("The prompt returned no passkey")
-                }
-                val assertion = JSONObject(credential.authenticationResponseJson)
-                val reply = c.passkeyLoginFinish(assertion)
-                if (reply.code != 200) {
-                    throw RuntimeException("Passkey sign-in failed (${reply.code})")
-                }
-                // No password to hand the unlock step: an empty string
-                // lands a key-holding account on the passphrase screen,
-                // which is exactly where a passkey user belongs.
-                finishLogin(c, server, user, "")
-            } catch (e: Throwable) {
-                runOnUiThread {
-                    busy = false
-                    notice = passkeyError(e)
-                }
-            }
-        }.start()
-    }
-
-    /** The platform's failures in human words: a cancelled prompt is
-     *  not an error, an empty prompt means this name has no passkey
-     *  on this device. */
-    private fun passkeyError(e: Throwable): String {
-        val msg = e.message ?: return "Passkey sign-in failed"
-        return when {
-            msg.contains("cancel", ignoreCase = true) ->
-                "Passkey sign-in cancelled"
-            msg.contains("no credential", ignoreCase = true) ||
-                msg.contains("no passkey", ignoreCase = true) ->
-                "No passkey for this name on this device"
-            else -> msg
-        }
     }
 
     /** Sign up from the login page (the web's register tab): an active
@@ -3508,13 +3448,6 @@ class MainActivity : FragmentActivity() {
                 } else {
                     Text(if (registerMode) "Create account" else "Sign in")
                 }
-            }
-            if (!registerMode && Build.VERSION.SDK_INT >= 28) {
-                TextButton(
-                    { doPasskeyLogin(server, user) },
-                    enabled = !busy && server.isNotBlank() && user.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Sign in with a passkey") }
             }
             TextButton({
                 registerMode = !registerMode
