@@ -95,9 +95,10 @@ shares with envelopes and fingerprints, recovery-key show/rotate.
 
 Out for v1: passkey registration (sign-in via Android Credential
 Manager landed - the passkey section below; creating devices stays
-web), groups and key
-distribution (v1: group folders are web-administered), office, WebDAV,
-public-link management, admin dialog (web only).
+web), user administration and group-root key distribution (v1:
+group management comes to the app - the groups section below - while
+the manager's pending-key distribution stays in the web's folder UI),
+office, WebDAV, public-link management.
 
 ## Build and CI
 
@@ -324,6 +325,42 @@ The passphrase pane gains a second way in - the sensor:
   on the build host, so there is no suite pin and no JVM test -
   the pane's fallback is the guarantee.
 
+## Groups in the app
+
+Groups are admin-managed (decision 5 of `concepts/groups.md`), so the
+app gains an administration surface rather than a group feature in the
+file list. The list already shows group folders (the server joins them
+in), the trash already shows group rows (its query walks the member's
+groups), and members already work the subtree - what is missing is
+everything around managing them:
+
+- **Groundwork.** `ApiClient.Me` parses `is_admin`; the user menu
+  grows the admin entry (visible only for admins - the web hides its
+  user-admin button the same way, and the server is the real gate);
+  the group endpoints join the client: list, create, update
+  (name/quota), delete (empty only), add/remove member, set role -
+  all `AdminUser`-gated server-side. Adding members picks from the
+  active-user list, so `/api/admin/users` joins the client too.
+- **Screens.** The web's group cards, ported: name, quota against
+  consumption, members with roles (manager/member, switch, remove,
+  add). Create asks name + quota; delete refuses while members or
+  files remain and the server's 409 reason becomes the dialog text.
+  The root listing gains the group badge (the web's `.group-badge`),
+  which means `Row` learns `owner_group_id`.
+- **Keys - investigate first.** Members open group content through
+  envelopes in `group_keys`, byte-for-byte the share envelope shape
+  (groups.md section 12), and the app's Chain already holds the
+  opening primitive for mounts. The open question for the build: which
+  endpoint delivers a *member's* group envelope to the tab - the web
+  gets it in its listing/mount flow, and the app must call the same
+  one (or the same shape of it). The manager's pending-key
+  distribution UI stays web-side in v1 (groups.md decision 7 lives in
+  the folder UI); the app only reads what it is given.
+- **Boundaries kept:** no share-to-group in the app (G2 decides
+  that), no user administration (stays web), and the group-root
+  bootstrap (`POST /api/files/folder {"group": ...}`) follows
+  whatever the web's create flow does - mirrored, not invented.
+
 ## Tests
 
 - Host JUnit: the golden fixtures through JNI (the app's `ffi_vectors`
@@ -359,5 +396,6 @@ readable bytes does not exist on encrypted accounts:
 
 - `minSdk26` vs a lower floor (24) - A2 says26, say otherwise if the
   install base needs it.
-- v1 scope above: groups remain the cut - passkey sign-in landed (the
-  passkey section below); flag groups if the phone needs it first.
+- v1 scope above: groups moved IN (the app groups section below);
+  passkey sign-in landed and was removed again (see below). Flag if
+  something else needs to come first.
