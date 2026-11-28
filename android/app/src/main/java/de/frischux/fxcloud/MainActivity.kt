@@ -495,7 +495,7 @@ class MainActivity : FragmentActivity() {
                 if (reply.code == 202) {
                     runOnUiThread {
                         busy = false
-                        notice = "Account created - it waits for activation before it can sign in."
+                        notice = "Account created. An administrator has to activate it before you can sign in."
                     }
                     return@Thread
                 }
@@ -3375,8 +3375,12 @@ class MainActivity : FragmentActivity() {
             }.start()
         }
         Column(
-            Modifier.fillMaxSize().padding(horizontal = 24.dp),
-            verticalArrangement = Arrangement.Center,
+            // Scrollable: register mode plus a keyboard leaves no
+            // screen that fits without it - everything must stay
+            // reachable, especially the feedback line.
+            Modifier.fillMaxSize()
+                .padding(horizontal = 24.dp)
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             if (serverBanner.isNotEmpty()) {
@@ -3393,6 +3397,20 @@ class MainActivity : FragmentActivity() {
                         .padding(horizontal = 12.dp, vertical = 10.dp)
                 )
                 Spacer(Modifier.height(12.dp))
+            }
+            // The feedback belongs where the eye is: above the form,
+            // not below the fold - on small screens (or with the
+            // keyboard up) a bottom notice never gets seen, which is
+            // exactly how "the account was created, but nobody said
+            // so" happens.
+            notice?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 14.sp,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
             }
             // The feature graphic's mark as the hero of the form: the
             // same cloud the store banner shows, on the light blue field.
@@ -3469,10 +3487,6 @@ class MainActivity : FragmentActivity() {
                     if (registerMode) "Have an account? Sign in"
                     else "No account yet? Create one"
                 )
-            }
-            notice?.let {
-                Spacer(Modifier.height(4.dp))
-                Text(it, color = MaterialTheme.colorScheme.error)
             }
         }
     }
