@@ -954,6 +954,7 @@ note "the upload cap answers 413 while counting (sidecar, 1 MiB limit)"
 MINI="$ROOT/mini"
 mkdir -p "$MINI"
 FXCLOUD_DATA="$MINI" FXCLOUD_PORT=$((PORT + 41)) FXCLOUD_MAX_UPLOAD_MB=1 \
+  FXCLOUD_REGISTER_BUDGET=2 \
   "$BIN" >>"$ROOT/mini.log" 2>&1 &
 MINIPID=$!
 MINIBASE=http://127.0.0.1:$((PORT + 41))
@@ -976,6 +977,21 @@ RC=$(curl -s -o /dev/null -c "$ROOT/mini.jar" -w '%{http_code}' \
   -H 'Content-Type: application/json' \
   -d '{"username":"mini","password":"correct-horse"}' "$MINIBASE/api/login")
 [ "$RC" = "200" ] && ok "sidecar sign-in works" || bad "sidecar login: rc=$RC"
+
+# The register budget rides the config (concepts/accounts.md): two
+# fit in the sidecar's window (the one above spent the first), the
+# third is refused with its retry clock - the exact shape a tester
+# behind a busy carrier-grade NAT would see.
+RC=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+  -d '{"username":"mini2","password":"correct-horse"}' "$MINIBASE/api/register")
+[ "$RC" = "202" ] && ok "the second registration fits the budget (202)" \
+  || bad "second sidecar register: rc=$RC"
+BODY=$(curl -s -H 'Content-Type: application/json' \
+  -d '{"username":"mini3","password":"correct-horse"}' "$MINIBASE/api/register")
+printf '%s' "$BODY" | grep -q '"code":"rate_limited"' \
+  && printf '%s' "$BODY" | grep -q '"retry_after"' \
+  && ok "the third is refused with rate_limited + retry_after" \
+  || bad "budget refusal body: $BODY"
 head -c 2097152 /dev/zero > "$ROOT/mini-big.bin"
 RC=$(curl -s -o "$ROOT/mini413.json" -w '%{http_code}' -b "$ROOT/mini.jar" \
   -F "file=@$ROOT/mini-big.bin" "$MINIBASE/api/files/upload")

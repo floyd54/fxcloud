@@ -69,7 +69,10 @@ account starts inactive.
   last. An invented name carries the same backoff as a real one - a
   refusal never tells an attacker who has an account.
 - **Per-source budgets:** 30 failed sign-ins per minute and source
-  address, 10 registrations per 10 minutes. `X-Forwarded-For` is never
+  address, 10 registrations per 10 minutes
+  (`FXCLOUD_REGISTER_BUDGET`, default10 - a closed test behind
+  carrier-grade NAT, where many testers share one address, raises
+  it). `X-Forwarded-For` is never
   trusted; the socket peer is the key, which keeps a spoofed header
   from aiming the limiter at somebody else.
 - **Timing parity:** the unknown-user branch spends one Argon2id

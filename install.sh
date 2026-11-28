@@ -34,6 +34,7 @@
 #   FXCLOUD_MAX_UPLOAD_MB  largest upload in MiB (default: 1024)
 #   FXCLOUD_TRASH_DAYS     days a trashed entry is kept (default: 30)
 #   FXCLOUD_SESSION_TTL    session lifetime in seconds (default: 604800 = 7 days, sliding)
+#   FXCLOUD_REGISTER_BUDGET registrations per address per10 min (default:10 - raise for closed tests)
 #   RUST_LOG               log filter (default: fxcloud=info)
 #   FXCLOUD_OFFICE_URL     office editor origin, e.g. https://office.example.com
 #                          (asked interactively when omitted; Enter = no office)

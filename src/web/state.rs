@@ -79,11 +79,6 @@ const AUTH_LOCK_MEMORY_SECS: i64 = 3600;
 const LOGIN_FAIL_BUDGET: u32 = 30;
 const LOGIN_FAIL_WINDOW_SECS: i64 = 60;
 
-/// Registration attempts per source address per window. Every attempt
-/// hashes a password whether or not the name is free, so this door spends
-/// its budget up front - and a personal cloud registers a handful of
-/// accounts in its whole life, never ten in ten minutes.
-const REGISTER_BUDGET: u32 = 10;
 const REGISTER_WINDOW_SECS: i64 = 600;
 
 /// Pending WebAuthn challenges before the start endpoints answer 429
@@ -435,7 +430,7 @@ impl AppState {
                 window_start: now,
                 spent: 0,
             });
-        if spend.spent >= REGISTER_BUDGET {
+        if spend.spent >= self.config.register_budget {
             let secs = remaining_secs(spend.window_start + register_window(), now);
             return Err(rate_limited(
                 format!("too many accounts registered from this address lately, retry in {secs} seconds"),
@@ -697,6 +692,7 @@ mod tests {
             webauthn_origin: None,
             webauthn_android_origins: Vec::new(),
             login_banner: String::new(),
+            register_budget: 10,
             office_url: None,
             office_origin: None,
             office_secret: None,

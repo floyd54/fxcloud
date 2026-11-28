@@ -460,7 +460,7 @@ class MainActivity : FragmentActivity() {
             try {
                 val c = ApiClient(server)
                 val reply = c.login(user, password)
-                if (reply.code != 200) throw RuntimeException("Sign-in failed (${reply.code})")
+                if (reply.code != 200) throw RuntimeException(serverReason(reply, "Sign-in failed"))
                 finishLogin(c, server, user, password)
             } catch (e: Throwable) {
                 runOnUiThread {
@@ -474,6 +474,17 @@ class MainActivity : FragmentActivity() {
     /** Sign up from the login page (the web's register tab): an active
      *  account comes back with its session cookie, a pending one with
      * 202 and no cookie - which then simply says so. */
+    /** The server's own reason for a refusal (a rate limit carries
+     *  its retry clock in there); the status code as the fallback. */
+    private fun serverReason(reply: ApiClient.Reply, fallback: String): String {
+        val msg = try {
+            JSONObject(reply.body).optString("error")
+        } catch (e: Throwable) {
+            ""
+        }
+        return if (msg.isNotEmpty()) msg else "$fallback (${reply.code})"
+    }
+
     private fun doRegister(server: String, user: String, password: String, displayName: String) {
         busy = true
         notice = null
@@ -488,7 +499,7 @@ class MainActivity : FragmentActivity() {
                     }
                     return@Thread
                 }
-                if (reply.code != 200) throw RuntimeException("Sign-up failed (${reply.code})")
+                if (reply.code != 200) throw RuntimeException(serverReason(reply, "Sign-up failed"))
                 finishLogin(c, server, user, password)
             } catch (e: Throwable) {
                 runOnUiThread {

@@ -49,6 +49,12 @@ pub struct Config {
     /// /api/login-banner for the app. Empty (the default) renders
     /// nothing at all.
     pub login_banner: String,
+    /// Registrations allowed per source address per ten minutes
+    /// (10 by default - a personal cloud registers a handful in its
+    /// whole life, never ten in ten minutes; closed tests behind
+    /// carrier-grade NAT share one address across many households
+    /// and can raise it via FXCLOUD_REGISTER_BUDGET).
+    pub register_budget: u32,
     /// Office integration (concepts/office.md): the engine's base URL as the
     /// *browser* sees it, `http(s)://host[:port][/prefix]`. Unset (the
     /// default) means the feature is off - no office routes, no CSP change,
@@ -184,6 +190,16 @@ impl Config {
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .unwrap_or_default();
+        // The registration door's price list (F1): every accepted
+        // attempt pays an Argon2 hash whether or not the name is free,
+        // so the budget exists against floods - configurable because
+        // carrier-grade NAT hands very different tenants the same
+        // address during a test run.
+        let register_budget = std::env::var("FXCLOUD_REGISTER_BUDGET")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(10);
 
         // Office integration (concepts/office.md): the knobs belong together -
         // a stray secret or base without FXCLOUD_OFFICE_URL is a config
@@ -257,6 +273,7 @@ impl Config {
             webauthn_origin,
             webauthn_android_origins,
             login_banner,
+            register_budget,
             office_url,
             office_origin,
             office_secret,

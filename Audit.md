@@ -70,8 +70,9 @@ keyed by the name itself, existing or not, and unknown names lock
 identically, so the 429 cannot be used to distinguish an account holder
 from an invented name; a successful sign-in clears it. Two
 source-address budgets bound what one socket peer can trigger: 30 failed
-sign-ins per minute and 10 registrations per ten minutes, each refused
-with 429 + `Retry-After`, the register budget *before* its Argon2 hash
+sign-ins per minute and 10 registrations per ten minutes
+(`FXCLOUD_REGISTER_BUDGET`, default 10), each refused with 429 +
+`Retry-After`, the register budget *before* its Argon2 hash
 runs (a taken name pays for it all the same). The key is the socket
 peer only - `X-Forwarded-For` is deliberately never trusted, because a
 bare install would be one spoofed header away from a limiter that both
