@@ -16,8 +16,8 @@ android {
         applicationId = "de.frischux.fxcloud"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.4.6"
+        versionCode = 11
+        versionName = "0.4.7"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
